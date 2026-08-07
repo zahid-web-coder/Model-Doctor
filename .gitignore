@@ -1,218 +1,120 @@
-# Byte-compiled / optimized / DLL files
-__pycache__/
-*.py[codz]
-*$py.class
-
-# C extensions
-*.so
-
-# Distribution / packaging
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-share/python-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-MANIFEST
-
-# PyInstaller
-#   Usually these files are written by a python script from a template
-#   before PyInstaller builds the exe, so as to inject date/other infos into it.
-*.manifest
-*.spec
-
-# Installer logs
-pip-log.txt
-pip-delete-this-directory.txt
-
-# Unit test / coverage reports
-htmlcov/
-.tox/
-.nox/
-.coverage
-.coverage.*
-.cache
-nosetests.xml
-coverage.xml
-*.cover
-*.py.cover
-.hypothesis/
-.pytest_cache/
-cover/
-
-# Translations
-*.mo
-*.pot
-
-# Django stuff:
-*.log
-local_settings.py
-db.sqlite3
-db.sqlite3-journal
-
-# Flask stuff:
-instance/
-.webassets-cache
-
-# Scrapy stuff:
-.scrapy
-
-# Sphinx documentation
-docs/_build/
-
-# PyBuilder
-.pybuilder/
-target/
-
-# Jupyter Notebook
-.ipynb_checkpoints
-
-# IPython
-profile_default/
-ipython_config.py
-
-# pyenv
-#   For a library or package, you might want to ignore these files since the code is
-#   intended to run in multiple environments; otherwise, check them in:
-# .python-version
-
-# pipenv
-#   According to pypa/pipenv#598, it is recommended to include Pipfile.lock in version control.
-#   However, in case of collaboration, if having platform-specific dependencies or dependencies
-#   having no cross-platform support, pipenv may install dependencies that don't work, or not
-#   install all needed dependencies.
-# Pipfile.lock
-
-# UV
-#   Similar to Pipfile.lock, it is generally recommended to include uv.lock in version control.
-#   This is especially recommended for binary packages to ensure reproducibility, and is more
-#   commonly ignored for libraries.
-# uv.lock
-
-# poetry
-#   Similar to Pipfile.lock, it is generally recommended to include poetry.lock in version control.
-#   This is especially recommended for binary packages to ensure reproducibility, and is more
-#   commonly ignored for libraries.
-#   https://python-poetry.org/docs/basic-usage/#commit-your-poetrylock-file-to-version-control
-# poetry.lock
-# poetry.toml
-
-# pdm
-#   Similar to Pipfile.lock, it is generally recommended to include pdm.lock in version control.
-#   pdm recommends including project-wide configuration in pdm.toml, but excluding .pdm-python.
-#   https://pdm-project.org/en/latest/usage/project/#working-with-version-control
-# pdm.lock
-# pdm.toml
-.pdm-python
-.pdm-build/
-
-# pixi
-#   Similar to Pipfile.lock, it is generally recommended to include pixi.lock in version control.
-# pixi.lock
-#   Pixi creates a virtual environment in the .pixi directory, just like venv module creates one
-#   in the .venv directory. It is recommended not to include this directory in version control.
-.pixi
-
-# PEP 582; used by e.g. github.com/David-OConnor/pyflow and github.com/pdm-project/pdm
-__pypackages__/
-
-# Celery stuff
-celerybeat-schedule
-celerybeat.pid
-
-# Redis
-*.rdb
-*.aof
-*.pid
-
-# RabbitMQ
-mnesia/
-rabbitmq/
-rabbitmq-data/
-
-# ActiveMQ
-activemq-data/
-
-# SageMath parsed files
-*.sage.py
-
-# Environments
-.env
-.envrc
-.venv
-env/
+# ---------------------------------------------------------------------------
+# Virtual environment
+# ---------------------------------------------------------------------------
+# ~1.6GB, and machine-specific. requirements.txt is what reproduces it — that
+# is the entire reason the versions there are pinned. Committing this would
+# also exceed GitHub's 100MB per-file hard limit on torch's compiled libraries
+# and abort the push partway.
+.venv/
 venv/
+env/
 ENV/
 env.bak/
 venv.bak/
 
-# Spyder project settings
-.spyderproject
-.spyproject
+# ---------------------------------------------------------------------------
+# Model weights and datasets  --  READ BEFORE REMOVING THESE LINES
+# ---------------------------------------------------------------------------
+# Two separate reasons, both important:
+#
+#   1. Size. Checkpoints and image datasets are large binaries. Git stores every
+#      version forever, so a repo that tracks them grows without bound and can
+#      never be shrunk without rewriting history.
+#
+#   2. Ownership. Model Doctor is a personal project, but detection models and
+#      datasets frequently originate from work under an employer's ownership.
+#      Publishing those to a public repository is a confidentiality problem that
+#      cannot be undone: a pushed file stays in history and stays fetchable even
+#      after it is deleted. This repository is currently private, but flipping it
+#      to public exposes the entire history at that instant.
+#
+# If you ever intend to version weights deliberately, use Git LFS and confirm
+# the data is yours to publish. Do not simply delete these lines.
+#
+# The contents are ignored, but a .gitkeep is allowed through so that a fresh
+# clone still has the directory layout the health check expects.
+models/*
+!models/.gitkeep
+datasets/*
+!datasets/.gitkeep
 
-# Rope project settings
-.ropeproject
+# Weight formats, ignored anywhere in the tree — not just the folders above.
+*.pt
+*.pth
+*.onnx
+*.engine
 
-# mkdocs documentation
-/site
-
-# mypy
-.mypy_cache/
-.dmypy.json
-dmypy.json
-
-# Pyre type checker
-.pyre/
-
-# pytype static type analyzer
-.pytype/
-
-# Cython debug symbols
-cython_debug/
-
-# PyCharm
-#   JetBrains specific template is maintained in a separate JetBrains.gitignore that can
-#   be found at https://github.com/github/gitignore/blob/main/Global/JetBrains.gitignore
-#   and can be added to the global gitignore or merged into this file.  For a more nuclear
-#   option (not recommended) you can uncomment the following to ignore the entire idea folder.
-# .idea/
-
-# Abstra
-#   Abstra is an AI-powered process automation framework.
-#   Ignore directories containing user credentials, local state, and settings.
-#   Learn more at https://abstra.io/docs
-.abstra/
-
-# Visual Studio Code
-#   Visual Studio Code specific template is maintained in a separate VisualStudioCode.gitignore 
-#   that can be found at https://github.com/github/gitignore/blob/main/Global/VisualStudioCode.gitignore
-#   and can be added to the global gitignore or merged into this file. However, if you prefer, 
-#   you could uncomment the following to ignore the entire vscode folder
-# .vscode/
-# Temporary file for partial code execution
-tempCodeRunnerFile.py
-
-# Ruff stuff:
-.ruff_cache/
-
-# PyPI configuration file
+# ---------------------------------------------------------------------------
+# Secrets  --  never commit these
+# ---------------------------------------------------------------------------
+.env
+.envrc
+.streamlit/secrets.toml
+*.pem
 .pypirc
 
-# Marimo
-marimo/_static/
-marimo/_lsp/
-__marimo__/
+# ---------------------------------------------------------------------------
+# Generated output
+# ---------------------------------------------------------------------------
+# Recreated by config.ensure_output_dirs() and by any inference run.
+results/
+runs/
 
-# Streamlit
-.streamlit/secrets.toml
+# ---------------------------------------------------------------------------
+# Python
+# ---------------------------------------------------------------------------
+__pycache__/
+*.py[codz]
+*$py.class
+*.so
+
+# Packaging
+build/
+dist/
+sdist/
+wheels/
+*.egg-info/
+.eggs/
+*.egg
+MANIFEST
+
+# Test and coverage
+.pytest_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+*.cover
+.hypothesis/
+
+# Type checkers and linters
+.ruff_cache/
+.mypy_cache/
+.dmypy.json
+.pyre/
+.pytype/
+cython_debug/
+
+# Notebooks
+.ipynb_checkpoints
+
+# Logs
+*.log
+
+# ---------------------------------------------------------------------------
+# Tooling — machine-local
+# ---------------------------------------------------------------------------
+# Per-developer Claude Code permissions. The `.local.json` suffix is the
+# convention for settings that are not shared; `.claude/settings.json` would be
+# the file to commit if a project-wide config is ever wanted.
+.claude/settings.local.json
+
+# ---------------------------------------------------------------------------
+# Editor and OS
+# ---------------------------------------------------------------------------
+.DS_Store
+.idea/
+.vscode/
+*.swp

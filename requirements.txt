@@ -1,0 +1,33 @@
+# Model Doctor — Python dependencies
+#
+# Install into the project virtual environment:
+#   python3.11 -m venv .venv
+#   ./.venv/bin/python -m pip install -r requirements.txt
+#
+# Python 3.11 is the target. It is the most widely supported version across the
+# ultralytics/torch ecosystem; newer interpreters often lag on prebuilt wheels.
+#
+# Lower bounds are pinned rather than exact versions so security patches flow
+# in, while still guaranteeing the APIs this codebase relies on exist.
+
+# --- Core detection stack ---
+ultralytics>=8.4.0        # YOLO training, inference, and validation
+torch>=2.2.0              # Tensor/autograd backend (MPS on Apple Silicon)
+torchvision>=0.17.0       # NMS, IoU ops, and image transforms
+
+# --- Image and numeric handling ---
+opencv-python>=4.9.0      # Image read/write and annotated-output rendering
+numpy>=1.26.0             # Array interchange between torch and everything else
+pandas>=2.2.0             # Tabular aggregation of detections and metrics
+
+# --- Analysis and presentation ---
+matplotlib>=3.8.0         # Metric plots and visual diagnostics
+scikit-learn>=1.4.0       # Clustering/metrics for later failure-grouping work
+streamlit>=1.30.0         # Developer dashboard (later milestone)
+
+# --- Configuration ---
+pyyaml>=6.0               # Parsing the YOLO data.yaml descriptor
+
+# --- Development ---
+pytest>=8.0.0             # Test runner
+ruff>=0.6.0               # Linter — enforces docs/CODING_STANDARDS.md

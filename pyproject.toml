@@ -1,0 +1,52 @@
+# Tooling configuration for Model Doctor.
+#
+# This file configures development tools only. It deliberately declares no
+# build system: the project is an application run from its source tree, not a
+# library to be packaged and installed, and adding packaging metadata we do not
+# use would be overengineering.
+
+[tool.ruff]
+# 88 rather than PEP 8's original 79. PEP 8 explicitly permits teams to raise
+# this, and 88 (the Black/Ruff default) is the modern norm: it keeps two files
+# side by side on a laptop while letting a descriptive name and a type hint
+# share one line without contortions.
+line-length = 88
+target-version = "py311"
+exclude = [".venv", "results"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors      - PEP 8 layout
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes                - unused imports, undefined names
+    "I",    # isort                   - deterministic import order
+    "N",    # pep8-naming             - naming conventions
+    "UP",   # pyupgrade               - modern syntax for the target version
+    "B",    # flake8-bugbear          - likely bugs, not just style
+    "SIM",  # flake8-simplify         - needless complexity
+    "PTH",  # flake8-use-pathlib      - pathlib over os.path
+    "ARG",  # flake8-unused-arguments
+    "D",    # pydocstyle              - docstrings are a project requirement
+]
+
+# Rules deliberately disabled, each with a reason. A silently-ignored rule is
+# technical debt; a documented one is a decision.
+ignore = [
+    "D203",  # Conflicts with D211. We use D211 (no blank line before class).
+    "D213",  # Conflicts with D212. We use D212 (summary on first line).
+]
+
+[tool.ruff.lint.pydocstyle]
+# Google style: "Args:/Returns:/Raises:" sections, which read well for humans
+# and are understood by every major documentation generator.
+convention = "google"
+
+[tool.ruff.lint.per-file-ignores]
+# Test functions document themselves through their names and a one-line
+# docstring; full Args/Returns sections on a test add noise, not clarity.
+"tests/*" = ["D103"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Quiet by default; the suite is fast enough that per-test output is noise.
+addopts = "-q"

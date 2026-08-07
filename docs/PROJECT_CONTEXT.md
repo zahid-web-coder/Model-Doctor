@@ -1,0 +1,139 @@
+# Project Context
+
+**This document is the project's source of truth.** Where any other document
+disagrees with it, this one wins and the other should be corrected.
+
+Last updated: 2026-08-07 (Milestone 2 + quality review)
+
+---
+
+## What this project is
+
+Model Doctor is a Vision AI **failure diagnosis** platform for object detection
+models. It explains *why* a model fails, rather than only reporting how much it
+fails. See [VISION.md](VISION.md) for the reasoning behind that goal.
+
+Version 1 targets YOLO. Support for other detector families is an explicit
+architectural concern but is **not implemented**.
+
+---
+
+## Current state
+
+| Area | Status |
+| --- | --- |
+| Environment and dependencies | **Completed** |
+| Configuration layer | **Completed** |
+| Resource verification | **Completed** |
+| Dataset descriptor + label parsing | **Completed** |
+| Shared box geometry | **Completed** |
+| YOLO inference + structured output | **Completed** |
+| Batch inference over a split | **Completed** (code); unrun — needs a dataset |
+| Metrics validation | **Completed** (code); unrun — needs a dataset |
+| Milestone 2 quality review | **Completed** |
+| Error analysis | **Planned** — Milestone 3 |
+| Everything beyond error analysis | **Planned** — see [ROADMAP.md](ROADMAP.md) |
+
+### Verified by execution
+
+- Full test suite passes.
+- Lint passes with zero findings under the project ruleset.
+- Single-image inference runs end to end and writes an annotated image.
+- Every missing-resource path exits cleanly with an actionable message and a
+  non-zero exit code.
+
+### Not yet verified by execution
+
+Batch inference and metrics validation are implemented and unit-tested, but
+have never been run against a real dataset because none is available yet. They
+are **written, not proven**. This distinction is deliberate and should be
+maintained in status reporting until a dataset exists.
+
+---
+
+## Resource situation
+
+The project depends on two resources it does not own and does not create:
+
+| Resource | Expected location | Status |
+| --- | --- | --- |
+| Trained detector weights | `models/` (any `*.pt`) | **Not yet available** |
+| Dataset + descriptor | `datasets/` incl. `data.yaml` | **Not yet available** |
+
+The codebase is written to operate in this state. Absence of a resource is a
+supported condition, reported through the health check, not an error state that
+crashes.
+
+**Rule: never fabricate a model or dataset to make code appear to work.** If a
+capability cannot be exercised, say so.
+
+Check current status at any time:
+
+```bash
+./.venv/bin/python -m app.inference --check
+```
+
+---
+
+## Expected resource layout
+
+```
+models/
+  <any>.pt                 # newest is selected when several are present
+
+datasets/
+  data.yaml                # must declare `names:`
+  <split>/
+    images/<name>.<ext>
+    labels/<name>.txt      # matching stem; images/ -> labels/
+```
+
+Label format, one object per line, geometry normalised to `0..1`:
+
+```
+<class_id> <x_center> <y_center> <width> <height>
+```
+
+---
+
+## Environment
+
+| Item | Value | Reason |
+| --- | --- | --- |
+| Python | 3.11 | Broadest wheel support across the detection stack |
+| Environment | `.venv/` in project root | Isolated; no global installs |
+| Compute | Auto-detected: CUDA → MPS → CPU | Overridable via `MD_DEVICE` |
+
+Setup:
+
+```bash
+python3.11 -m venv .venv
+./.venv/bin/python -m pip install -r requirements.txt
+```
+
+---
+
+## Working agreements
+
+Recorded in full in [DEVELOPMENT_RULES.md](DEVELOPMENT_RULES.md). The ones that
+most often get violated:
+
+- Never hardcode class names, class counts, dataset paths, or model paths.
+- Configurable values belong in `config.py`; reusable logic belongs in `utils/`.
+- Version control is not managed by tooling on this project. Do not initialise
+  a repository, create a remote, commit, or push.
+- Do not implement beyond the current milestone.
+
+---
+
+## Where to look
+
+| Question | Document |
+| --- | --- |
+| Why does this project exist? | [VISION.md](VISION.md) |
+| How is the code organised? | [ARCHITECTURE.md](ARCHITECTURE.md) |
+| What is built, and what is next? | [ROADMAP.md](ROADMAP.md) |
+| Why was it built this way? | [DECISIONS.md](DECISIONS.md) |
+| What are the process rules? | [DEVELOPMENT_RULES.md](DEVELOPMENT_RULES.md) |
+| How should code be written? | [CODING_STANDARDS.md](CODING_STANDARDS.md) |
+| What changed, and when? | [CHANGELOG.md](CHANGELOG.md) |

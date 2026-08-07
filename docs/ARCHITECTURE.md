@@ -1,0 +1,195 @@
+# Architecture
+
+Describes the system **as built**. Planned components are marked as such and
+carry no implementation claims.
+
+---
+
+## Layering
+
+Dependencies point downward only. A lower layer never imports a higher one.
+
+```
+                 ┌──────────────────────────────┐
+   Presentation  │  CLI  (app/inference.py)     │   Planned: dashboard
+                 └──────────────┬───────────────┘
+                                │
+                 ┌──────────────▼───────────────┐
+   Application   │  Detector, prediction types  │   Planned: error analysis
+                 └──────────────┬───────────────┘
+                                │
+                 ┌──────────────▼───────────────┐
+   Utilities     │  resources · dataset ·       │
+                 │  geometry · exceptions ·     │
+                 │  logging_utils               │
+                 └──────────────┬───────────────┘
+                                │
+                 ┌──────────────▼───────────────┐
+   Configuration │  config.py                   │
+                 └──────────────────────────────┘
+```
+
+`config.py` imports nothing from the project. `utils/exceptions.py` imports
+nothing at all. Those two are the stable foundation everything else rests on.
+
+---
+
+## Modules
+
+### `config.py` — Completed
+
+Single source of truth for paths, device selection, and tunable constants.
+
+- Paths derive from `__file__`, never the working directory, so behaviour does
+  not change with launch location.
+- Every value is overridable by environment variable (`MD_*`).
+- Importing it performs no I/O and cannot fail. Verification is separate and
+  explicit.
+- Creates output directories only. It never creates `models/` or `datasets/`,
+  because a conjured empty directory turns a clear "not provided yet" into a
+  confusing "empty".
+
+### `utils/exceptions.py` — Completed
+
+The project's exception hierarchy, in a module with **zero imports**.
+
+Any module can raise a project error without acquiring an unrelated dependency.
+`ModelDoctorError` is the common base, which lets callers distinguish
+anticipated failures from genuine bugs.
+
+```
+ModelDoctorError
+├── ResourceNotFoundError
+├── ModelLoadError
+└── DatasetConfigError
+```
+
+### `utils/logging_utils.py` — Completed
+
+Root logger configured exactly once, guarded by a module flag. Modules call
+`get_logger(__name__)` and never `basicConfig`, which prevents duplicated or
+suppressed output.
+
+### `utils/geometry.py` — Completed
+
+`BoxGeometryMixin` supplies derived geometry (`xyxy`, `width`, `height`,
+`area`, `center`) to any class exposing pixel corners.
+
+A mixin rather than a base dataclass, so subclasses keep their own field
+ordering (D-007). Geometry over a *single* box belongs on the mixin; operations
+over *two* boxes will be free functions in this module (D-014).
+
+### `utils/resources.py` — Completed
+
+Answers "is it here?" — once, in one place.
+
+- `discover_model` resolves weights: explicit path → configured path → newest
+  `*.pt` in the models directory. Real training runs emit varied filenames;
+  users should not have to rename files.
+- `check_*` functions each return a `ResourceStatus` and **never raise**.
+- `verify_all` + `format_report` produce the health report, listing **every**
+  missing resource at once so problems are fixed in one pass rather than one
+  failed run each.
+
+### `utils/dataset.py` — Completed
+
+Owns everything about ground truth.
+
+- Parses `data.yaml`; accepts `names:` as list or dict.
+- Resolves split paths and drops splits that do not exist on disk.
+- Warns when declared `nc` disagrees with the length of `names`.
+- `label_path_for_image` swaps the **last** `images` path segment.
+- `load_ground_truth` converts normalised centre-form to absolute pixel
+  corners on read, and skips malformed lines with a warning rather than
+  aborting.
+- A missing label file returns `[]` — a legitimate negative sample.
+
+### `app/inference.py` — Completed
+
+Converts a detector into structured, inspectable data.
+
+- `Detection` / `ImagePrediction` / `ValidationMetrics`: library-agnostic
+  result types. `ValidationMetrics.from_raw` is the sole point of coupling to
+  the evaluation library's object shape (D-013).
+- `Detector`: lazy loading, idempotent `load()`, per-image error isolation.
+- `predict_many` is a generator, so memory stays flat and progress streams.
+- `validate()` wraps the detector's own metrics evaluation and normalises the
+  result, so no third-party object escapes this module.
+- CLI entry point returning exit codes rather than calling `sys.exit`, so it is
+  testable.
+
+---
+
+## Data flow
+
+```
+  data.yaml ──► DatasetConfig ──► class names, split paths
+                                          │
+  image ──────────────────────────────────┤
+                                          ▼
+                     Detector.predict_image()
+                                          │
+                            ┌─────────────┴─────────────┐
+                            ▼                           ▼
+                 list[Detection]              annotated image
+                 (pixels, xyxy)               results/predictions/
+                            │
+                            ▼
+              [Planned] Error Analysis  ◄── list[GroundTruthBox]
+```
+
+`Detection` and `GroundTruthBox` share one coordinate convention — **absolute
+pixels, `xyxy`** — and one geometry implementation. That is what allows them to
+be compared directly, and is the single most consequential decision in the
+system so far.
+
+---
+
+## Key boundaries
+
+### Detector isolation
+
+Everything specific to the detection library lives inside
+`Detector._extract_detections` and `ValidationMetrics.from_raw`. Nothing outside
+`app/inference.py` imports the detection library or handles its objects.
+Supporting another architecture means adding a sibling that produces the same
+`Detection` objects — analysis code is untouched.
+
+This is why raw tensors are converted to plain Python floats at that boundary
+rather than passed onward.
+
+### Output ownership
+
+Annotated images are written by us into the configured predictions directory,
+not by the library into a directory of its choosing. The project stays
+self-contained and its output location stays configurable.
+
+### Resource verification
+
+Exactly one module decides whether a resource exists. Callers ask; they do not
+re-implement checks. This keeps missing-resource behaviour consistent and
+testable.
+
+---
+
+## Extension points
+
+| Extension | Mechanism | Status |
+| --- | --- | --- |
+| Additional detector family | New module producing `Detection` | Planned |
+| Failure classification | Consumes predictions + ground truth | Planned |
+| New image format | One entry in `config.IMAGE_EXTENSIONS` | Available |
+| Alternative output location | `MD_*` environment variables | Available |
+
+---
+
+## Testing strategy
+
+Tests target behavioural contracts, not implementation details.
+
+- Resource absence is the **primary** contract while the model and dataset are
+  unavailable, so it carries the most coverage.
+- Geometry tests assert that predictions and ground truth agree, and include a
+  guard against re-introducing duplicated geometry.
+- Inference tests cover the containers, error states, and CLI parsing. They do
+  not require a model.
