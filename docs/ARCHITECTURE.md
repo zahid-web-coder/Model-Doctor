@@ -20,8 +20,8 @@ Dependencies point downward only. A lower layer never imports a higher one.
                                 │
                  ┌──────────────▼───────────────┐
    Utilities     │  resources · dataset ·       │
-                 │  geometry · exceptions ·     │
-                 │  logging_utils               │
+                 │  annotations · geometry ·    │
+                 │  exceptions · logging_utils  │
                  └──────────────┬───────────────┘
                                 │
                  ┌──────────────▼───────────────┐
@@ -79,6 +79,18 @@ A mixin rather than a base dataclass, so subclasses keep their own field
 ordering (D-007). Geometry over a *single* box belongs on the mixin; operations
 over *two* boxes will be free functions in this module (D-014).
 
+### `utils/annotations.py` — Completed
+
+The generic object-annotation model: `ObjectAnnotation` (class id, class name,
+bounding box, optional polygon, optional confidence) and `polygon_to_bbox`.
+
+One type serves detection and segmentation data. When a polygon is present the
+box is *derived* from it, so box-based analysis works on segmentation data with
+no special-casing and the two can never disagree. `Detection` subclasses it and
+requires a confidence. See [DECISIONS.md](DECISIONS.md) D-016.
+
+Deliberately absent: mask IoU, polygon area, segmentation analysis.
+
 ### `utils/resources.py` — Completed
 
 Answers "is it here?" — once, in one place.
@@ -99,9 +111,10 @@ Owns everything about ground truth.
 - Resolves split paths and drops splits that do not exist on disk.
 - Warns when declared `nc` disagrees with the length of `names`.
 - `label_path_for_image` swaps the **last** `images` path segment.
-- `load_ground_truth` converts normalised centre-form to absolute pixel
-  corners on read, and skips malformed lines with a warning rather than
-  aborting.
+- `load_ground_truth` reads both YOLO label forms — 5-field boxes and
+  polygons of 1+2n fields — choosing per *line*, so a file may mix them. Both
+  are converted to absolute pixels on read; malformed lines are skipped with a
+  warning rather than aborting the file.
 - A missing label file returns `[]` — a legitimate negative sample.
 
 ### `app/inference.py` — Completed
@@ -135,13 +148,14 @@ Converts a detector into structured, inspectable data.
                  (pixels, xyxy)               results/predictions/
                             │
                             ▼
-              [Planned] Error Analysis  ◄── list[GroundTruthBox]
+           [Planned] Error Analysis  ◄── list[ObjectAnnotation]
 ```
 
-`Detection` and `GroundTruthBox` share one coordinate convention — **absolute
-pixels, `xyxy`** — and one geometry implementation. That is what allows them to
-be compared directly, and is the single most consequential decision in the
-system so far.
+Predictions and ground truth are the *same type* — `Detection` is an
+`ObjectAnnotation` that carries a confidence — sharing one coordinate
+convention (**absolute pixels, `xyxy`**) and one geometry implementation. That
+is what allows them to be compared directly, and is the most consequential
+decision in the system so far.
 
 ---
 
@@ -178,6 +192,8 @@ testable.
 | --- | --- | --- |
 | Additional detector family | New module producing `Detection` | Planned |
 | Failure classification | Consumes predictions + ground truth | Planned |
+| Segmentation analysis | `ObjectAnnotation.polygon` already carried | Planned |
+| Prediction outlines | Read masks in `_extract_detections` | Planned |
 | New image format | One entry in `config.IMAGE_EXTENSIONS` | Available |
 | Alternative output location | `MD_*` environment variables | Available |
 

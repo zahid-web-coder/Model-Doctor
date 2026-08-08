@@ -43,6 +43,7 @@ Understand a trained detector and build the inference foundation.
 | Lint clean under project ruleset | Completed |
 | Documentation set | Completed |
 | Quality & maintainability review | Completed |
+| Generic annotation model (box + polygon) | Completed |
 
 **Deliberately excluded** from this milestone: explanation methods, embeddings,
 failure clustering, recommendations, dashboard, database, reports, and
@@ -62,7 +63,7 @@ was shaped as it is.
 
 Scope:
 
-- IoU computation between predictions and ground truth.
+- Box IoU computation between predictions and ground truth.
 - A matching strategy pairing predictions with labels.
 - Classification of each outcome into: false positive, false negative, wrong
   class, poor localisation.
@@ -77,6 +78,9 @@ Open design questions to resolve **before** implementation:
 2. Greedy confidence-ordered matching, or optimal assignment? Greedy is simpler
    and conventional; optimal is more correct in crowded scenes.
 3. Should match IoU be a single threshold or a sweep?
+
+The annotation model already carries polygons (D-016), so mask-based analysis
+is a later addition to this milestone rather than a redesign of it.
 
 Depends on: Milestone 2.
 

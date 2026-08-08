@@ -37,13 +37,13 @@ if __package__ in (None, ""):  # pragma: no cover - import-path bootstrap
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import config
+from utils.annotations import ObjectAnnotation
 from utils.dataset import DatasetConfig, describe, load_dataset_config
 from utils.exceptions import (
     DatasetConfigError,
     ModelLoadError,
     ResourceNotFoundError,
 )
-from utils.geometry import BoxGeometryMixin
 from utils.logging_utils import get_logger
 from utils.resources import check_model, find_images, format_report, verify_all
 
@@ -54,32 +54,39 @@ logger = get_logger(__name__)
 # Result containers
 # ---------------------------------------------------------------------------
 @dataclass(frozen=True)
-class Detection(BoxGeometryMixin):
-    """A single predicted bounding box.
+class Detection(ObjectAnnotation):
+    """One object predicted by a model.
 
-    Coordinates are absolute pixels in ``xyxy`` (corner) form, matching the
-    space :class:`~utils.dataset.GroundTruthBox` uses. Holding predictions and
-    ground truth in one coordinate system is what makes IoU computation in the
-    future error-analysis module a two-line function instead of a source of
-    subtle bugs.
+    An :class:`~utils.annotations.ObjectAnnotation` that always carries a
+    confidence. Ground truth and predictions are therefore *the same type of
+    thing*, differing only in whether certainty is known — which is precisely
+    the relationship the error-analysis milestone needs, since it compares the
+    two directly.
 
-    Attributes:
-        class_id: Model's class index for this detection.
-        class_name: Human-readable name resolved from the model's own mapping.
-        confidence: Model's certainty in ``[0, 1]``.
-        x1, y1, x2, y2: Box corners in pixels.
+    Inheriting rather than redeclaring the fields means a future change to the
+    annotation model — an outline, a track id, an attribute — reaches
+    predictions and ground truth together, and cannot reach only one.
+
+    All fields are inherited. ``confidence`` is optional on the base because
+    ground truth has none; here it is required, and that is enforced at
+    construction rather than left as a convention.
     """
 
-    class_id: int
-    class_name: str
-    confidence: float
-    x1: float
-    y1: float
-    x2: float
-    y2: float
+    def __post_init__(self) -> None:
+        """Reject a prediction with no confidence.
 
-    # Geometry (xyxy, width, height, area, center) comes from BoxGeometryMixin
-    # so predictions and ground truth share one implementation.
+        Raises:
+            ValueError: If ``confidence`` was not supplied. A detection without
+                certainty cannot be thresholded, ranked, or interpreted, so
+                building one is a programming error worth failing on
+                immediately rather than discovering as a ``None`` comparison
+                deep inside analysis code.
+        """
+        if self.confidence is None:
+            raise ValueError(
+                "Detection requires a confidence; use ObjectAnnotation for "
+                "ground truth, which has none."
+            )
 
 
 @dataclass

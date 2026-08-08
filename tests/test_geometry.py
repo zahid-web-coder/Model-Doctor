@@ -16,13 +16,27 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.inference import Detection
-from utils.dataset import GroundTruthBox
+from utils.annotations import ObjectAnnotation
 from utils.geometry import BoxGeometryMixin
+
+
+def _prediction(x1: float, y1: float, x2: float, y2: float) -> Detection:
+    """Build a prediction with the given corners."""
+    return Detection(
+        class_id=0, class_name="any", x1=x1, y1=y1, x2=x2, y2=y2, confidence=0.9
+    )
+
+
+def _ground_truth(x1: float, y1: float, x2: float, y2: float) -> ObjectAnnotation:
+    """Build a ground-truth annotation with the given corners."""
+    return ObjectAnnotation.from_box(
+        class_id=0, class_name="any", x1=x1, y1=y1, x2=x2, y2=y2
+    )
 
 
 def test_derived_geometry_is_correct() -> None:
     """Width, height, area, and centre follow from the corners."""
-    box = Detection(0, "any", 0.9, 10.0, 20.0, 110.0, 70.0)
+    box = _prediction(10.0, 20.0, 110.0, 70.0)
     assert box.width == 100.0
     assert box.height == 50.0
     assert box.area == 5000.0
@@ -36,21 +50,21 @@ def test_inverted_box_clamps_to_zero_area() -> None:
     A negative area would survive an average and quietly skew any size-based
     analysis, which is far worse than an obvious zero.
     """
-    box = Detection(0, "any", 0.5, 100.0, 100.0, 10.0, 10.0)
+    box = _prediction(100.0, 100.0, 10.0, 10.0)
     assert box.width == 0.0
     assert box.height == 0.0
     assert box.area == 0.0
 
 
 def test_prediction_and_ground_truth_agree_on_geometry() -> None:
-    """The same corners give the same geometry for both box types.
+    """The same corners give the same geometry for both annotation kinds.
 
     This is the whole reason the mixin exists. If it ever fails, predictions
-    and labels have drifted apart and IoU results become meaningless.
+    and labels have drifted apart and overlap results become meaningless.
     """
     corners = (12.5, 33.0, 200.0, 145.5)
-    prediction = Detection(1, "any", 0.7, *corners)
-    ground_truth = GroundTruthBox(1, *corners)
+    prediction = _prediction(*corners)
+    ground_truth = _ground_truth(*corners)
 
     assert prediction.xyxy == ground_truth.xyxy
     assert prediction.area == ground_truth.area
@@ -59,14 +73,14 @@ def test_prediction_and_ground_truth_agree_on_geometry() -> None:
     assert prediction.center == ground_truth.center
 
 
-def test_both_box_types_share_one_implementation() -> None:
+def test_both_annotation_kinds_share_one_implementation() -> None:
     """Neither class re-implements geometry locally.
 
     Guards against someone "helpfully" adding an `area` property back onto one
     of the dataclasses, which would reintroduce the duplication this module
     removed.
     """
-    for box_type in (Detection, GroundTruthBox):
+    for box_type in (Detection, ObjectAnnotation):
         assert issubclass(box_type, BoxGeometryMixin)
         for name in ("xyxy", "width", "height", "area", "center"):
             assert name not in vars(box_type), (
@@ -76,6 +90,6 @@ def test_both_box_types_share_one_implementation() -> None:
 
 def test_geometry_is_derived_not_stored() -> None:
     """Frozen dataclasses expose geometry as read-only properties."""
-    box = Detection(0, "any", 0.9, 0.0, 0.0, 10.0, 10.0)
+    box = _prediction(0.0, 0.0, 10.0, 10.0)
     with pytest.raises(AttributeError):
         box.area = 999.0  # type: ignore[misc]

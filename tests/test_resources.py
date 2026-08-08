@@ -170,7 +170,11 @@ def test_load_ground_truth_missing_label_is_a_negative_sample(tmp_path: Path) ->
 
 
 def test_load_ground_truth_skips_malformed_lines(tmp_path: Path) -> None:
-    """Polygon/segmentation lines are skipped, valid lines still parse."""
+    """Truncated and non-numeric lines are skipped; valid lines still parse.
+
+    The 8-field line has an even count, meaning a coordinate is missing. That
+    is a truncated polygon, not a valid one, and must not be reinterpreted.
+    """
     images_dir = tmp_path / "images"
     labels_dir = tmp_path / "labels"
     images_dir.mkdir()
@@ -180,7 +184,7 @@ def test_load_ground_truth_skips_malformed_lines(tmp_path: Path) -> None:
     image.touch()
     (labels_dir / "frame.txt").write_text(
         "0 0.5 0.5 0.5 0.5\n"
-        "1 0.1 0.1 0.2 0.2 0.3 0.3 0.4\n"  # polygon — wrong field count
+        "1 0.1 0.1 0.2 0.2 0.3 0.3 0.4\n"  # 8 fields, even — truncated polygon
         "not-a-number 0.1 0.1 0.2 0.2\n"  # non-numeric
         "\n"  # blank
         "1 0.25 0.25 0.1 0.1\n",
@@ -196,7 +200,15 @@ def test_load_ground_truth_skips_malformed_lines(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 def test_detection_geometry() -> None:
     """Derived geometry properties are computed, never stored twice."""
-    det = Detection(0, "crack", 0.9, 10.0, 20.0, 110.0, 70.0)
+    det = Detection(
+        class_id=0,
+        class_name="crack",
+        x1=10.0,
+        y1=20.0,
+        x2=110.0,
+        y2=70.0,
+        confidence=0.9,
+    )
     assert det.width == 100.0
     assert det.height == 50.0
     assert det.area == 5000.0

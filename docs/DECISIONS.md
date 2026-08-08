@@ -117,8 +117,12 @@ Negligible against inference cost, and the isolation is the point.
 
 **Status:** Accepted · Milestone 2
 
-**Decision.** Both `Detection` and `GroundTruthBox` use absolute pixels in
-`xyxy`. Normalised label values are converted once, on read.
+**Decision.** All annotations use absolute pixels in `xyxy`. Normalised label
+values are converted once, on read.
+
+*Amended by D-016:* this now covers polygons as well as boxes — an outline is
+stored in the same absolute-pixel space as the box derived from it. The
+type originally named `GroundTruthBox` is now `ObjectAnnotation`.
 
 **Reasoning.** Comparing predictions to ground truth is the project's entire
 purpose. Mixed conventions — normalised vs pixel, centre vs corner — are the
@@ -136,9 +140,9 @@ plausible-looking wrong numbers rather than an exception.
 
 **Decision.** `BoxGeometryMixin` provides derived geometry to both box types.
 
-**Reasoning.** `Detection` and `GroundTruthBox` had independent implementations
-of `xyxy` and `area` — duplication that drifts, and drift here silently
-corrupts every failure classification built on top.
+**Reasoning.** The prediction and ground-truth types had independent
+implementations of `xyxy` and `area` — duplication that drifts, and drift here
+silently corrupts every failure classification built on top.
 
 A base **dataclass** owning the corner fields would force them first in every
 subclass constructor, turning `Detection(class_id, class_name, confidence, ...)`
@@ -347,3 +351,55 @@ yet called".
 **Trade-off.** Some of these will be rewritten later. Rewriting twenty lines
 against a known requirement beats maintaining a wrong guess and then having to
 migrate its consumers.
+
+---
+
+## D-016 — One generic annotation model for detection and segmentation
+
+**Status:** Accepted · Milestone 2.5 (pre-Milestone 3 refactor)
+
+**Decision.** Ground truth and predictions are both
+`utils.annotations.ObjectAnnotation`: a class id, a class name, a bounding box,
+an optional polygon, and an optional confidence. `Detection` is a subclass that
+requires a confidence. When a polygon is present the bounding box is *derived*
+from it, never stored independently.
+
+**Reasoning.** The first real dataset turned out to be segmentation: every one
+of its annotations is a polygon, and the previous box-only parser skipped all
+of them. It did not crash — it returned zero ground truth for every image,
+which would have made every prediction look like a false positive. Silent and
+confident wrongness is the worst failure mode for a diagnosis tool.
+
+Modelling boxes and polygons as unrelated types would fork every future
+consumer into "the box path" and "the polygon path". One type with an optional
+polygon means analysis is written once and works on both.
+
+Deriving the box rather than storing it makes "the box and the polygon agree"
+a property of the type, not a rule someone must remember. It also matches how
+the detection ecosystem converts segments to boxes, so Model Doctor and the
+model's own evaluator agree about where the ground truth is — verified against
+`ultralytics/data/utils.py`, which applies the same min/max extent.
+
+Three dataset shapes are supported *by construction*, decided per annotation
+rather than per dataset: detection-only, segmentation-only, and both mixed in
+one file.
+
+**Rejected.** Adding a parallel `polygon` field to two separate classes —
+reintroduces the duplication D-007 removed, and it would drift. A single class
+with `confidence: float | None` and no `Detection` type — simpler, but erases
+the ground-truth/prediction distinction that error analysis is built on.
+A converter that turns polygons into boxes at read time and discards the
+outline — loses the data mask analysis will need, and would force a reparse.
+
+**Trade-off.** Field order is inherited, so `Detection`'s constructor changed
+and its call sites were updated. A one-time cost against a permanent one: the
+alternative is maintaining two models that must be kept in step by hand.
+
+Deliberately *not* included, per the milestone boundary: mask IoU, polygon
+area, and any segmentation analysis. Prediction outlines are also not yet read
+from model output — the field exists, the extraction does not. The model is
+ready for those; it does not pre-empt them.
+
+**Verified.** Against the real 1,291-image segmentation dataset: 2,151/2,151
+annotations parsed, class counts matching an independent audit exactly, zero
+degenerate boxes.

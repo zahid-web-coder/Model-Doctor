@@ -3,7 +3,7 @@
 **This document is the project's source of truth.** Where any other document
 disagrees with it, this one wins and the other should be corrected.
 
-Last updated: 2026-08-07 (Milestone 2 + quality review)
+Last updated: 2026-08-08 (Milestone 2 + quality review + annotation-model refactor)
 
 ---
 
@@ -25,8 +25,9 @@ architectural concern but is **not implemented**.
 | Environment and dependencies | **Completed** |
 | Configuration layer | **Completed** |
 | Resource verification | **Completed** |
-| Dataset descriptor + label parsing | **Completed** |
+| Dataset descriptor + label parsing | **Completed** — boxes *and* polygons |
 | Shared box geometry | **Completed** |
+| Generic annotation model (box + polygon) | **Completed** |
 | YOLO inference + structured output | **Completed** |
 | Batch inference over a split | **Completed** (code); unrun — needs a dataset |
 | Metrics validation | **Completed** (code); unrun — needs a dataset |
@@ -57,8 +58,8 @@ The project depends on two resources it does not own and does not create:
 
 | Resource | Expected location | Status |
 | --- | --- | --- |
-| Trained detector weights | `models/` (any `*.pt`) | **Not yet available** |
-| Dataset + descriptor | `datasets/` incl. `data.yaml` | **Not yet available** |
+| Trained detector weights | `models/` (any `*.pt`) | **Not yet available** — a YOLO-nano *segmentation* model is being trained |
+| Dataset + descriptor | `datasets/` incl. `data.yaml` | **Audited, not yet placed** — see the note below |
 
 The codebase is written to operate in this state. Absence of a resource is a
 supported condition, reported through the health check, not an error state that
@@ -88,11 +89,16 @@ datasets/
     labels/<name>.txt      # matching stem; images/ -> labels/
 ```
 
-Label format, one object per line, geometry normalised to `0..1`:
+Label format, one object per line, geometry normalised to `0..1`. Both forms
+are supported, chosen per line, so a file may contain either or both:
 
 ```
-<class_id> <x_center> <y_center> <width> <height>
+<class_id> <x_center> <y_center> <width> <height>     detection
+<class_id> <x1> <y1> <x2> <y2> <x3> <y3> ...          segmentation
 ```
+
+A segmentation annotation also yields a bounding box, derived from the
+outline's extent, so box-based analysis needs no special-casing.
 
 ---
 

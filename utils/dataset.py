@@ -17,8 +17,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import config
+from utils.annotations import ObjectAnnotation
 from utils.exceptions import DatasetConfigError
-from utils.geometry import BoxGeometryMixin
 from utils.logging_utils import get_logger
 from utils.resources import find_images
 
@@ -27,31 +27,16 @@ logger = get_logger(__name__)
 # Standard YOLO split names, in the order a report should present them.
 SPLIT_KEYS: tuple[str, ...] = ("train", "val", "test")
 
-
-@dataclass(frozen=True)
-class GroundTruthBox(BoxGeometryMixin):
-    """One line of a YOLO ``.txt`` label file, in absolute pixel coordinates.
-
-    YOLO stores boxes *normalised* (every value in ``[0, 1]``, expressed as a
-    fraction of image width/height) and *centre-based*. That format is
-    resolution-independent, which is what lets the same label file survive an
-    image being resized. It is, however, the wrong format for drawing or for
-    computing IoU, so we convert once on read and work in pixels thereafter.
-
-    Attributes:
-        class_id: Zero-based index into the dataset's class list.
-        x1, y1: Top-left corner in pixels.
-        x2, y2: Bottom-right corner in pixels.
-    """
-
-    class_id: int
-    x1: float
-    y1: float
-    x2: float
-    y2: float
-
-    # Geometry (xyxy, width, height, area, center) comes from BoxGeometryMixin
-    # so that predictions and ground truth cannot drift apart.
+# A YOLO label line is either a detection box or a segmentation outline:
+#
+#   detection     <class_id> <x_c> <y_c> <w> <h>              -> 5 fields
+#   segmentation  <class_id> <x1> <y1> <x2> <y2> ...          -> 1 + 2n fields
+#
+# Both are normalised to [0, 1]. The two are told apart by field count, which
+# is how the wider YOLO ecosystem does it too. A polygon needs at least three
+# vertices to enclose any area, giving a minimum of 7 fields.
+DETECTION_FIELD_COUNT: int = 5
+MIN_POLYGON_FIELDS: int = 7
 
 
 @dataclass(frozen=True)
@@ -219,79 +204,132 @@ def label_path_for_image(image_path: Path) -> Path:
     return Path(*parts).with_suffix(".txt")
 
 
+def _parse_label_line(
+    fields: list[str],
+    image_width: int,
+    image_height: int,
+    class_names: dict[int, str] | None,
+) -> ObjectAnnotation:
+    """Convert one label line into an annotation in absolute pixels.
+
+    Handles both YOLO label forms, chosen by field count. The two are
+    distinguished per *line*, not per file, so a dataset that mixes boxes and
+    outlines parses correctly without configuration.
+
+    Args:
+        fields: Whitespace-split tokens of the line. Never empty.
+        image_width: Image width in pixels, used to denormalise.
+        image_height: Image height in pixels, used to denormalise.
+        class_names: Class id to name mapping, or ``None`` when unavailable.
+
+    Returns:
+        A populated :class:`~utils.annotations.ObjectAnnotation`.
+
+    Raises:
+        ValueError: If the field count matches neither form, a value is not
+            numeric, or a polygon has too few vertices. The caller turns this
+            into a warning and skips the line.
+    """
+    class_id = int(float(fields[0]))
+    name = (class_names or {}).get(class_id, f"id:{class_id}")
+    count = len(fields)
+
+    if count == DETECTION_FIELD_COUNT:
+        # Detection: centre-based and normalised. Converting to absolute corner
+        # form is the same arithmetic a polygon's extent already produces, so
+        # both paths end in one coordinate convention (D-006).
+        x_c, y_c, width, height = (float(value) for value in fields[1:])
+        return ObjectAnnotation.from_box(
+            class_id=class_id,
+            class_name=name,
+            x1=(x_c - width / 2) * image_width,
+            y1=(y_c - height / 2) * image_height,
+            x2=(x_c + width / 2) * image_width,
+            y2=(y_c + height / 2) * image_height,
+        )
+
+    # Segmentation: an odd field count of at least 7, being one class id plus
+    # x/y pairs. An even count means a coordinate is missing — a truncated
+    # line, which must not be silently reinterpreted.
+    if count >= MIN_POLYGON_FIELDS and count % 2 == 1:
+        values = [float(value) for value in fields[1:]]
+        polygon = tuple(
+            (values[i] * image_width, values[i + 1] * image_height)
+            for i in range(0, len(values), 2)
+        )
+        # from_polygon derives the bounding box, so box-based analysis works on
+        # segmentation data with no special-casing anywhere downstream.
+        return ObjectAnnotation.from_polygon(
+            class_id=class_id, class_name=name, polygon=polygon
+        )
+
+    raise ValueError(
+        f"expected {DETECTION_FIELD_COUNT} fields (box) or an odd count of at "
+        f"least {MIN_POLYGON_FIELDS} (polygon), got {count}"
+    )
+
+
 def load_ground_truth(
-    image_path: Path, image_width: int, image_height: int
-) -> list[GroundTruthBox]:
-    """Read the YOLO label file for an image and convert it to pixel boxes.
+    image_path: Path,
+    image_width: int,
+    image_height: int,
+    class_names: dict[int, str] | None = None,
+) -> list[ObjectAnnotation]:
+    """Read an image's YOLO label file as annotations in absolute pixels.
 
-    Each line of a YOLO label file is::
+    A YOLO label file holds one object per line, in one of two forms::
 
-        <class_id> <x_center> <y_center> <width> <height>
+        <class_id> <x_center> <y_center> <width> <height>      detection
+        <class_id> <x1> <y1> <x2> <y2> <x3> <y3> ...           segmentation
 
-    with the four geometry values normalised to ``[0, 1]``. Conversion to
-    corner form is::
+    Both store geometry normalised to ``[0, 1]``, which is what lets a label
+    file survive its image being resized. Normalised values are the wrong
+    format for drawing or for computing overlap, so conversion to absolute
+    pixels happens once, here, and everything downstream works in pixels.
 
-        x1 = (x_center - width / 2)  * image_width
-        y1 = (y_center - height / 2) * image_height
-        x2 = (x_center + width / 2)  * image_width
-        y2 = (y_center + height / 2) * image_height
+    A segmentation line also yields a bounding box, derived from the outline's
+    extent. Box-based analysis therefore works unchanged on a segmentation
+    dataset.
 
     Args:
         image_path: The image whose labels should be read.
         image_width: Image width in pixels, used to denormalise.
         image_height: Image height in pixels, used to denormalise.
+        class_names: Class id to name mapping, typically
+            :attr:`DatasetConfig.class_names`. When omitted, names fall back to
+            ``"id:<n>"`` so parsing still succeeds without a descriptor.
 
     Returns:
-        Ground-truth boxes. An image with no label file is a legitimate
-        *negative* sample, so ``[]`` is returned rather than raising.
+        One annotation per valid line. An image with no label file is a
+        legitimate *negative* sample, so ``[]`` is returned rather than raising.
     """
     label_path = label_path_for_image(image_path)
     if not label_path.is_file():
         return []
 
-    boxes: list[GroundTruthBox] = []
-    for line_number, line in enumerate(
+    annotations: list[ObjectAnnotation] = []
+    for line_number, raw_line in enumerate(
         label_path.read_text(encoding="utf-8").splitlines(), start=1
     ):
-        line = line.strip()
+        line = raw_line.strip()
         if not line:
             continue
 
-        fields = line.split()
-        # Segmentation datasets store polygons (many coordinate pairs) on the
-        # same kind of line. We only handle detection boxes here, and warn
-        # rather than silently misreading a polygon as a box.
-        if len(fields) != 5:
-            logger.warning(
-                "%s line %d: expected 5 fields, got %d — skipping.",
-                label_path.name,
-                line_number,
-                len(fields),
-            )
-            continue
-
         try:
-            class_id = int(float(fields[0]))
-            x_c, y_c, width, height = (float(value) for value in fields[1:])
-        except ValueError:
+            annotations.append(
+                _parse_label_line(
+                    line.split(), image_width, image_height, class_names
+                )
+            )
+        except ValueError as exc:
+            # One malformed line must not discard the rest of the file. A
+            # dataset of 1,000 images should not be unusable because of a
+            # single truncated row.
             logger.warning(
-                "%s line %d: non-numeric value — skipping.",
-                label_path.name,
-                line_number,
+                "%s line %d: %s — skipping.", label_path.name, line_number, exc
             )
-            continue
 
-        boxes.append(
-            GroundTruthBox(
-                class_id=class_id,
-                x1=(x_c - width / 2) * image_width,
-                y1=(y_c - height / 2) * image_height,
-                x2=(x_c + width / 2) * image_width,
-                y2=(y_c + height / 2) * image_height,
-            )
-        )
-
-    return boxes
+    return annotations
 
 
 def describe(dataset: DatasetConfig) -> str:

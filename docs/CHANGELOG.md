@@ -157,3 +157,55 @@ The architecture still fits. The layering held under review — no cycles, no
 upward dependencies — and the changes above were consistency fixes within the
 existing design rather than a restructuring. No refactor was undertaken for
 elegance alone.
+
+---
+
+## Milestone 2.5 — Generic Annotation Model · 2026-08-08
+
+Prompted by auditing the first real dataset, which turned out to be
+segmentation: 2,151 polygon annotations, zero bounding boxes. The box-only
+parser skipped every one of them without crashing — returning zero ground truth
+for all 1,291 images, which would have made every prediction look like a false
+positive.
+
+### Added
+
+- `utils/annotations.py` — the generic object-annotation model (D-016).
+  - `ObjectAnnotation`: class id, class name, bounding box, optional polygon,
+    optional confidence. One type for ground truth and predictions.
+  - `polygon_to_bbox()`: derives a box from an outline's extent, matching how
+    the detection ecosystem converts segments to boxes.
+  - `from_polygon()` / `from_box()` factories, so call sites state which kind
+    of source they are handling.
+- `tests/test_annotations.py` — 19 tests covering all three dataset shapes,
+  polygon derivation, and malformed-input rejection.
+
+### Changed
+
+- `load_ground_truth()` now reads **both** YOLO label forms, chosen per *line*
+  rather than per file, so a dataset containing both needs no configuration.
+  It also accepts a `class_names` mapping so annotations carry readable names.
+- `Detection` is now a subclass of `ObjectAnnotation` that requires a
+  confidence, enforced at construction. Predictions and ground truth are the
+  same kind of thing, differing only in whether certainty is known.
+- `GroundTruthBox` retired — the name asserted box-only, which is no longer
+  true. Its role is filled by `ObjectAnnotation`.
+- Constructor call sites updated in `tests/test_geometry.py` and
+  `tests/test_resources.py`. Every assertion was preserved; only construction
+  changed.
+
+### Not included, deliberately
+
+Mask IoU, polygon area, and segmentation analysis are out of scope for this
+change. Prediction outlines are also not yet read from model output — the field
+exists, the extraction does not. The model is ready for those; it does not
+pre-empt them.
+
+### Verified
+
+- Lint clean; **53 tests pass** (up from 34).
+- Against the real 1,291-image segmentation dataset, read-only:
+  **2,151 / 2,151 annotations parsed** in 0.5 s, class counts matching an
+  independent audit exactly (1,126 / 1,025), zero degenerate boxes, every
+  ground-truth annotation correctly carrying no confidence.
+- Before this change the same dataset yielded **0** annotations.
