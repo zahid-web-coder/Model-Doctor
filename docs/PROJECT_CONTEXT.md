@@ -3,7 +3,7 @@
 **This document is the project's source of truth.** Where any other document
 disagrees with it, this one wins and the other should be corrected.
 
-Last updated: 2026-08-09 (Milestone 3 — diagnosis engine)
+Last updated: 2026-08-09 (Milestone 3 + persistence layer)
 
 ---
 
@@ -35,6 +35,7 @@ architectural concern but is **not implemented**.
 | Box IoU + generic matching engine | **Completed** |
 | Failure classification (5 outcomes) | **Completed** |
 | Per-image and dataset diagnosis | **Completed** |
+| SQLite persistence + published schema | **Completed** |
 | Mask IoU / segmentation analysis | **Planned** — architecture-ready, not built |
 | Everything beyond error analysis | **Planned** — see [ROADMAP.md](ROADMAP.md) |
 
@@ -146,6 +147,7 @@ most often get violated:
 | What are the process rules? | [DEVELOPMENT_RULES.md](DEVELOPMENT_RULES.md) |
 | How should code be written? | [CODING_STANDARDS.md](CODING_STANDARDS.md) |
 | What changed, and when? | [CHANGELOG.md](CHANGELOG.md) |
+| **What is the database contract?** | **[SCHEMA.md](SCHEMA.md)** |
 
 ---
 

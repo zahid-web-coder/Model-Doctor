@@ -155,6 +155,8 @@ class ImageDiagnosis:
         truths: Every ground-truth annotation considered.
         findings: One entry per prediction and per ground truth, so nothing is
             unaccounted for.
+        image_width: Source width in pixels, ``0`` when unknown.
+        image_height: Source height in pixels, ``0`` when unknown.
         error: Set when the image could not be diagnosed, leaving a batch
             otherwise intact.
     """
@@ -163,6 +165,11 @@ class ImageDiagnosis:
     predictions: Sequence[ObjectAnnotation] = field(default_factory=list)
     truths: Sequence[ObjectAnnotation] = field(default_factory=list)
     findings: Sequence[Finding] = field(default_factory=list)
+    # Dimensions are carried so that persisted findings can be interpreted
+    # without re-opening the image: a pixel box means nothing without the frame
+    # it sits in. Defaulted, so callers that do not know them still work.
+    image_width: int = 0
+    image_height: int = 0
     error: str | None = None
 
     @property
@@ -332,6 +339,8 @@ def diagnose_image(
     match_threshold: float | None = None,
     localization_floor: float | None = None,
     similarity: SimilarityFn = box_iou,
+    image_width: int = 0,
+    image_height: int = 0,
 ) -> ImageDiagnosis:
     """Classify every prediction and ground truth for one image.
 
@@ -355,6 +364,9 @@ def diagnose_image(
         similarity: Comparison function, defaulting to box IoU. Passing a
             mask-based function is the extension point for segmentation
             analysis; nothing here assumes boxes.
+        image_width: Source width in pixels, carried into the result so stored
+            findings can be interpreted without re-opening the image.
+        image_height: Source height in pixels, carried for the same reason.
 
     Returns:
         An :class:`ImageDiagnosis` in which every prediction and every ground
@@ -431,6 +443,8 @@ def diagnose_image(
         predictions=list(predictions),
         truths=list(truths),
         findings=findings,
+        image_width=image_width,
+        image_height=image_height,
     )
 
 
@@ -586,7 +600,13 @@ def diagnose_split(
             prediction.image_height,
             dataset.class_names,
         )
-        diagnosis = diagnose_image(image_path, prediction.detections, truths)
+        diagnosis = diagnose_image(
+            image_path,
+            prediction.detections,
+            truths,
+            image_width=prediction.image_width,
+            image_height=prediction.image_height,
+        )
         diagnoses.append(diagnosis)
 
         if index % 25 == 0 or index == len(images):
@@ -617,6 +637,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--show", type=int, default=0, help="Print per-image detail for the first N."
     )
+    parser.add_argument(
+        "--save",
+        action="store_true",
+        help="Persist this run to the SQLite diagnosis database.",
+    )
+    parser.add_argument(
+        "--db", type=str, help="Database path override (default: db/model_doctor.db)."
+    )
+    parser.add_argument(
+        "--list-runs", action="store_true", help="List stored runs and exit."
+    )
     return parser
 
 
@@ -628,6 +659,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     """
     args = build_parser().parse_args(argv)
     config.ensure_output_dirs()
+
+    # Imported here rather than at module scope: app.diagnosis must not depend
+    # on app.storage, or the one-way layering documented in storage.py becomes
+    # a cycle. The CLI orchestrates; the engine stays unaware of persistence.
+    from app import storage
+
+    db_path = Path(args.db) if args.db else None
+
+    if args.list_runs:
+        with storage.connect(db_path) as connection:
+            print(storage.format_run_summary(storage.list_runs(connection)))
+        return 0
 
     model_override = Path(args.model) if args.model else None
     statuses = verify_all(model_override)
@@ -654,6 +697,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     for diagnosis in summary.succeeded[: args.show]:
         print(format_image_diagnosis(diagnosis))
     print(format_dataset_diagnosis(summary, worst=args.worst))
+
+    if args.save:
+        weights = detector.model_path or config.MODEL_PATH
+        context = storage.build_run_context(
+            model_path=weights,
+            dataset_yaml=dataset.source_path,
+            split=args.split,
+            confidence=detector.confidence,
+            match_iou=config.MATCH_IOU_THRESHOLD,
+            localization_floor=config.LOCALIZATION_IOU_FLOOR,
+            image_size=detector.image_size,
+        )
+        with storage.connect(db_path) as connection:
+            run_id = storage.save_dataset_diagnosis(connection, context, summary)
+        print(f"  Saved as run {run_id} in {db_path or config.DB_PATH}\n")
+
     return 0
 
 

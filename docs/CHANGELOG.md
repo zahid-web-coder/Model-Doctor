@@ -265,3 +265,64 @@ but nothing computes mask overlap.
 - Run end to end against the real model and the real test split: every
   prediction and every ground truth accounted for exactly once, with no double
   counting.
+
+---
+
+## Week 2 completion — Persistence Layer & Backend Contract · 2026-08-09
+
+Diagnosis results were previously in-memory only and died with the process.
+This makes them durable, queryable, and — the actual point — consumable by a
+second developer building a dashboard without reading this codebase.
+
+### Added
+
+- `app/storage.py` — SQLite persistence.
+  - Tables `runs`, `images`, `findings`, normalised so later milestones add
+    tables rather than altering ones already being queried (D-020).
+  - `runs` records the model SHA-256, dataset, split, all three thresholds and
+    image size — everything needed to reproduce a run (D-021).
+  - Foreign keys enforced per connection; SQLite ignores them otherwise.
+  - Writes occur in the caller's transaction, so an interrupted save leaves no
+    partial run.
+  - API: `save_run`, `save_image`, `save_findings`, `save_dataset_diagnosis`,
+    `load_run`, `list_runs`, `load_findings`, `outcome_counts`.
+- **`docs/SCHEMA.md`** — the published backend contract. Schema, relationships,
+  outcome enum with its null patterns, nine worked queries, data-flow diagram,
+  stability guarantees, and the explicit warning that these counts are not COCO
+  mAP.
+- `--save`, `--db`, and `--list-runs` on the diagnosis CLI.
+- `config.DB_DIR` / `config.DB_PATH`.
+- `tests/test_storage.py` — 20 tests covering round trips, schema integrity,
+  foreign-key enforcement, cascade deletes, multiple runs, idempotent schema
+  creation, and transaction rollback.
+
+### Changed
+
+- `ValidationMetrics` gained scalar **F1** for boxes and masks, closing the last
+  Week 1 metric gap. Derived, not stored, so it cannot disagree with the
+  precision and recall it comes from.
+- `ImageDiagnosis` carries `image_width` / `image_height`. Additive with
+  defaults — no existing call site changed. Needed because a pixel box is
+  meaningless without the frame it sits in, and the database must be
+  interpretable without re-opening images.
+- `.gitignore` excludes `db/` and any `*.db`. The database records absolute
+  image paths and filenames, which carry dataset identifiers; the schema is
+  committed, the data is not.
+
+### Not implemented, deliberately
+
+Grad-CAM, dashboard, clustering, root-cause analysis, recommendations, mask IoU.
+No tables exist for them — they arrive with the milestone that produces them.
+
+### Verified
+
+- Lint clean; **111 tests pass** (91 from Milestone 3, unchanged, plus 20 new).
+- Milestone 2 and 3 capabilities intact: inference, validation, diagnosis,
+  polygon parsing, segmentation support.
+- Two real runs saved from the real model and dataset (test and val splits).
+  SQL outcome counts match the engine's printed report exactly; the accounting
+  guarantee holds for both runs (218/218 predictions, 238/238 truths on run 1;
+  392/392 and 434/434 on run 2). 672 ground-truth polygons round-tripped.
+- **Every example query in SCHEMA.md was executed verbatim against the live
+  database.** All ten valid. Documentation drift would surface as a failure
+  rather than as silent staleness.

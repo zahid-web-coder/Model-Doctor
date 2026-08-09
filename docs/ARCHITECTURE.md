@@ -16,6 +16,7 @@ Dependencies point downward only. A lower layer never imports a higher one.
                                 │
                  ┌──────────────▼───────────────┐
    Application   │  Detector · Diagnosis engine │   Planned: clustering
+                 │  Storage (SQLite)            │
                  └──────────────┬───────────────┘
                                 │
                  ┌──────────────▼───────────────┐
@@ -150,12 +151,33 @@ false negative.
 
 Not implemented: mask IoU, clustering, recommendations, visual explanation.
 
+### `app/storage.py` — Completed
+
+SQLite persistence for diagnosis results, and the point at which this project
+becomes consumable by code that is not this project.
+
+- Three tables: `runs`, `images`, `findings`. Normalised so later milestones add
+  tables rather than altering ones a dashboard already queries (D-020).
+- `runs` stores the model SHA-256 and every threshold, so a finding has
+  provenance and two runs can be compared (D-021).
+- Foreign keys enforced per connection — SQLite ignores them otherwise.
+- Writes happen in the caller's transaction, so an interrupted save leaves no
+  partial run.
+- **The published interface is [SCHEMA.md](SCHEMA.md), not this module.** Every
+  example query in that document is executed against a real database during
+  verification, so documentation drift surfaces as a failure.
+
+Lives in `app/` because it depends on the diagnosis domain types; a `utils`
+module importing `app` would be the first upward dependency in the project
+(D-019).
+
 ### `app/inference.py` — Completed
 
 Converts a detector into structured, inspectable data.
 
 - `Detection` / `ImagePrediction` / `ValidationMetrics`: library-agnostic
-  result types. `ValidationMetrics.from_raw` is the sole point of coupling to
+  result types. Precision, recall, F1, mAP50 and mAP50-95 for boxes and masks;
+  F1 is derived rather than stored so it cannot disagree with its inputs. `ValidationMetrics.from_raw` is the sole point of coupling to
   the evaluation library's object shape (D-013).
 - `Detector`: lazy loading, idempotent `load()`, per-image error isolation.
 - `predict_many` is a generator, so memory stays flat and progress streams.
@@ -191,6 +213,10 @@ Converts a detector into structured, inspectable data.
                             ▼
                     DatasetDiagnosis
               per-class statistics · worst images
+                            │
+                            ▼  --save
+                    db/model_doctor.db
+              runs · images · findings   ◄── see SCHEMA.md
 ```
 
 Predictions and ground truth are the *same type* — `Detection` is an

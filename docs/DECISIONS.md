@@ -487,3 +487,87 @@ and diagnoses would not be reproducible.
 **Trade-off.** Greedy can be suboptimal where several objects overlap heavily.
 Accepted for determinism and readability, and recorded here so the limitation
 is known rather than discovered.
+
+---
+
+## D-019 — Persistence lives in `app/`, and the schema is the contract
+
+**Status:** Accepted · Week 2 completion
+
+**Decision.** SQLite persistence is `app/storage.py`, not `utils/storage.py`.
+`docs/SCHEMA.md` is the published interface; the Python module is one
+implementation of it.
+
+**Reasoning.** Persistence needs the diagnosis domain types — `Finding`,
+`Outcome`, `ImageDiagnosis` — which live in `app.diagnosis`. A `utils` module
+importing from `app` would be the first upward dependency in the project and
+would break the layering held since Milestone 2. Direction is one-way and
+enforced by review:
+
+    app/storage.py → app/diagnosis.py → app/inference.py → utils/* → config.py
+
+`app.diagnosis` must never import `app.storage`, or the direction becomes a
+cycle. The CLI orchestrates instead: diagnose, then persist. The import in
+`main()` is deliberately function-local for exactly this reason.
+
+The schema is documented as a **contract** rather than described as an
+implementation detail because a second developer is building a dashboard
+against the database without reading this codebase. If SCHEMA.md is not
+sufficient on its own, the deliverable has failed regardless of whether the
+code works.
+
+**Trade-off.** Two artefacts must stay in step — the DDL and the document. The
+schema statements carry comments pointing at SCHEMA.md, and every example query
+in the document is executed against a real database as part of verification, so
+drift shows up as a failing query rather than as silent staleness.
+
+---
+
+## D-020 — The findings table never changes shape; later milestones add tables
+
+**Status:** Accepted · Week 2 completion
+
+**Decision.** `runs`, `images`, and `findings` are frozen. Clustering,
+root-cause analysis, and recommendations will each arrive as their own table
+keyed on `finding_id`, not as new columns.
+
+**Reasoning.** The roadmap's storage sketch listed `cluster_id`, `root_cause`,
+and `recommendation` alongside the failure columns. Adding them now would mean
+three columns that nothing writes for weeks — exactly the speculative surface
+D-015 removed.
+
+But a database schema is not ordinary code. Altering a table another developer
+is already querying is far more disruptive than adding a function, so
+"implement it later" cannot mean "change the shape later". Normalising resolves
+both: nothing speculative exists today, and nothing existing has to change when
+it does.
+
+**Rejected.** Nullable columns for future features — dead surface now, and it
+would invite queries written against columns that are always null. Deferring
+the schema until those features exist — the dashboard cannot start.
+
+**Trade-off.** Consumers will need joins once those tables land. Cheap, and the
+alternative is breaking published queries.
+
+---
+
+## D-021 — Runs are events, not idempotent writes
+
+**Status:** Accepted · Week 2 completion
+
+**Decision.** Every `--save` creates a new run. Nothing is overwritten or
+de-duplicated. Only schema creation is idempotent.
+
+**Reasoning.** A run records what a *specific* model produced under *specific*
+thresholds at a *specific* time. Overwriting would destroy the history that
+makes model-versus-model comparison possible — which the roadmap schedules
+explicitly. Re-running the same configuration twice is legitimately two
+observations, not one repeated.
+
+Each run stores the model's SHA-256, not just its path, because weight files
+get overwritten in place. Without the hash, two runs that disagree look like a
+regression when they may simply be different models.
+
+**Trade-off.** The database grows with every run and nothing prunes it.
+Acceptable — rows are small, and deleting a run cascades cleanly to its images
+and findings.

@@ -54,6 +54,23 @@ datasets/*
 .pypirc
 
 # ---------------------------------------------------------------------------
+# Diagnosis database  --  READ BEFORE REMOVING
+# ---------------------------------------------------------------------------
+# The SQLite database records absolute image paths and filenames from whatever
+# dataset was diagnosed. Those filenames routinely carry site, component, and
+# date identifiers. Committing the database publishes that metadata even though
+# no image is included, which is the same confidentiality problem the models/
+# and datasets/ rules exist to prevent.
+#
+# The schema itself is documented in docs/SCHEMA.md and IS committed. Only the
+# populated database is excluded.
+db/*
+!db/.gitkeep
+*.db
+*.sqlite
+*.sqlite3
+
+# ---------------------------------------------------------------------------
 # Generated output
 # ---------------------------------------------------------------------------
 # Recreated by config.ensure_output_dirs() and by any inference run.

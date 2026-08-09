@@ -238,6 +238,31 @@ class ValidationMetrics:
         """Return whether the evaluated model reported mask metrics."""
         return self.mask_map50 is not None
 
+    @staticmethod
+    def _f1(precision: float | None, recall: float | None) -> float | None:
+        """Return the harmonic mean of precision and recall.
+
+        F1 is derived, never stored, so it cannot disagree with the values it
+        comes from. ``None`` when either input is missing, and ``0.0`` when
+        both are zero — a model that finds nothing has an F1 of zero, not a
+        division error.
+        """
+        if precision is None or recall is None:
+            return None
+        if precision + recall == 0.0:
+            return 0.0
+        return 2.0 * precision * recall / (precision + recall)
+
+    @property
+    def f1(self) -> float | None:
+        """Return the box F1 score."""
+        return self._f1(self.precision, self.recall)
+
+    @property
+    def mask_f1(self) -> float | None:
+        """Return the mask F1 score, or ``None`` for a detection-only model."""
+        return self._f1(self.mask_precision, self.mask_recall)
+
     @classmethod
     def from_raw(
         cls,
@@ -665,6 +690,7 @@ def format_metrics(metrics: ValidationMetrics) -> str:
         (
             ("Precision", metrics.precision),
             ("Recall", metrics.recall),
+            ("F1", metrics.f1),
             ("mAP@50", metrics.map50),
             ("mAP@50-95", metrics.map50_95),
         ),
@@ -678,6 +704,7 @@ def format_metrics(metrics: ValidationMetrics) -> str:
             (
                 ("Precision", metrics.mask_precision),
                 ("Recall", metrics.mask_recall),
+                ("F1", metrics.mask_f1),
                 ("mAP@50", metrics.mask_map50),
                 ("mAP@50-95", metrics.mask_map50_95),
             ),

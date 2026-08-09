@@ -68,6 +68,12 @@ VALIDATION_DIR: Final[Path] = _path_from_env(
     "MD_VALIDATION_DIR", RESULTS_DIR / "validation"
 )
 
+# The diagnosis database. Separate from RESULTS_DIR because results are
+# disposable render output, whereas this accumulates across runs and is the
+# interface another developer builds against.
+DB_DIR: Final[Path] = _path_from_env("MD_DB_DIR", PROJECT_ROOT / "db")
+DB_PATH: Final[Path] = _path_from_env("MD_DB_PATH", DB_DIR / "model_doctor.db")
+
 # ---------------------------------------------------------------------------
 # Model + dataset locations
 # ---------------------------------------------------------------------------

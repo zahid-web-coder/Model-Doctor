@@ -72,6 +72,9 @@ was shaped as it is.
 | CLI (`python -m app.diagnosis`) | Completed |
 | Test suite | Completed |
 | Verified on a real model and dataset | Completed |
+| SQLite persistence (`app/storage.py`) | Completed |
+| `docs/SCHEMA.md` — published backend contract | Completed |
+| Scalar F1 (box + mask) | Completed |
 
 The three open design questions were resolved:
 
