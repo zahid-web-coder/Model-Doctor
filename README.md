@@ -9,8 +9,10 @@ additional architectures can be added later without touching analysis code.
 
 ## Status
 
-Day 2 — inference foundation. The model and dataset are **not yet available**,
-and the codebase is written to handle that state cleanly rather than crash.
+Milestone 3 — the diagnosis engine works. Inference, validation, and failure
+diagnosis all run against a real trained model and a real labelled dataset.
+
+Mask IoU and segmentation analysis are **architecture-ready but not built**.
 
 ## Setup
 
@@ -65,11 +67,30 @@ geometry values **normalised to 0–1** relative to image size.
 # A whole split from data.yaml
 ./.venv/bin/python -m app.inference --split test
 
-# Metrics (precision / recall / mAP)
+# Metrics (precision / recall / mAP, box and mask)
 ./.venv/bin/python -m app.inference --validate
 ```
 
 Annotated images are written to `results/predictions/`.
+
+## Diagnose failures
+
+The point of the project — explaining *why* predictions fail:
+
+```bash
+./.venv/bin/python -m app.diagnosis --split test
+```
+
+Every prediction and every ground-truth annotation is classified into one of
+five outcomes — correct, wrong class, poor localisation, false positive, false
+negative — and reported per class, with the worst images ranked so you know
+which ones to open.
+
+**These failure counts are not mAP's.** A prediction that finds an object but
+outlines it badly is reported as one *poor localisation*, not as a false
+positive plus a false negative. That is deliberate: it names a cause instead of
+describing one object as two unrelated errors. See
+[DECISIONS.md](docs/DECISIONS.md) D-017.
 
 ## Configuration
 
@@ -83,6 +104,9 @@ variable — no code edits needed to point at different data:
 | `MD_DATA_YAML` | Dataset descriptor location |
 | `MD_PREDICTIONS_DIR` | Where annotated images are written |
 | `MD_CONF` | Confidence threshold (default `0.25`) |
+| `MD_IMGSZ` | Inference size — **must match what the model was trained at** |
+| `MD_MATCH_IOU` | IoU at which a pair counts as correctly localised (`0.50`) |
+| `MD_LOC_IOU` | Floor below which a pair is not a near miss (`0.10`) |
 | `MD_DEVICE` | Force `cpu`, `mps`, or `cuda` |
 | `MD_LOG_LEVEL` | `DEBUG` to see library internals |
 
@@ -90,11 +114,16 @@ variable — no code edits needed to point at different data:
 
 ```
 config.py              Single source of truth for paths and constants
-app/inference.py       Model loading, prediction, structured results, CLI
+app/inference.py       Model loading, prediction, metrics, CLI
+app/diagnosis.py       Failure classification and reporting, CLI
+utils/annotations.py   Generic annotation model (box + optional polygon)
+utils/geometry.py      Box geometry and IoU
+utils/matching.py      Generic one-to-one annotation matching
 utils/resources.py     Resource discovery and verification
 utils/dataset.py       data.yaml parsing and ground-truth label reading
+utils/exceptions.py    Project exception hierarchy
 utils/logging_utils.py Centralised logger setup
-tests/                 Test suite (run: ./.venv/bin/python -m pytest tests/ -q)
+tests/                 Test suite (run: ./.venv/bin/python -m pytest)
 ```
 
 ## Tests and lint

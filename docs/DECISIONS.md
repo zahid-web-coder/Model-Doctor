@@ -403,3 +403,87 @@ ready for those; it does not pre-empt them.
 **Verified.** Against the real 1,291-image segmentation dataset: 2,151/2,151
 annotations parsed, class counts matching an independent audit exactly, zero
 degenerate boxes.
+
+---
+
+## D-017 — A weak overlap is poor localisation, not a false positive plus a miss
+
+**Status:** Accepted · Milestone 3
+
+**Decision.** When a prediction overlaps a ground-truth annotation by less than
+the match threshold but by more than `LOCALIZATION_IOU_FLOOR`, the diagnosis
+engine reports **one** finding — poor localisation, or wrong class if the
+labels disagree — rather than a false positive *and* a false negative.
+
+Implemented as two matching passes: the first at `MATCH_IOU_THRESHOLD` (0.50),
+the second over the leftovers at `LOCALIZATION_IOU_FLOOR` (0.10). Anything
+still unpaired after the second pass is a genuine invention or a genuine miss.
+
+**Reasoning.** Evaluation metrics take the other route: below threshold means
+no match, so both sides count as errors. That is correct *for scoring* — mAP
+must penalise a bad box twice or a model could game it.
+
+It is wrong for *explaining*. "Found the object, outlined it badly" names a
+cause an engineer can act on. "One spurious detection and one miss" describes a
+single object as two unrelated failures and destroys the causal link between
+them. The project exists to explain, so it takes the explanatory reading.
+
+The floor exists so the reading cannot be abused. Overlap below 0.10 is not a
+near miss, and excusing it would let genuinely wild predictions hide inside a
+sympathetic category. Below the floor, a false positive and a false negative
+are exactly what happened.
+
+A weak overlap with *disagreeing* classes is reported as wrong class, not poor
+localisation: naming the object incorrectly is the more consequential error,
+and folding it into a localisation bucket would conceal it.
+
+**Rejected.** Matching the mAP convention — reproduces a benchmark this project
+is explicitly not trying to reproduce, and loses the causal link. A single
+threshold with no second pass — makes every near miss look like two unrelated
+errors. Reporting both a poor-localisation finding *and* FP/FN records —
+double-counts, so no total would reconcile.
+
+**Trade-off, and it must be stated wherever these numbers appear: the
+false-positive and false-negative counts produced here will not equal those
+implied by mAP.** They are lower, because near misses are reclassified. The two
+answer different questions and must not be compared directly. A second
+difference compounds it: diagnosis runs at the configured confidence threshold
+(0.25 by default), whereas mAP integrates across all thresholds.
+
+**Verified** on 136 real images: every prediction (218) and every ground truth
+(238) is accounted for exactly once, with no double counting.
+
+---
+
+## D-018 — Matching is greedy on similarity, and similarity is a parameter
+
+**Status:** Accepted · Milestone 3
+
+**Decision.** `utils/matching.py` pairs annotations one-to-one, accepting the
+strongest overlap first. The comparison function is an argument, defaulting to
+box IoU.
+
+**Reasoning — strongest-first rather than confidence-first.** Evaluation
+metrics order by confidence because they simulate a detector's own ranking.
+Model Doctor is not scoring the model; it is explaining a specific image, where
+the question is which prediction genuinely describes which object. The best
+geometric correspondence answers that. A confident prediction that overlaps
+poorly does not become the right pairing by being confident.
+
+**Reasoning — greedy rather than optimal.** Hungarian assignment is globally
+optimal but differs from greedy only in crowded scenes with heavy mutual
+overlap. Greedy is deterministic and obvious to read. If crowding ever becomes
+a real limitation, `match_annotations` is the only function that changes.
+
+**Reasoning — similarity as a parameter.** This is what "architecture-ready for
+masks" means concretely. Mask IoU becomes a different argument at the call site
+rather than a rewrite of the engine, and the seam is exercised by tests today
+so it cannot rot. No mask overlap is implemented.
+
+**Ties** are broken by higher confidence, then by lower index. Without a
+defined order, identical input could produce different pairings between runs
+and diagnoses would not be reproducible.
+
+**Trade-off.** Greedy can be suboptimal where several objects overlap heavily.
+Accepted for determinism and readability, and recorded here so the limitation
+is known rather than discovered.

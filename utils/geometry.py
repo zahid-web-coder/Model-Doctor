@@ -69,3 +69,43 @@ class BoxGeometryMixin:
     def center(self) -> tuple[float, float]:
         """Return the box centre as ``(x, y)`` in pixels."""
         return ((self.x1 + self.x2) / 2.0, (self.y1 + self.y2) / 2.0)
+
+
+def box_iou(first: BoxGeometryMixin, second: BoxGeometryMixin) -> float:
+    """Return the Intersection over Union of two boxes.
+
+    IoU is the standard measure of "are these two boxes describing the same
+    thing": the area they share, divided by the area they jointly cover. It is
+    ``1.0`` for identical boxes, ``0.0`` for disjoint ones, and scale-free —
+    two boxes overlapping by half give ``0.33`` whether they are 10 pixels wide
+    or 1000.
+
+    Written as a free function rather than a method because the operation is
+    *symmetric*: ``box_iou(a, b) == box_iou(b, a)``, and neither argument is
+    privileged. Writing ``a.iou(b)`` would imply an asymmetry that does not
+    exist. This is the rule set out in DECISIONS D-014.
+
+    Args:
+        first: Any object exposing pixel corners.
+        second: Any object exposing pixel corners.
+
+    Returns:
+        Overlap ratio in ``[0.0, 1.0]``.
+    """
+    # The intersection rectangle is the overlap along each axis independently.
+    # When the boxes miss on an axis, the "overlap" comes out negative, so it
+    # is clamped — otherwise two disjoint boxes would multiply two negatives
+    # into a positive area and report overlap where there is none.
+    overlap_width = min(first.x2, second.x2) - max(first.x1, second.x1)
+    overlap_height = min(first.y2, second.y2) - max(first.y1, second.y1)
+    if overlap_width <= 0.0 or overlap_height <= 0.0:
+        return 0.0
+
+    intersection = overlap_width * overlap_height
+    # Union counts the shared region once, not twice.
+    union = first.area + second.area - intersection
+    if union <= 0.0:
+        # Both boxes are degenerate. Undefined rather than infinite; reporting
+        # zero keeps callers from having to special-case a NaN.
+        return 0.0
+    return intersection / union

@@ -56,31 +56,35 @@ dataset exists — see [PROJECT_CONTEXT.md](PROJECT_CONTEXT.md).
 
 ---
 
-## Milestone 3 — Error analysis · **Planned**
+## Milestone 3 — Error analysis · **Completed**
 
 The first genuinely diagnostic capability, and the reason the inference layer
 was shaped as it is.
 
-Scope:
+| Item | Status |
+| --- | --- |
+| Box IoU (`utils/geometry.box_iou`) | Completed |
+| Generic matching engine (`utils/matching.py`) | Completed |
+| Five-outcome failure classification | Completed |
+| Per-image diagnosis | Completed |
+| Dataset summary + per-class statistics | Completed |
+| Worst-image ranking | Completed |
+| CLI (`python -m app.diagnosis`) | Completed |
+| Test suite | Completed |
+| Verified on a real model and dataset | Completed |
 
-- Box IoU computation between predictions and ground truth.
-- A matching strategy pairing predictions with labels.
-- Classification of each outcome into: false positive, false negative, wrong
-  class, poor localisation.
-- Per-image and per-class failure summaries.
-- Persisted failure records for later stages.
+The three open design questions were resolved:
 
-Open design questions to resolve **before** implementation:
+1. *Weak overlap, correct class* — reported as **one poor localisation**, not a
+   false positive plus a miss (D-017). Explanation beats benchmark parity.
+2. *Matching strategy* — greedy on **similarity**, not confidence (D-018).
+3. *Threshold or sweep* — a single configurable threshold, plus a second
+   low-overlap pass. A sweep is a reporting feature, not a matching one, and
+   was left out.
 
-1. When a prediction overlaps a label below the match threshold with the
-   correct class, is that one poor-localisation failure, or a false positive
-   *and* a false negative? This choice shapes every downstream count.
-2. Greedy confidence-ordered matching, or optimal assignment? Greedy is simpler
-   and conventional; optimal is more correct in crowded scenes.
-3. Should match IoU be a single threshold or a sweep?
-
-The annotation model already carries polygons (D-016), so mask-based analysis
-is a later addition to this milestone rather than a redesign of it.
+**Deliberately excluded:** mask IoU, visual explanation, clustering,
+recommendations, dashboard, LLM. Mask support is architecture-ready — the
+matcher takes a similarity function — but no mask overlap is implemented.
 
 Depends on: Milestone 2.
 
@@ -133,8 +137,5 @@ Depends on: Milestone 3 at minimum.
 
 Not milestones, but they gate progress:
 
-| Blocked item | Requires |
-| --- | --- |
-| Executing batch inference | A dataset |
-| Executing metrics validation | A dataset and a model |
-| All of Milestone 3 | A model and a labelled dataset |
+Nothing is currently blocked. A model and dataset are both available, and every
+implemented capability has been exercised against them.

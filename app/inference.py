@@ -134,6 +134,62 @@ def _safe_float(source: Any, attribute: str) -> float | None:
         return None
 
 
+def _extract_metric_family(
+    container: Any, class_names: dict[int, str]
+) -> tuple[dict[str, float], dict[str, dict[str, float]]]:
+    """Read one family of metrics — boxes or masks — from a library object.
+
+    Boxes and masks are reported through identically shaped containers, so one
+    reader serves both. Writing it twice would be duplication that drifts the
+    moment either shape changes.
+
+    Args:
+        container: The library's per-family metrics object.
+        class_names: Class id to name mapping, for labelling per-class rows.
+
+    Returns:
+        ``(overall, per_class)``. Missing values are simply absent from the
+        dictionaries rather than raising, so a partial result stays usable.
+    """
+    overall: dict[str, float] = {}
+    for key, attribute in (
+        ("precision", "mp"),
+        ("recall", "mr"),
+        ("map50", "map50"),
+        ("map50_95", "map"),
+    ):
+        value = _safe_float(container, attribute)
+        if value is not None:
+            overall[key] = value
+
+    per_class: dict[str, dict[str, float]] = {}
+    # `ap_class_index` maps each per-class row back to its class id. The arrays
+    # are positional, so they must be read together or not at all — the same
+    # alignment hazard as the detection tensors (D-011).
+    indices = getattr(container, "ap_class_index", None)
+    if indices is not None:
+        for row, class_id in enumerate(indices):
+            label = class_names.get(int(class_id), f"id:{int(class_id)}")
+            row_metrics: dict[str, float] = {}
+            for key, attribute in (
+                ("precision", "p"),
+                ("recall", "r"),
+                ("map50", "ap50"),
+                ("map50_95", "ap"),
+            ):
+                series = getattr(container, attribute, None)
+                if series is None or row >= len(series):
+                    continue
+                try:
+                    row_metrics[key] = float(series[row])
+                except (TypeError, ValueError):
+                    continue
+            if row_metrics:
+                per_class[label] = row_metrics
+
+    return overall, per_class
+
+
 @dataclass(frozen=True)
 class ValidationMetrics:
     """Evaluation results, normalised away from any library's object model.
@@ -146,12 +202,22 @@ class ValidationMetrics:
     Every field is optional because a metric a future library version stops
     reporting should surface as "unavailable", not as an exception.
 
+    A segmentation model reports two families of metrics: one for bounding
+    boxes and one for masks. Both are captured. The unprefixed fields are box
+    metrics, which every detector produces; the ``mask_`` fields stay ``None``
+    for a detection-only model.
+
     Attributes:
-        precision: Mean precision across classes.
-        recall: Mean recall across classes.
-        map50: Mean average precision at IoU 0.50.
-        map50_95: Mean average precision averaged over IoU 0.50-0.95.
-        per_class: Class name to its individual metrics.
+        precision: Mean box precision across classes.
+        recall: Mean box recall across classes.
+        map50: Box mean average precision at IoU 0.50.
+        map50_95: Box mean average precision averaged over IoU 0.50-0.95.
+        per_class: Class name to its individual box metrics.
+        mask_precision: Mean mask precision, or ``None`` if not a segmenter.
+        mask_recall: Mean mask recall, or ``None``.
+        mask_map50: Mask mAP at IoU 0.50, or ``None``.
+        mask_map50_95: Mask mAP averaged over IoU 0.50-0.95, or ``None``.
+        mask_per_class: Class name to its individual mask metrics.
         artefacts_dir: Where plots and the confusion matrix were written.
     """
 
@@ -160,7 +226,17 @@ class ValidationMetrics:
     map50: float | None = None
     map50_95: float | None = None
     per_class: dict[str, dict[str, float]] = field(default_factory=dict)
+    mask_precision: float | None = None
+    mask_recall: float | None = None
+    mask_map50: float | None = None
+    mask_map50_95: float | None = None
+    mask_per_class: dict[str, dict[str, float]] = field(default_factory=dict)
     artefacts_dir: Path | None = None
+
+    @property
+    def has_mask_metrics(self) -> bool:
+        """Return whether the evaluated model reported mask metrics."""
+        return self.mask_map50 is not None
 
     @classmethod
     def from_raw(
@@ -188,38 +264,28 @@ class ValidationMetrics:
         if box is None:
             return cls(artefacts_dir=artefacts_dir)
 
-        per_class: dict[str, dict[str, float]] = {}
         names = class_names or {}
-        # `ap_class_index` maps each per-class row back to its class id. The
-        # arrays are positional, so they must be read together or not at all —
-        # the same alignment hazard as the detection tensors (D-011).
-        indices = getattr(box, "ap_class_index", None)
-        if indices is not None:
-            for row, class_id in enumerate(indices):
-                label = names.get(int(class_id), f"id:{int(class_id)}")
-                row_metrics: dict[str, float] = {}
-                for key, attribute in (
-                    ("precision", "p"),
-                    ("recall", "r"),
-                    ("map50", "ap50"),
-                    ("map50_95", "ap"),
-                ):
-                    series = getattr(box, attribute, None)
-                    if series is None or row >= len(series):
-                        continue
-                    try:
-                        row_metrics[key] = float(series[row])
-                    except (TypeError, ValueError):
-                        continue
-                if row_metrics:
-                    per_class[label] = row_metrics
+        box_overall, box_per_class = _extract_metric_family(box, names)
+
+        # A segmentation model reports a second family for masks. Its absence
+        # is normal — a detection model has none — so it is read the same way
+        # and simply yields empty results.
+        mask = getattr(raw, "seg", None)
+        mask_overall, mask_per_class = (
+            _extract_metric_family(mask, names) if mask is not None else ({}, {})
+        )
 
         return cls(
-            precision=_safe_float(box, "mp"),
-            recall=_safe_float(box, "mr"),
-            map50=_safe_float(box, "map50"),
-            map50_95=_safe_float(box, "map"),
-            per_class=per_class,
+            precision=box_overall.get("precision"),
+            recall=box_overall.get("recall"),
+            map50=box_overall.get("map50"),
+            map50_95=box_overall.get("map50_95"),
+            per_class=box_per_class,
+            mask_precision=mask_overall.get("precision"),
+            mask_recall=mask_overall.get("recall"),
+            mask_map50=mask_overall.get("map50"),
+            mask_map50_95=mask_overall.get("map50_95"),
+            mask_per_class=mask_per_class,
             artefacts_dir=artefacts_dir,
         )
 
@@ -560,38 +626,68 @@ class Detector:
 # ---------------------------------------------------------------------------
 # Presentation helpers
 # ---------------------------------------------------------------------------
-def format_metrics(metrics: ValidationMetrics) -> str:
-    """Render validation metrics as a readable report."""
-    lines = ["", "Validation metrics", "-" * 64]
-
-    overall = (
-        ("Precision", metrics.precision),
-        ("Recall", metrics.recall),
-        ("mAP@50", metrics.map50),
-        ("mAP@50-95", metrics.map50_95),
-    )
+def _format_metric_family(
+    title: str,
+    overall: tuple[tuple[str, float | None], ...],
+    per_class: dict[str, dict[str, float]],
+) -> list[str]:
+    """Render one family of metrics as report lines."""
+    lines = [f"  {title}"]
     for label, value in overall:
         rendered = f"{value:.4f}" if value is not None else "not reported"
-        lines.append(f"  {label:<12} {rendered}")
+        lines.append(f"    {label:<12} {rendered}")
 
-    if metrics.per_class:
+    if per_class:
         lines.append("")
         lines.append(
-            f"  {'CLASS':<24} {'PREC':>7} {'RECALL':>7} {'mAP50':>7} {'mAP50-95':>9}"
+            f"    {'CLASS':<20} {'PREC':>7} {'RECALL':>7} {'mAP50':>7} {'mAP50-95':>9}"
         )
-        for name, values in sorted(metrics.per_class.items()):
+        for name, values in sorted(per_class.items()):
             lines.append(
-                f"  {name:<24} "
+                f"    {name:<20} "
                 f"{values.get('precision', float('nan')):>7.3f} "
                 f"{values.get('recall', float('nan')):>7.3f} "
                 f"{values.get('map50', float('nan')):>7.3f} "
                 f"{values.get('map50_95', float('nan')):>9.3f}"
             )
+    return lines
+
+
+def format_metrics(metrics: ValidationMetrics) -> str:
+    """Render validation metrics as a readable report.
+
+    Mask metrics are shown only when the evaluated model reported them, so a
+    detection model's report is not padded with empty rows.
+    """
+    lines = ["", "Validation metrics", "-" * 66]
+    lines += _format_metric_family(
+        "BOX",
+        (
+            ("Precision", metrics.precision),
+            ("Recall", metrics.recall),
+            ("mAP@50", metrics.map50),
+            ("mAP@50-95", metrics.map50_95),
+        ),
+        metrics.per_class,
+    )
+
+    if metrics.has_mask_metrics:
+        lines.append("")
+        lines += _format_metric_family(
+            "MASK",
+            (
+                ("Precision", metrics.mask_precision),
+                ("Recall", metrics.mask_recall),
+                ("mAP@50", metrics.mask_map50),
+                ("mAP@50-95", metrics.mask_map50_95),
+            ),
+            metrics.mask_per_class,
+        )
 
     if metrics.artefacts_dir is not None:
         lines.append("")
         lines.append(f"  Artefacts: {metrics.artefacts_dir}")
-    lines.append("-" * 64)
+    lines.append("-" * 66)
     lines.append("")
     return "\n".join(lines)
 

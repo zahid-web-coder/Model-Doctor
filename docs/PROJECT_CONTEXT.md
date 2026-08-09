@@ -3,7 +3,7 @@
 **This document is the project's source of truth.** Where any other document
 disagrees with it, this one wins and the other should be corrected.
 
-Last updated: 2026-08-08 (Milestone 2 + quality review + annotation-model refactor)
+Last updated: 2026-08-09 (Milestone 3 — diagnosis engine)
 
 ---
 
@@ -29,26 +29,29 @@ architectural concern but is **not implemented**.
 | Shared box geometry | **Completed** |
 | Generic annotation model (box + polygon) | **Completed** |
 | YOLO inference + structured output | **Completed** |
-| Batch inference over a split | **Completed** (code); unrun — needs a dataset |
-| Metrics validation | **Completed** (code); unrun — needs a dataset |
+| Batch inference over a split | **Completed** |
+| Metrics validation (box + mask) | **Completed** |
 | Milestone 2 quality review | **Completed** |
-| Error analysis | **Planned** — Milestone 3 |
+| Box IoU + generic matching engine | **Completed** |
+| Failure classification (5 outcomes) | **Completed** |
+| Per-image and dataset diagnosis | **Completed** |
+| Mask IoU / segmentation analysis | **Planned** — architecture-ready, not built |
 | Everything beyond error analysis | **Planned** — see [ROADMAP.md](ROADMAP.md) |
 
 ### Verified by execution
 
-- Full test suite passes.
-- Lint passes with zero findings under the project ruleset.
-- Single-image inference runs end to end and writes an annotated image.
+- Full test suite passes; lint clean under the project ruleset.
+- Inference, validation, and diagnosis all run against a real trained model and
+  a real labelled dataset.
+- Validation reports both box and mask metric families.
+- The diagnosis engine accounts for every prediction and every ground truth
+  exactly once — checked on real data, not only in unit tests.
 - Every missing-resource path exits cleanly with an actionable message and a
   non-zero exit code.
 
 ### Not yet verified by execution
 
-Batch inference and metrics validation are implemented and unit-tested, but
-have never been run against a real dataset because none is available yet. They
-are **written, not proven**. This distinction is deliberate and should be
-maintained in status reporting until a dataset exists.
+Nothing implemented is currently unproven.
 
 ---
 
@@ -58,8 +61,8 @@ The project depends on two resources it does not own and does not create:
 
 | Resource | Expected location | Status |
 | --- | --- | --- |
-| Trained detector weights | `models/` (any `*.pt`) | **Not yet available** — a YOLO-nano *segmentation* model is being trained |
-| Dataset + descriptor | `datasets/` incl. `data.yaml` | **Audited, not yet placed** — see the note below |
+| Trained detector weights | `models/` (any `*.pt`) | **Available** — a nano segmentation model |
+| Dataset + descriptor | `datasets/` incl. `data.yaml` | **Available** — a 2-class segmentation dataset |
 
 The codebase is written to operate in this state. Absence of a resource is a
 supported condition, reported through the health check, not an error state that
@@ -143,3 +146,17 @@ most often get violated:
 | What are the process rules? | [DEVELOPMENT_RULES.md](DEVELOPMENT_RULES.md) |
 | How should code be written? | [CODING_STANDARDS.md](CODING_STANDARDS.md) |
 | What changed, and when? | [CHANGELOG.md](CHANGELOG.md) |
+
+---
+
+## Reading the diagnosis numbers
+
+The failure counts this project reports **do not equal those implied by mAP**,
+by design (D-017):
+
+- A prediction that lands on an object but overlaps it weakly is reported as
+  **one** poor localisation, not as a false positive plus a false negative.
+- Diagnosis runs at the configured confidence threshold; mAP integrates across
+  all thresholds.
+
+Both are correct answers to different questions. Do not compare them directly.

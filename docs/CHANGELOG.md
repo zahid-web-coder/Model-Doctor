@@ -209,3 +209,59 @@ pre-empt them.
   independent audit exactly (1,126 / 1,025), zero degenerate boxes, every
   ground-truth annotation correctly carrying no confidence.
 - Before this change the same dataset yielded **0** annotations.
+
+---
+
+## Milestone 3 — Diagnosis Engine · 2026-08-09
+
+The first genuinely diagnostic capability: explaining *why* predictions fail,
+rather than reporting how much they do.
+
+### Added
+
+- `utils/geometry.box_iou()` — overlap between two boxes, as a free function
+  because the operation is symmetric (D-014, decided in advance).
+- `utils/matching.py` — generic one-to-one assignment between two sets of
+  annotations. Independent of YOLO, of failure taxonomies, and of what an
+  unmatched prediction means. Greedy on similarity; ties broken deterministically
+  so diagnoses are reproducible (D-018). The comparison function is a
+  **parameter** — the seam mask IoU will use, exercised by tests today.
+- `app/diagnosis.py` — the diagnosis engine.
+  - `Outcome`: correct, wrong class, poor localisation, false positive,
+    false negative.
+  - `Finding`: one outcome plus **both** annotations and their overlap, so every
+    conclusion carries its evidence.
+  - `ImageDiagnosis`, `DatasetDiagnosis`, `ClassStatistics`.
+  - `worst_images()` — turns "recall is low" into a ranked list of images to
+    open.
+  - CLI: `python -m app.diagnosis --split test`.
+- `config.LOCALIZATION_IOU_FLOOR` — the floor for the second matching pass.
+- `tests/test_matching.py`, `tests/test_diagnosis.py` — 38 tests covering IoU
+  edge cases (perfect, partial, none, contained, touching edges and corners,
+  degenerate), matching behaviour, all five outcomes, and the accounting
+  invariant.
+
+### Design decisions
+
+- **D-017** — a weak overlap with the correct class is **one poor localisation**,
+  not a false positive plus a false negative. Explanation over benchmark parity.
+  Consequence: these FP/FN counts will not equal mAP's, and that is documented
+  wherever the numbers appear.
+- **D-018** — matching is greedy on *similarity*, not confidence, because the
+  question is which prediction describes which object, not how the model ranked
+  its own guesses.
+
+### Not implemented, deliberately
+
+Mask IoU, visual explanation, clustering, recommendations, dashboard, LLM.
+Mask support is architecture-ready — the matcher takes a similarity function —
+but nothing computes mask overlap.
+
+### Verified
+
+- Lint clean; **91 tests pass** (53 from Milestone 2, unchanged, plus 38 new).
+- Milestone 2 capabilities confirmed intact: inference, validation (box and
+  mask metrics identical to before), polygon parsing, segmentation support.
+- Run end to end against the real model and the real test split: every
+  prediction and every ground truth accounted for exactly once, with no double
+  counting.

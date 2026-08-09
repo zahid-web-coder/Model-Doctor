@@ -103,10 +103,24 @@ CONFIDENCE_THRESHOLD: Final[float] = float(os.getenv("MD_CONF", "0.25"))
 # IoU threshold used by Non-Maximum Suppression to merge duplicate boxes.
 NMS_IOU_THRESHOLD: Final[float] = float(os.getenv("MD_NMS_IOU", "0.45"))
 
-# IoU at or above which a prediction is considered to be "on" a ground-truth
-# box. Used by the (future) error-analysis module to separate a genuine miss
-# from a merely badly-localised hit. 0.5 is the community default (COCO mAP50).
+# IoU at or above which a prediction counts as landing on a ground-truth box.
+# 0.5 is the community default (COCO mAP50).
 MATCH_IOU_THRESHOLD: Final[float] = float(os.getenv("MD_MATCH_IOU", "0.50"))
+
+# IoU floor for the diagnosis engine's second matching pass. A prediction that
+# overlaps a ground-truth box by at least this much, but less than
+# MATCH_IOU_THRESHOLD, is reported as poor localisation rather than as a false
+# positive plus a false negative.
+#
+# This is a deliberate divergence from how mAP counts errors, and the reason
+# the project exists: "found it, outlined it badly" is an explanation, whereas
+# "one spurious detection and one miss" describes a single object as two
+# unrelated failures. See DECISIONS D-017.
+#
+# 0.10 is low on purpose. Set it too high and genuinely wild predictions get
+# excused as near-misses; too low and unrelated objects pair up. Overlap this
+# small still means the model looked in roughly the right place.
+LOCALIZATION_IOU_FLOOR: Final[float] = float(os.getenv("MD_LOC_IOU", "0.10"))
 
 # Longest-side size images are letterboxed to before entering the network.
 # Must match what the model was trained at, or accuracy silently degrades.
