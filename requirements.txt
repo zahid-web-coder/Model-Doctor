@@ -25,6 +25,7 @@ matplotlib>=3.8.0         # Metric plots and visual diagnostics
 scikit-learn>=1.4.0       # Clustering/metrics for later failure-grouping work
 streamlit>=1.30.0         # Developer dashboard (later milestone)
 plotly>=5.18.0            # Interactive charts in the dashboard
+open_clip_torch>=2.24.0   # CLIP embeddings for failure feature extraction
 
 # --- Configuration ---
 pyyaml>=6.0               # Parsing the YOLO data.yaml descriptor

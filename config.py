@@ -137,6 +137,17 @@ IMAGE_SIZE: Final[int] = int(os.getenv("MD_IMGSZ", "640"))
 MAX_DETECTIONS: Final[int] = int(os.getenv("MD_MAX_DET", "300"))
 
 # ---------------------------------------------------------------------------
+# Feature extraction
+# ---------------------------------------------------------------------------
+# CLIP encoder used to turn failed regions into comparable vectors. ViT-B-32 is
+# the smallest widely-used variant: fast on CPU, ~600MB of weights, and its
+# 512-dimensional output is well within what clustering handles without
+# dimensionality reduction. Larger variants give marginally better separation
+# at several times the download and compute.
+CLIP_MODEL: Final[str] = os.getenv("MD_CLIP_MODEL", "ViT-B-32")
+CLIP_PRETRAINED: Final[str] = os.getenv("MD_CLIP_PRETRAINED", "laion2b_s34b_b79k")
+
+# ---------------------------------------------------------------------------
 # Device selection
 # ---------------------------------------------------------------------------
 DEVICE_OVERRIDE: Final[str] = os.getenv("MD_DEVICE", "").strip()

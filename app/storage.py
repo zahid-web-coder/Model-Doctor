@@ -48,7 +48,7 @@ logger = get_logger(__name__)
 # Bumped when the schema changes in a way that existing readers must know
 # about. Recorded in the database so a consumer can detect a mismatch instead
 # of failing on a missing column.
-SCHEMA_VERSION: int = 1
+SCHEMA_VERSION: int = 2
 
 SCHEMA_STATEMENTS: tuple[str, ...] = (
     """
@@ -115,6 +115,20 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
         truth_polygon  TEXT
     )
     """,
+    # Added at schema version 2. A separate table rather than columns on
+    # `findings`, so the published contract other developers query stays exactly
+    # as it was (D-020). A finding has at most one embedding per model.
+    """
+    CREATE TABLE IF NOT EXISTS embeddings (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        finding_id  INTEGER NOT NULL REFERENCES findings(id) ON DELETE CASCADE,
+        run_id      INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+        model_name  TEXT    NOT NULL,
+        dimensions  INTEGER NOT NULL,
+        vector      BLOB    NOT NULL,
+        UNIQUE (finding_id, model_name)
+    )
+    """,
     # Indexes chosen for the queries a dashboard actually issues: filter by
     # run, then by outcome or class. Without them every filter is a full scan.
     "CREATE INDEX IF NOT EXISTS idx_images_run ON images(run_id)",
@@ -122,6 +136,7 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
     "CREATE INDEX IF NOT EXISTS idx_findings_image ON findings(image_id)",
     "CREATE INDEX IF NOT EXISTS idx_findings_outcome ON findings(run_id, outcome)",
     "CREATE INDEX IF NOT EXISTS idx_findings_class ON findings(run_id, class_name)",
+    "CREATE INDEX IF NOT EXISTS idx_embeddings_run ON embeddings(run_id)",
 )
 
 
@@ -237,6 +252,18 @@ def initialise_database(connection: sqlite3.Connection) -> None:
         connection.execute(
             "INSERT INTO schema_info (version, applied_at) VALUES (?, ?)",
             (SCHEMA_VERSION, _timestamp()),
+        )
+    elif existing["version"] < SCHEMA_VERSION:
+        # Every change so far has been a new table, which the statements above
+        # have already created. Recording the new version is all that remains.
+        # A future change that is not purely additive must migrate here rather
+        # than simply bumping the number.
+        connection.execute(
+            "UPDATE schema_info SET version = ?, applied_at = ?",
+            (SCHEMA_VERSION, _timestamp()),
+        )
+        logger.info(
+            "Upgraded database schema to version %d (additive)", SCHEMA_VERSION
         )
 
 
@@ -560,3 +587,151 @@ def format_run_summary(runs: Sequence[RunRecord]) -> str:
     lines.append("-" * 78)
     lines.append("")
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Embeddings (schema version 2)
+# ---------------------------------------------------------------------------
+@dataclass(frozen=True)
+class EmbeddingRow:
+    """One stored embedding, joined to the finding it describes.
+
+    Carries the finding's outcome and class so a consumer clustering these
+    vectors does not need a second query to label them.
+    """
+
+    finding_id: int
+    run_id: int
+    outcome: str
+    class_name: str
+    model_name: str
+    dimensions: int
+    vector: tuple[float, ...]
+
+
+def save_embeddings(
+    connection: sqlite3.Connection,
+    run_id: int,
+    model_name: str,
+    vectors: Iterable[tuple[int, Sequence[float]]],
+) -> int:
+    """Store embeddings for a run's findings.
+
+    Vectors are written as raw float32 bytes rather than JSON: 512 floats cost
+    2 KB exactly, with no precision loss and no parsing on read.
+
+    Re-running for the same finding and model replaces the previous vector.
+    Embeddings are derived data — unlike a run, recomputing one is a correction,
+    not a second observation, so replacing is right here where it would be wrong
+    for runs (D-021).
+
+    Args:
+        connection: An open connection.
+        run_id: Owning run.
+        model_name: Identifier of the model that produced these vectors, stored
+            so vectors from different encoders are never mixed in one cluster.
+        vectors: Pairs of ``(finding_id, vector)``.
+
+    Returns:
+        Number of embeddings written.
+    """
+    import array
+
+    rows = []
+    for finding_id, vector in vectors:
+        payload = array.array("f", vector).tobytes()
+        rows.append((finding_id, run_id, model_name, len(vector), payload))
+
+    if rows:
+        connection.executemany(
+            """
+            INSERT INTO embeddings (finding_id, run_id, model_name, dimensions, vector)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT (finding_id, model_name) DO UPDATE SET
+                vector = excluded.vector,
+                dimensions = excluded.dimensions,
+                run_id = excluded.run_id
+            """,
+            rows,
+        )
+    return len(rows)
+
+
+def load_embeddings(
+    connection: sqlite3.Connection, run_id: int, model_name: str | None = None
+) -> list[EmbeddingRow]:
+    """Return a run's embeddings with their findings' outcome and class.
+
+    Args:
+        connection: An open connection.
+        run_id: Which run to read.
+        model_name: Restrict to one encoder. Recommended whenever more than one
+            has been used, since vectors from different encoders are not
+            comparable.
+
+    Returns:
+        Embeddings in finding order.
+    """
+    import array
+
+    sql = """
+        SELECT e.finding_id, e.run_id, e.model_name, e.dimensions, e.vector,
+               f.outcome, f.class_name
+        FROM embeddings e JOIN findings f ON f.id = e.finding_id
+        WHERE e.run_id = ?
+    """
+    params: list[object] = [run_id]
+    if model_name is not None:
+        sql += " AND e.model_name = ?"
+        params.append(model_name)
+    sql += " ORDER BY e.finding_id"
+
+    records = []
+    for row in connection.execute(sql, params).fetchall():
+        values = array.array("f")
+        values.frombytes(row["vector"])
+        records.append(
+            EmbeddingRow(
+                finding_id=row["finding_id"],
+                run_id=row["run_id"],
+                outcome=row["outcome"],
+                class_name=row["class_name"],
+                model_name=row["model_name"],
+                dimensions=row["dimensions"],
+                vector=tuple(values),
+            )
+        )
+    return records
+
+
+def load_findings_for_embedding(
+    connection: sqlite3.Connection, run_id: int, failures_only: bool = True
+) -> list[sqlite3.Row]:
+    """Return findings joined to their image, ready for region extraction.
+
+    Reads from the database rather than from in-memory diagnosis objects, so
+    feature extraction is a pass over an already-saved run. That means it needs
+    no changes to the write path, and can be re-run over historical runs.
+
+    Args:
+        connection: An open connection.
+        run_id: Which run to read.
+        failures_only: Restrict to findings that represent mistakes, which is
+            what the roadmap asks embeddings to cover.
+
+    Returns:
+        Rows carrying the finding's geometry plus the image path and size.
+    """
+    sql = """
+        SELECT f.id AS finding_id, f.outcome, f.class_name,
+               f.pred_x1, f.pred_y1, f.pred_x2, f.pred_y2,
+               f.truth_x1, f.truth_y1, f.truth_x2, f.truth_y2,
+               f.truth_polygon,
+               i.path, i.width, i.height
+        FROM findings f JOIN images i ON i.id = f.image_id
+        WHERE f.run_id = ? AND i.error IS NULL
+    """
+    if failures_only:
+        sql += " AND f.outcome != 'correct'"
+    sql += " ORDER BY f.id"
+    return connection.execute(sql, (run_id,)).fetchall()

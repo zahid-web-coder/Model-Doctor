@@ -3,7 +3,7 @@
 **This document is the project's source of truth.** Where any other document
 disagrees with it, this one wins and the other should be corrected.
 
-Last updated: 2026-08-09 (Milestone 3 + persistence layer)
+Last updated: 2026-08-10 (Week 5 — feature extraction)
 
 ---
 
@@ -35,8 +35,9 @@ architectural concern but is **not implemented**.
 | Box IoU + generic matching engine | **Completed** |
 | Failure classification (5 outcomes) | **Completed** |
 | Per-image and dataset diagnosis | **Completed** |
-| SQLite persistence + published schema | **Completed** |
-| Mask IoU / segmentation analysis | **Planned** — architecture-ready, not built |
+| SQLite persistence + published schema | **Completed** — schema version 2 |
+| Feature extraction (CLIP embeddings) | **Completed** |
+| Mask IoU / segmentation analysis | **Planned (deferred)** — see D-022; a known, documented limitation |
 | Everything beyond error analysis | **Planned** — see [ROADMAP.md](ROADMAP.md) |
 
 ### Verified by execution

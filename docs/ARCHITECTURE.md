@@ -171,6 +171,19 @@ Lives in `app/` because it depends on the diagnosis domain types; a `utils`
 module importing `app` would be the first upward dependency in the project
 (D-019).
 
+### `app/features.py` — Completed
+
+Encodes failed regions into vectors, so that failures become comparable to each
+other. Clustering, explanation, and recommendation are **not** here.
+
+- Runs as a pass over a **saved run**, so the write path needed no changes and
+  historical runs can be processed without re-inference (D-023).
+- `region_from_box` is a **parameter**. A polygon extractor slots in for mask
+  support with no other change; the outlines are already persisted.
+- The encoder is **injected**, so the suite tests the whole pipeline without
+  downloading a several-hundred-megabyte checkpoint.
+- Vectors are L2-normalised and stored as float32 bytes in `embeddings`.
+
 ### `app/inference.py` — Completed
 
 Converts a detector into structured, inspectable data.
@@ -217,6 +230,10 @@ Converts a detector into structured, inspectable data.
                             ▼  --save
                     db/model_doctor.db
               runs · images · findings   ◄── see SCHEMA.md
+                            │
+                            ▼  app.features
+                        embeddings
+              one vector per failed region
 ```
 
 Predictions and ground truth are the *same type* — `Detection` is an
@@ -261,6 +278,8 @@ testable.
 | Additional detector family | New module producing `Detection` | Planned |
 | Failure classification | `app/diagnosis.py` | **Available** |
 | Segmentation analysis | Pass a mask similarity fn to the matcher | Planned |
+| Mask-based region crops | Pass a polygon extractor to `app.features` | Planned |
+| Failure clustering | Consumes the `embeddings` table | Planned |
 | Prediction outlines | Read masks in `_extract_detections` | Planned |
 | New image format | One entry in `config.IMAGE_EXTENSIONS` | Available |
 | Alternative output location | `MD_*` environment variables | Available |

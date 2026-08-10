@@ -326,3 +326,78 @@ No tables exist for them — they arrive with the milestone that produces them.
 - **Every example query in SCHEMA.md was executed verbatim against the live
   database.** All ten valid. Documentation drift would surface as a failure
   rather than as silent staleness.
+
+---
+
+## Week 5 — Feature Extraction · 2026-08-10
+
+Failures now become vectors, so they can be compared to one another. That is
+the input the failure-grouping milestone needs; nothing here clusters,
+explains, or recommends.
+
+### Added
+
+- `app/features.py` — encodes each failed region into a vector (D-023).
+  - Runs as a pass over a **saved run** rather than over in-memory diagnoses,
+    so the published write path needed no changes and historical runs can be
+    processed without re-running inference.
+  - `region_from_box` derives the crop from a finding's boxes, preferring
+    ground truth so a false positive encodes what the model *thought* it saw
+    and a false negative encodes what it *missed*. Regions are padded 15%,
+    because the surroundings are frequently the explanation.
+  - `ClipBackend` loads CLIP lazily and L2-normalises its output, so cosine
+    similarity is a plain dot product for any consumer.
+  - CLI: `python -m app.features --run N`.
+- `embeddings` table — **schema version 2**. `finding_id`, `run_id`,
+  `model_name`, `dimensions`, and the vector as raw float32 bytes. Unique on
+  `(finding_id, model_name)`.
+- `config.CLIP_MODEL` / `config.CLIP_PRETRAINED`.
+- `open_clip_torch` dependency.
+- `tests/test_features.py` — 19 tests covering region extraction, the database
+  pass, batching, encoder isolation, cascade deletes, and the v1→v2 upgrade.
+
+### Changed
+
+- `SCHEMA_VERSION` 1 → 2, with an in-place upgrade path. Opening an existing
+  version 1 database creates the new table and preserves every existing row.
+- `ImageDiagnosis` already carried image dimensions from the previous
+  milestone; no further change was needed.
+
+### Unchanged — deliberately
+
+**`runs`, `images` and `findings` were not modified.** Verified column-by-column
+after the upgrade. Every query written against schema version 1 returns exactly
+the same rows, which is the stability guarantee `SCHEMA.md` §6 makes and this
+milestone is the first demonstration of it.
+
+### Not implemented
+
+Clustering, explanation, recommendations, mask-based region crops. Prediction
+outlines are still not extracted from model output.
+
+### Deferred and recorded
+
+- **D-022** — mask-level diagnosis, with the measured gap, three schema options
+  (`mask_findings` preferred), and what is already in place versus genuinely
+  missing. Added to the roadmap as Milestone 8.5.
+
+### Verified
+
+- Lint clean; **130 tests pass** (111 from the previous milestone, unchanged,
+  plus 19 new). No existing test was edited.
+- No dependency cycles: `utils` does not import `app`, and neither
+  `app.diagnosis` nor `app.storage` imports `app.features`.
+- Real CLIP run against the real model and dataset: 512 dimensions, 26 of 27
+  failures embedded, vectors L2-normalised to 1.0000 and all finite.
+- The single skipped finding was a `door_frame` of 3.3 x 180.7 pixels, rejected
+  by the minimum-region guard — a live instance of the thin-structure problem
+  D-022 describes.
+
+### Observed, and not yet explained
+
+Across those 26 embeddings, nearest-neighbour class agreement was at chance
+(50% against a 62% majority baseline). The sample is small, and `door` and
+`door_frame` crops are close to the same pixels. Whether this matters depends
+on what clustering is *for* — grouping by cause rather than by label may be
+desirable. Recorded in D-023 as an open question for the clustering milestone
+rather than assumed either way.

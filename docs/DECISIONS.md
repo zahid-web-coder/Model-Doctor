@@ -571,3 +571,134 @@ regression when they may simply be different models.
 **Trade-off.** The database grows with every run and nothing prunes it.
 Acceptable — rows are small, and deleting a run cascades cleanly to its images
 and findings.
+
+---
+
+## D-022 — Mask-level diagnosis is deferred, not abandoned
+
+**Status:** Accepted (deferral) · Recorded during Week 5 planning
+
+**Decision.** Mask-based failure diagnosis is deferred until after the core
+reasoning modules are complete. It is scheduled as a post-roadmap enhancement,
+not dropped. The frozen schema and backend contract are **not** modified now.
+
+**The gap being deferred.** Measured on the real segmentation model and test
+split, box-level diagnosis reports the two classes failing almost identically,
+while the model's own mask metrics say otherwise:
+
+| Signal | `door` | `door_frame` |
+| --- | --- | --- |
+| Diagnosis engine, mean box IoU | 0.878 | 0.877 |
+| Mask mAP50-95 | 0.599 | **0.246** |
+| Box mAP50-95 | 0.630 | 0.521 |
+
+The model locates door frames about as well as it locates doors; what it cannot
+do is trace their outline. A door frame is a thin rectangular annulus, so a few
+pixels of boundary error destroys mask IoU while barely moving box IoU.
+
+**Consequence, stated plainly: for a segmentation dataset, the diagnosis engine
+currently under-reports the dominant failure mode of thin-structure classes.**
+Its box-level findings are correct; they are simply blind to this axis.
+
+**Why defer rather than fix now.**
+
+1. The schema was published this week and a second developer is building
+   against it. Mask findings cannot be added without either altering `findings`
+   (breaking D-020 and that contract) or introducing a new table and a schema
+   version bump. Doing that mid-onboarding trades a real correctness
+   improvement for a real coordination cost.
+2. The core reasoning modules — feature extraction, clustering, root-cause
+   analysis, recommendations — are not finished. Adding a second diagnosis axis
+   before they exist widens the surface each of them must handle.
+3. The gap is *known and documented*, which is materially different from
+   unknown. A documented limitation can be stated alongside results; an
+   undiscovered one silently misleads.
+
+**Schema options, recorded now so the analysis is not repeated later.**
+
+| Option | Cost |
+| --- | --- |
+| `mask_iou` column on `findings` | Alters the frozen table. Violates D-020. Rejected. |
+| New `mask_findings` table keyed on `finding_id` | Additive, respects D-020, needs a schema version bump. **Preferred.** |
+| Separate run with a different similarity function | Needs a `similarity` column on `runs` — also an alteration. |
+
+The preferred option is the second. It leaves `findings` untouched, so every
+query written against the published contract keeps working.
+
+**What is already in place, so this is an addition rather than a rewrite.**
+
+- `utils.matching.match_annotations` takes the comparison as a **parameter**
+  (D-018), defaulting to `box_iou`. A mask comparison is a different argument.
+- `app.diagnosis.diagnose_image` forwards that parameter through untouched.
+- `ObjectAnnotation.polygon` already carries ground-truth outlines in absolute
+  pixels (D-016), and they are already persisted in `findings.truth_polygon`.
+
+**What is genuinely missing.**
+
+- A mask IoU function — polygon rasterisation or polygon intersection.
+- Prediction outlines. The inference layer does not extract masks from model
+  output, so `Detection.polygon` is always `None`. This is the real work:
+  without predicted outlines there is nothing to compare ground-truth outlines
+  against.
+
+**Trade-off accepted.** Until this lands, mask-sensitive failures are invisible
+to the diagnosis engine, and any report covering a segmentation dataset should
+say so. That statement belongs anywhere these numbers are presented.
+
+---
+
+## D-023 — Feature extraction is a database pass with two injected seams
+
+**Status:** Accepted · Week 5
+
+**Decision.** `app/features.py` reads findings back **from the database**,
+crops a region per finding, encodes it, and writes vectors to a new
+`embeddings` table. Both the region extractor and the encoder are parameters.
+
+**Why a database pass rather than an in-memory step.** The obvious design is to
+embed during diagnosis, while the findings are still objects. That would have
+required threading vectors through `save_dataset_diagnosis` and returning the
+ids it assigns — changing a write path that a second developer is already
+building against. Reading back instead means the write path is untouched,
+findings already carry their primary keys, and extraction can run over a run
+saved days earlier without re-running inference. Week 6 clustering will take
+the same shape.
+
+**Why the region extractor is a parameter.** This is the seam mask-level
+diagnosis will use (D-022). Today `region_from_box` crops a finding's bounding
+box; a polygon extractor replaces it at one call site, and the outlines it
+needs are already persisted in `findings.truth_polygon`. The parameter is
+exercised by a test today, so it cannot rot before it is needed.
+
+**Why the encoder is injected.** Not speculation: a CLIP checkpoint is several
+hundred megabytes, so a suite requiring one would be untestable in practice and
+would quietly stop being run. A fake backend is the only way to test the
+pipeline at all. It also keeps the dependency at one boundary, as D-005 does
+for the detector.
+
+**Which region is encoded.** Ground truth when present, prediction otherwise —
+matching how `Finding.class_name` attributes a failure. A false positive
+therefore encodes what the model *thought* it saw; a false negative encodes
+what it *missed*. Each finding encodes the thing it is actually about.
+
+**Padding.** Regions are expanded by 15% before cropping. A box tight against
+an object discards its surroundings, and the surroundings are frequently the
+explanation — an object may be missed *because* of what is beside it.
+
+**Vectors are L2-normalised on write**, so cosine similarity is a dot product
+and every consumer gets comparable vectors without knowing which metric was
+intended. Stored as raw float32 bytes rather than JSON: exact, and 2 KB for 512
+dimensions.
+
+**Trade-off.** Extraction requires a saved run, so it cannot be part of a
+single in-memory pipeline. Accepted deliberately — that constraint is what
+keeps the published write path stable.
+
+**Observed on real data, and stated rather than glossed.** Across 26 embedded
+failures from the segmentation dataset, nearest-neighbour class agreement was
+at chance. This is not yet evidence of a defect: the sample is small, and
+`door` and `door_frame` crops are close to the same pixels, since a padded box
+around a frame contains the door. Whether that matters depends on what
+clustering is *for* — grouping by failure cause rather than by class label may
+be the desired behaviour. It is an open question for the clustering milestone,
+recorded here so it is evaluated rather than assumed.
