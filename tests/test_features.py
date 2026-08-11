@@ -349,10 +349,10 @@ def test_embeddings_cascade_on_run_delete(tmp_path: Path) -> None:
 
 
 def test_schema_upgrades_from_version_one(tmp_path: Path) -> None:
-    """An existing v1 database gains the new table without losing data.
+    """An older database gains new tables without losing data.
 
-    Jawad may already have a v1 database. Opening it must not fail and must not
-    discard his runs.
+    A second developer may already have a version 1 database. Opening it must
+    not fail and must not discard their runs.
     """
     db = tmp_path / "legacy.db"
     connection = sqlite3.connect(db)
@@ -372,6 +372,8 @@ def test_schema_upgrades_from_version_one(tmp_path: Path) -> None:
             for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
         }
 
-    assert version == storage.SCHEMA_VERSION == 2
+    # Asserted against the constant rather than a literal: this test must keep
+    # verifying the upgrade path as later milestones add their own tables.
+    assert version == storage.SCHEMA_VERSION
     assert "embeddings" in tables
     assert {"runs", "images", "findings"} <= tables

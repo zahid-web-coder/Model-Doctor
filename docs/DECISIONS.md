@@ -702,3 +702,97 @@ around a frame contains the door. Whether that matters depends on what
 clustering is *for* — grouping by failure cause rather than by class label may
 be the desired behaviour. It is an open question for the clustering milestone,
 recorded here so it is evaluated rather than assumed.
+
+---
+
+## D-024 — Grad-CAM targets raw class logits, not decoded scores
+
+**Status:** Accepted · Week 3
+
+**Decision.** Explanation backpropagates a **raw pre-sigmoid class logit** from
+the head's secondary return value, selected from the anchors falling inside the
+finding's region. Target layers are the three feature-pyramid tensors the head
+consumes, fused.
+
+**Why the obvious approach fails — measured, not assumed.** Backpropagating a
+YOLO26 detection's *decoded* class score produces gradients that are **exactly
+zero at every layer**. The decoded output has passed through a sigmoid which
+saturates. This is the failure mode that matters most: a saturated scalar
+yields a uniformly zero map, which renders as a plausible-looking heatmap
+rather than an error. Nothing about it looks wrong.
+
+The head's own source shows the way out. In evaluation mode it returns
+``(decoded, raw_predictions)``, and the one-to-one branch is **not** detached
+when not training, so gradients flow through the raw logits.
+
+Verified before any code was written: raw logits give live gradients at all
+three pyramid levels.
+
+**Why fuse all three levels.** The coarsest carries the strongest per-element
+gradient but only ~3% of it is non-zero, and a 21x21 map upscaled to full
+resolution is unreadable. The finest supplies spatial detail. Betting on one
+level would make heatmap quality depend on object size, which is exactly the
+variable this project studies.
+
+**Why anchors inside the region.** Selecting only anchors whose centre lands in
+the finding's box makes the map answer "what made the model respond *here*"
+rather than "what does this class look like in general". A finding is about one
+object; a global saliency map would not explain it.
+
+**Which box.** Prediction first, ground truth otherwise — the reverse of
+feature extraction's preference (D-023). Here the question is what drove the
+model, so where it actually responded is the faithful region. Where it
+responded to nothing, the ground-truth location is the next best question, and
+those false-negative maps turn out to be informative: they are visibly diffuse,
+which is the signature of "not attending here".
+
+**Detector-agnostic by construction.** ``GradCAM`` hooks layers and weights
+activations by gradients; it knows nothing about YOLO. ``CamAdapter`` supplies
+the two architecture-specific answers. A new detector is a new adapter — the
+same seam as ``SimilarityFn`` (D-018) and ``RegionExtractor`` (D-023).
+
+*Amended during the pre-commit review:* the generic engine was originally
+written in ``app/explainability.py``. It contained no reference to any
+detector, so it was moved to ``utils/cam.py``. Because ``utils`` may not import
+``app``, that move converts "detector-agnostic by discipline" into
+"detector-agnostic enforced by the layering rule" — the engine can no longer
+acquire a detector dependency even by accident. It also matches the existing
+split between ``utils/matching.py`` and ``app/diagnosis.py``.
+
+**A defect this work surfaced.** The first implementation reported "no gradient
+reached any target layer" whenever no map survived, but a Grad-CAM map can also
+collapse to zero when the pooled channel weights are negative and ReLU removes
+everything. That is a real result, not an error, and conflating the two would
+have sent a future reader hunting for a gradient problem that did not exist.
+The two cases are now distinguished, and a collapsed map is kept rather than
+dropped.
+
+**Trade-off.** Explanation needs gradients, so it cannot reuse the inference
+path: the network is loaded separately in float precision with gradients
+enabled. Slower and more memory-hungry than inference, and unavoidable.
+
+---
+
+## D-025 — Heatmaps are files, recorded in an additive table
+
+**Status:** Accepted · Week 3
+
+**Decision.** Heatmap images are written to ``results/heatmaps/run_<id>/`` and
+recorded in a new ``heatmaps`` table. Schema version 2 to 3, additive.
+
+**Reasoning.** A dashboard needs to know which findings have an explanation and
+where it lives. A filesystem naming convention would avoid the version bump but
+force a consumer to stat the disk per row, and would record nothing about how a
+map was produced. The table answers both with one left join and carries the
+method and layer set, so a heatmap generated with different settings is
+identifiable rather than silently mixed in.
+
+``runs``, ``images``, ``findings`` and ``embeddings`` are all unchanged —
+verified column-by-column against the previous commit. This is the third
+demonstration of the stability guarantee in SCHEMA.md: new capability arrives
+as a new table, never as an alteration.
+
+**Trade-off.** Images live outside the database, so a database copied without
+its ``results/`` directory has dangling paths. Accepted: storing image blobs in
+SQLite would bloat the file a consumer is meant to query cheaply, and the paths
+are as reproducible as the run itself.

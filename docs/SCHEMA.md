@@ -5,7 +5,7 @@ consumes it.** A dashboard, a report generator, or a notebook should be built
 against this document alone. Reading the Python is not required, and nothing
 here depends on it.
 
-Schema version: **2** · Default location: `db/model_doctor.db` (SQLite)
+Schema version: **3** · Default location: `db/model_doctor.db` (SQLite)
 
 Populated databases are **not** committed — image paths and filenames carry
 dataset-specific identifiers. This schema is committed; the data is not.
@@ -30,6 +30,7 @@ of five outcomes.
    └──────────┘          └──────────┘          └────────────┘
         │                                            │
         │                                            ├─▶ embeddings  (v2)
+        │                                            ├─▶ heatmaps    (v3)
         │                                            │
         │                                            │  future milestones
         │                                            ├─▶ clusters
@@ -163,6 +164,41 @@ FROM findings f
 LEFT JOIN embeddings e ON e.finding_id = f.id AND e.model_name = ?
 WHERE f.run_id = ? AND f.outcome != 'correct';
 ```
+
+### `heatmaps` — added in schema version 3
+
+One Grad-CAM image per explained finding, showing which regions drove the
+model's response there.
+
+| Column | Type | Null | Meaning |
+| --- | --- | --- | --- |
+| `id` | INTEGER PK | no | Heatmap identifier |
+| `finding_id` | INTEGER FK → `findings.id` | no | The finding this explains |
+| `run_id` | INTEGER FK → `runs.id` | no | Owning run, for direct filtering |
+| `path` | TEXT | no | Image file on disk, ready to display |
+| `method` | TEXT | no | How it was produced, currently `grad-cam` |
+| `target_layers` | TEXT | no | Adapter identifier, e.g. `yolo26-seg:16,19,22` |
+
+Unique on `(finding_id, method)` — regenerating replaces rather than duplicates.
+
+**The image is already an overlay** at the original image's exact dimensions,
+so it can be shown directly and lines up with the box coordinates in
+`findings`. No further processing is needed.
+
+**Not every finding has one.** Findings with no usable geometry, or whose image
+could not be read, are skipped. Use a `LEFT JOIN`:
+
+```sql
+SELECT f.id, f.outcome, f.class_name, i.path AS image, h.path AS heatmap
+FROM findings f
+JOIN images i ON i.id = f.image_id
+LEFT JOIN heatmaps h ON h.finding_id = f.id AND h.method = 'grad-cam'
+WHERE f.run_id = ? AND f.outcome != 'correct';
+```
+
+**Reading a heatmap.** A sharply localised hotspot means the model responded
+strongly to that region. A diffuse map on a false negative is meaningful rather
+than broken — it is the visual signature of the model not attending there.
 
 ---
 
@@ -310,6 +346,7 @@ tables, never columns to these:
 | Milestone | Table | Keyed on | Status |
 | --- | --- | --- | --- |
 | Feature extraction | `embeddings` | `finding_id` | **Exists (v2)** |
+| Grad-CAM explanation | `heatmaps` | `finding_id` | **Exists (v3)** |
 | Failure clustering | `clusters` | `finding_id` | Not yet created |
 | Root-cause analysis | `root_causes` | `finding_id` | Not yet created |
 | Recommendations | `recommendations` | `cluster_id` or `finding_id` | Not yet created |
@@ -339,6 +376,7 @@ SELECT version FROM schema_info;   -- currently 1
 python -m app.diagnosis --split test --save     # runs, images, findings
 python -m app.diagnosis --list-runs
 python -m app.features --run 1                  # embeddings (downloads CLIP once)
+python -m app.explainability --run 1 --imgsz 672  # heatmaps
 ```
 
 Foreign keys are enforced, so consumers may rely on referential integrity.

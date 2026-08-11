@@ -3,7 +3,7 @@
 **This document is the project's source of truth.** Where any other document
 disagrees with it, this one wins and the other should be corrected.
 
-Last updated: 2026-08-10 (Week 5 — feature extraction)
+Last updated: 2026-08-11 (Week 3 — Grad-CAM backend)
 
 ---
 
@@ -37,6 +37,7 @@ architectural concern but is **not implemented**.
 | Per-image and dataset diagnosis | **Completed** |
 | SQLite persistence + published schema | **Completed** — schema version 2 |
 | Feature extraction (CLIP embeddings) | **Completed** |
+| Grad-CAM explanation backend | **Completed** — schema version 3 |
 | Mask IoU / segmentation analysis | **Planned (deferred)** — see D-022; a known, documented limitation |
 | Everything beyond error analysis | **Planned** — see [ROADMAP.md](ROADMAP.md) |
 

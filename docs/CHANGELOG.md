@@ -401,3 +401,90 @@ Across those 26 embeddings, nearest-neighbour class agreement was at chance
 on what clustering is *for* — grouping by cause rather than by label may be
 desirable. Recorded in D-023 as an open question for the clustering milestone
 rather than assumed either way.
+
+---
+
+## Week 3 — Explainability: Grad-CAM backend · 2026-08-11
+
+Heatmaps showing which image regions drove a finding. This is the backend only;
+displaying them is the dashboard's Week 4 work.
+
+### Investigation, before any code
+
+Grad-CAM on this model is not the standard tutorial case, and the standard
+approach silently produces nothing:
+
+- The model is **end-to-end / NMS-free** with `reg_max = 1`, so there is no DFL
+  distribution to target.
+- Backpropagating a detection's **decoded** class score gives gradients that are
+  **exactly zero at every layer** — the decoded score has passed through a
+  saturating sigmoid. A zero map renders as a plausible heatmap rather than an
+  error, so this had to be found by measurement rather than trusted.
+- The head returns its **raw pre-sigmoid logits** as a second value, and the
+  one-to-one branch is not detached outside training. Gradients flow there.
+- Target layers are the three tensors the head consumes, at strides 8/16/32.
+  Gradient signal was confirmed live at all three before implementation.
+
+### Added
+
+- `app/explainability.py`
+  - `GradCAM` — detector-agnostic: hooks layers, weights activations by the
+    gradients of a caller-supplied scalar, fuses levels, normalises.
+  - `CamAdapter` protocol and `Yolo26SegAdapter`, which supply the only two
+    architecture-specific answers (D-024).
+  - `_anchor_centres` derives the pyramid grid layout from the anchor count
+    rather than hardcoding it, so a different input size stays correct.
+  - `Letterbox` / `prepare_image` / `render_overlay` — aspect ratio preserved by
+    padding, then undone so the overlay aligns with stored box coordinates.
+  - CLI: `python -m app.explainability --run N`.
+- `heatmaps` table, **schema version 3** (D-025). Records path, method and
+  target layers per finding.
+- `tests/test_explainability.py` — 18 tests. None load a detector: the CAM
+  engine is tested against a purpose-built network whose correct answer is known
+  in advance, and the adapter against synthetic head output.
+
+### Fixed
+
+- **Misattributed error.** The first implementation reported "no gradient
+  reached any target layer" whenever no map survived. But a Grad-CAM map also
+  collapses to zero when the pooled channel weights are negative and ReLU
+  removes everything — a real result, not an error. The two are now
+  distinguished, and a collapsed map is kept rather than dropped.
+
+### Changed
+
+- `f.class_id` added to the shared finding query in `app/storage.py`, needed to
+  pick which class logit to explain. Additive to a `SELECT` list; no schema
+  change.
+- **Generic CAM engine moved to `utils/cam.py`** during the pre-commit review.
+  It contained no detector reference, and `utils` may not import `app`, so the
+  move makes detector-agnosticism a property the layering rule enforces rather
+  than one the author has to maintain. `app/explainability.py` keeps the YOLO
+  adapter, the anchor arithmetic, the runner and the CLI — the same split as
+  `utils/matching.py` against `app/diagnosis.py`.
+- `ExplainabilityError` moved to `utils/exceptions.py`, which is where every
+  project exception lives (D-008).
+
+### Unchanged — verified
+
+`runs`, `images`, `findings` **and** `embeddings` were all compared
+column-by-column against the previous commit and are identical. Third
+consecutive milestone in which new capability arrived as a new table.
+
+### Not implemented
+
+Dashboard rendering, mask-based explanation, root-cause analysis, clustering.
+
+### Verified
+
+- Lint clean; **147 tests pass** (130 unchanged, plus 18 new; one pre-existing
+  test de-hardcoded from schema version 2 to the constant).
+- No dependency cycles: `utils` does not import `app`, and neither
+  `app.diagnosis` nor `app.inference` imports `app.explainability`.
+- Ran against the real model and dataset: 37 of 40 findings explained.
+- **Inspected visually, not just counted.** A confident correct detection
+  (confidence 0.979, IoU 0.919) produces a sharply localised hotspot on the
+  object. A false negative on the same dataset produces a diffuse map. That
+  contrast is the evidence the method works: localised means "this is what I
+  responded to", diffuse means "I was not attending here", which makes the
+  false-negative maps informative rather than broken.

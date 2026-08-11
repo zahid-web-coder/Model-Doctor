@@ -48,7 +48,7 @@ logger = get_logger(__name__)
 # Bumped when the schema changes in a way that existing readers must know
 # about. Recorded in the database so a consumer can detect a mismatch instead
 # of failing on a missing column.
-SCHEMA_VERSION: int = 2
+SCHEMA_VERSION: int = 3
 
 SCHEMA_STATEMENTS: tuple[str, ...] = (
     """
@@ -129,6 +129,21 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
         UNIQUE (finding_id, model_name)
     )
     """,
+    # Added at schema version 3. Heatmaps are image files; this records which
+    # finding each explains and how it was produced, so a dashboard finds them
+    # with one left join instead of probing the filesystem per row. A separate
+    # table for the same reason embeddings is one (D-020).
+    """
+    CREATE TABLE IF NOT EXISTS heatmaps (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        finding_id    INTEGER NOT NULL REFERENCES findings(id) ON DELETE CASCADE,
+        run_id        INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+        path          TEXT    NOT NULL,
+        method        TEXT    NOT NULL,
+        target_layers TEXT    NOT NULL,
+        UNIQUE (finding_id, method)
+    )
+    """,
     # Indexes chosen for the queries a dashboard actually issues: filter by
     # run, then by outcome or class. Without them every filter is a full scan.
     "CREATE INDEX IF NOT EXISTS idx_images_run ON images(run_id)",
@@ -137,6 +152,7 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
     "CREATE INDEX IF NOT EXISTS idx_findings_outcome ON findings(run_id, outcome)",
     "CREATE INDEX IF NOT EXISTS idx_findings_class ON findings(run_id, class_name)",
     "CREATE INDEX IF NOT EXISTS idx_embeddings_run ON embeddings(run_id)",
+    "CREATE INDEX IF NOT EXISTS idx_heatmaps_run ON heatmaps(run_id)",
 )
 
 
@@ -723,7 +739,7 @@ def load_findings_for_embedding(
         Rows carrying the finding's geometry plus the image path and size.
     """
     sql = """
-        SELECT f.id AS finding_id, f.outcome, f.class_name,
+        SELECT f.id AS finding_id, f.outcome, f.class_id, f.class_name,
                f.pred_x1, f.pred_y1, f.pred_x2, f.pred_y2,
                f.truth_x1, f.truth_y1, f.truth_x2, f.truth_y2,
                f.truth_polygon,
@@ -735,3 +751,91 @@ def load_findings_for_embedding(
         sql += " AND f.outcome != 'correct'"
     sql += " ORDER BY f.id"
     return connection.execute(sql, (run_id,)).fetchall()
+
+
+# ---------------------------------------------------------------------------
+# Heatmaps (schema version 3)
+# ---------------------------------------------------------------------------
+@dataclass(frozen=True)
+class HeatmapRow:
+    """One stored heatmap, joined to the finding it explains."""
+
+    finding_id: int
+    run_id: int
+    outcome: str
+    class_name: str
+    path: str
+    method: str
+    target_layers: str
+
+
+def save_heatmaps(
+    connection: sqlite3.Connection,
+    run_id: int,
+    method: str,
+    target_layers: str,
+    entries: Iterable[tuple[int, str]],
+) -> int:
+    """Record generated heatmaps for a run's findings.
+
+    Re-running replaces a finding's heatmap for the same method, matching how
+    embeddings behave: a regenerated explanation is a correction, not a second
+    observation.
+
+    Args:
+        connection: An open connection.
+        run_id: Owning run.
+        method: How the map was produced, e.g. ``"grad-cam"``.
+        target_layers: Adapter identifier describing which layers were used.
+        entries: Pairs of ``(finding_id, path)``.
+
+    Returns:
+        Number of rows written.
+    """
+    rows = [
+        (finding_id, run_id, str(path), method, target_layers)
+        for finding_id, path in entries
+    ]
+    if rows:
+        connection.executemany(
+            """
+            INSERT INTO heatmaps (finding_id, run_id, path, method, target_layers)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT (finding_id, method) DO UPDATE SET
+                path = excluded.path,
+                target_layers = excluded.target_layers,
+                run_id = excluded.run_id
+            """,
+            rows,
+        )
+    return len(rows)
+
+
+def load_heatmaps(
+    connection: sqlite3.Connection, run_id: int, method: str | None = None
+) -> list[HeatmapRow]:
+    """Return a run's heatmaps with their findings' outcome and class."""
+    sql = """
+        SELECT h.finding_id, h.run_id, h.path, h.method, h.target_layers,
+               f.outcome, f.class_name
+        FROM heatmaps h JOIN findings f ON f.id = h.finding_id
+        WHERE h.run_id = ?
+    """
+    params: list[object] = [run_id]
+    if method is not None:
+        sql += " AND h.method = ?"
+        params.append(method)
+    sql += " ORDER BY h.finding_id"
+
+    return [
+        HeatmapRow(
+            finding_id=row["finding_id"],
+            run_id=row["run_id"],
+            outcome=row["outcome"],
+            class_name=row["class_name"],
+            path=row["path"],
+            method=row["method"],
+            target_layers=row["target_layers"],
+        )
+        for row in connection.execute(sql, params).fetchall()
+    ]

@@ -29,3 +29,7 @@ class ModelLoadError(ModelDoctorError):
 
 class DatasetConfigError(ModelDoctorError):
     """``data.yaml`` is absent, unparseable, or missing required keys."""
+
+
+class ExplainabilityError(ModelDoctorError):
+    """A heatmap could not be produced."""

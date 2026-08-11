@@ -93,6 +93,26 @@ Depends on: Milestone 2.
 
 ---
 
+## Week 3 — Explainability (Grad-CAM backend) · **Completed**
+
+Per-finding heatmaps showing where the model looked.
+
+| Item | Status |
+| --- | --- |
+| Grad-CAM support reviewed for the segmentation model | Completed |
+| Target layers determined by measurement | Completed |
+| Detector-agnostic CAM engine + adapter seam | Completed |
+| Raw-logit scalar selection (decoded score saturates) | Completed |
+| Letterboxing and overlay rendering | Completed |
+| `heatmaps` table, schema version 3 | Completed |
+| CLI (`python -m app.explainability`) | Completed |
+| Verified on the real model and dataset | Completed |
+
+**Deliberately excluded:** the dashboard rendering of these heatmaps, which is
+Week 4 and belongs to the dashboard developer. This milestone is the backend.
+
+---
+
 ## Week 5 — Feature extraction · **Completed**
 
 Encode each failed region into a vector so failures become comparable, which is
