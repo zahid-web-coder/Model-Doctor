@@ -326,3 +326,165 @@ No tables exist for them — they arrive with the milestone that produces them.
 - **Every example query in SCHEMA.md was executed verbatim against the live
   database.** All ten valid. Documentation drift would surface as a failure
   rather than as silent staleness.
+
+---
+
+## Week 5 — Feature Extraction · 2026-08-10
+
+Failures now become vectors, so they can be compared to one another. That is
+the input the failure-grouping milestone needs; nothing here clusters,
+explains, or recommends.
+
+### Added
+
+- `app/features.py` — encodes each failed region into a vector (D-023).
+  - Runs as a pass over a **saved run** rather than over in-memory diagnoses,
+    so the published write path needed no changes and historical runs can be
+    processed without re-running inference.
+  - `region_from_box` derives the crop from a finding's boxes, preferring
+    ground truth so a false positive encodes what the model *thought* it saw
+    and a false negative encodes what it *missed*. Regions are padded 15%,
+    because the surroundings are frequently the explanation.
+  - `ClipBackend` loads CLIP lazily and L2-normalises its output, so cosine
+    similarity is a plain dot product for any consumer.
+  - CLI: `python -m app.features --run N`.
+- `embeddings` table — **schema version 2**. `finding_id`, `run_id`,
+  `model_name`, `dimensions`, and the vector as raw float32 bytes. Unique on
+  `(finding_id, model_name)`.
+- `config.CLIP_MODEL` / `config.CLIP_PRETRAINED`.
+- `open_clip_torch` dependency.
+- `tests/test_features.py` — 19 tests covering region extraction, the database
+  pass, batching, encoder isolation, cascade deletes, and the v1→v2 upgrade.
+
+### Changed
+
+- `SCHEMA_VERSION` 1 → 2, with an in-place upgrade path. Opening an existing
+  version 1 database creates the new table and preserves every existing row.
+- `ImageDiagnosis` already carried image dimensions from the previous
+  milestone; no further change was needed.
+
+### Unchanged — deliberately
+
+**`runs`, `images` and `findings` were not modified.** Verified column-by-column
+after the upgrade. Every query written against schema version 1 returns exactly
+the same rows, which is the stability guarantee `SCHEMA.md` §6 makes and this
+milestone is the first demonstration of it.
+
+### Not implemented
+
+Clustering, explanation, recommendations, mask-based region crops. Prediction
+outlines are still not extracted from model output.
+
+### Deferred and recorded
+
+- **D-022** — mask-level diagnosis, with the measured gap, three schema options
+  (`mask_findings` preferred), and what is already in place versus genuinely
+  missing. Added to the roadmap as Milestone 8.5.
+
+### Verified
+
+- Lint clean; **130 tests pass** (111 from the previous milestone, unchanged,
+  plus 19 new). No existing test was edited.
+- No dependency cycles: `utils` does not import `app`, and neither
+  `app.diagnosis` nor `app.storage` imports `app.features`.
+- Real CLIP run against the real model and dataset: 512 dimensions, 26 of 27
+  failures embedded, vectors L2-normalised to 1.0000 and all finite.
+- The single skipped finding was a `door_frame` of 3.3 x 180.7 pixels, rejected
+  by the minimum-region guard — a live instance of the thin-structure problem
+  D-022 describes.
+
+### Observed, and not yet explained
+
+Across those 26 embeddings, nearest-neighbour class agreement was at chance
+(50% against a 62% majority baseline). The sample is small, and `door` and
+`door_frame` crops are close to the same pixels. Whether this matters depends
+on what clustering is *for* — grouping by cause rather than by label may be
+desirable. Recorded in D-023 as an open question for the clustering milestone
+rather than assumed either way.
+
+---
+
+## Week 3 — Explainability: Grad-CAM backend · 2026-08-11
+
+Heatmaps showing which image regions drove a finding. This is the backend only;
+displaying them is the dashboard's Week 4 work.
+
+### Investigation, before any code
+
+Grad-CAM on this model is not the standard tutorial case, and the standard
+approach silently produces nothing:
+
+- The model is **end-to-end / NMS-free** with `reg_max = 1`, so there is no DFL
+  distribution to target.
+- Backpropagating a detection's **decoded** class score gives gradients that are
+  **exactly zero at every layer** — the decoded score has passed through a
+  saturating sigmoid. A zero map renders as a plausible heatmap rather than an
+  error, so this had to be found by measurement rather than trusted.
+- The head returns its **raw pre-sigmoid logits** as a second value, and the
+  one-to-one branch is not detached outside training. Gradients flow there.
+- Target layers are the three tensors the head consumes, at strides 8/16/32.
+  Gradient signal was confirmed live at all three before implementation.
+
+### Added
+
+- `app/explainability.py`
+  - `GradCAM` — detector-agnostic: hooks layers, weights activations by the
+    gradients of a caller-supplied scalar, fuses levels, normalises.
+  - `CamAdapter` protocol and `Yolo26SegAdapter`, which supply the only two
+    architecture-specific answers (D-024).
+  - `_anchor_centres` derives the pyramid grid layout from the anchor count
+    rather than hardcoding it, so a different input size stays correct.
+  - `Letterbox` / `prepare_image` / `render_overlay` — aspect ratio preserved by
+    padding, then undone so the overlay aligns with stored box coordinates.
+  - CLI: `python -m app.explainability --run N`.
+- `heatmaps` table, **schema version 3** (D-025). Records path, method and
+  target layers per finding.
+- `tests/test_explainability.py` — 18 tests. None load a detector: the CAM
+  engine is tested against a purpose-built network whose correct answer is known
+  in advance, and the adapter against synthetic head output.
+
+### Fixed
+
+- **Misattributed error.** The first implementation reported "no gradient
+  reached any target layer" whenever no map survived. But a Grad-CAM map also
+  collapses to zero when the pooled channel weights are negative and ReLU
+  removes everything — a real result, not an error. The two are now
+  distinguished, and a collapsed map is kept rather than dropped.
+
+### Changed
+
+- `f.class_id` added to the shared finding query in `app/storage.py`, needed to
+  pick which class logit to explain. Additive to a `SELECT` list; no schema
+  change.
+- **Generic CAM engine moved to `utils/cam.py`** during the pre-commit review.
+  It contained no detector reference, and `utils` may not import `app`, so the
+  move makes detector-agnosticism a property the layering rule enforces rather
+  than one the author has to maintain. `app/explainability.py` keeps the YOLO
+  adapter, the anchor arithmetic, the runner and the CLI — the same split as
+  `utils/matching.py` against `app/diagnosis.py`.
+- `ExplainabilityError` moved to `utils/exceptions.py`, which is where every
+  project exception lives (D-008).
+
+### Unchanged — verified
+
+`runs`, `images`, `findings` **and** `embeddings` were all compared
+column-by-column against the previous commit and are identical. Third
+consecutive milestone in which new capability arrived as a new table.
+
+### Not implemented
+
+Dashboard rendering, mask-based explanation, root-cause analysis, clustering.
+
+### Verified
+
+- Lint clean; **147 tests pass** (130 unchanged, plus 18 new; one pre-existing
+  test de-hardcoded from schema version 2 to the constant).
+- No dependency cycles: `utils` does not import `app`, and neither
+  `app.diagnosis` nor `app.inference` imports `app.explainability`.
+- Ran against the real model and dataset: 37 of 40 findings explained.
+- **Inspected visually, not just counted.** A confident correct detection
+  (confidence 0.979, IoU 0.919) produces a sharply localised hotspot on the
+  object. A false negative on the same dataset produces a diffuse map. That
+  contrast is the evidence the method works: localised means "this is what I
+  responded to", diffuse means "I was not attending here", which makes the
+  false-negative maps informative rather than broken.

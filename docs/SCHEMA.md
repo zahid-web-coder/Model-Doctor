@@ -5,7 +5,7 @@ consumes it.** A dashboard, a report generator, or a notebook should be built
 against this document alone. Reading the Python is not required, and nothing
 here depends on it.
 
-Schema version: **1** · Default location: `db/model_doctor.db` (SQLite)
+Schema version: **3** · Default location: `db/model_doctor.db` (SQLite)
 
 Populated databases are **not** committed — image paths and filenames carry
 dataset-specific identifiers. This schema is committed; the data is not.
@@ -28,6 +28,9 @@ of five outcomes.
    ┌──────────┐ 1      n ┌──────────┐ 1      n ┌────────────┐
    │   runs   ├──────────┤  images  ├──────────┤  findings  │
    └──────────┘          └──────────┘          └────────────┘
+        │                                            │
+        │                                            ├─▶ embeddings  (v2)
+        │                                            ├─▶ heatmaps    (v3)
         │                                            │
         │                                            │  future milestones
         │                                            ├─▶ clusters
@@ -119,6 +122,83 @@ outlines are **not stored** — the pipeline does not extract masks from model
 output, so such a column would be permanently null. When mask extraction is
 implemented, it arrives as new columns or a new table, and this document is
 versioned accordingly.
+
+### `embeddings` — added in schema version 2
+
+One vector per failed region, produced by an image encoder. This is what the
+failure-grouping milestone will cluster.
+
+| Column | Type | Null | Meaning |
+| --- | --- | --- | --- |
+| `id` | INTEGER PK | no | Embedding identifier |
+| `finding_id` | INTEGER FK → `findings.id` | no | The finding this describes |
+| `run_id` | INTEGER FK → `runs.id` | no | Owning run, for direct filtering |
+| `model_name` | TEXT | no | Encoder identifier, e.g. `ViT-B-32/laion2b_s34b_b79k` |
+| `dimensions` | INTEGER | no | Vector length |
+| `vector` | BLOB | no | Raw **float32** bytes, `dimensions` of them |
+
+Unique on `(finding_id, model_name)` — re-running the extractor replaces a
+vector rather than adding a second. Embeddings are derived data, so recomputing
+one is a correction, unlike a run, which is an observation.
+
+**Reading a vector.** It is packed float32, not JSON:
+
+```python
+import array
+values = array.array("f"); values.frombytes(row["vector"])
+# or: numpy.frombuffer(row["vector"], dtype numpy.float32)
+```
+
+**Vectors are L2-normalised**, so cosine similarity is a plain dot product.
+
+**Never mix encoders.** Vectors from different `model_name` values are not
+comparable. Always filter by one when clustering.
+
+**Not every failure has one.** Regions smaller than 8 px in either dimension
+are skipped, as are findings whose image could not be read. Use a `LEFT JOIN`
+if you need all failures regardless.
+
+```sql
+SELECT f.id, f.outcome, f.class_name, e.vector
+FROM findings f
+LEFT JOIN embeddings e ON e.finding_id = f.id AND e.model_name = ?
+WHERE f.run_id = ? AND f.outcome != 'correct';
+```
+
+### `heatmaps` — added in schema version 3
+
+One Grad-CAM image per explained finding, showing which regions drove the
+model's response there.
+
+| Column | Type | Null | Meaning |
+| --- | --- | --- | --- |
+| `id` | INTEGER PK | no | Heatmap identifier |
+| `finding_id` | INTEGER FK → `findings.id` | no | The finding this explains |
+| `run_id` | INTEGER FK → `runs.id` | no | Owning run, for direct filtering |
+| `path` | TEXT | no | Image file on disk, ready to display |
+| `method` | TEXT | no | How it was produced, currently `grad-cam` |
+| `target_layers` | TEXT | no | Adapter identifier, e.g. `yolo26-seg:16,19,22` |
+
+Unique on `(finding_id, method)` — regenerating replaces rather than duplicates.
+
+**The image is already an overlay** at the original image's exact dimensions,
+so it can be shown directly and lines up with the box coordinates in
+`findings`. No further processing is needed.
+
+**Not every finding has one.** Findings with no usable geometry, or whose image
+could not be read, are skipped. Use a `LEFT JOIN`:
+
+```sql
+SELECT f.id, f.outcome, f.class_name, i.path AS image, h.path AS heatmap
+FROM findings f
+JOIN images i ON i.id = f.image_id
+LEFT JOIN heatmaps h ON h.finding_id = f.id AND h.method = 'grad-cam'
+WHERE f.run_id = ? AND f.outcome != 'correct';
+```
+
+**Reading a heatmap.** A sharply localised hotspot means the model responded
+strongly to that region. A diffuse map on a false negative is meaningful rather
+than broken — it is the visual signature of the model not attending there.
 
 ---
 
@@ -263,13 +343,22 @@ GROUP BY run_id, outcome;
 **`runs`, `images`, and `findings` will not change shape.** Later milestones add
 tables, never columns to these:
 
-| Milestone | Table | Keyed on |
-| --- | --- | --- |
-| Failure clustering | `clusters` | `finding_id` |
-| Root-cause analysis | `root_causes` | `finding_id` |
-| Recommendations | `recommendations` | `cluster_id` or `finding_id` |
+| Milestone | Table | Keyed on | Status |
+| --- | --- | --- | --- |
+| Feature extraction | `embeddings` | `finding_id` | **Exists (v2)** |
+| Grad-CAM explanation | `heatmaps` | `finding_id` | **Exists (v3)** |
+| Failure clustering | `clusters` | `finding_id` | Not yet created |
+| Root-cause analysis | `root_causes` | `finding_id` | Not yet created |
+| Recommendations | `recommendations` | `cluster_id` or `finding_id` | Not yet created |
 
-**None of those tables exist yet.** Do not write queries against them.
+`embeddings` arriving in version 2 is this guarantee working as intended: a new
+table was added and **`runs`, `images` and `findings` did not change**. Every
+query written against version 1 still returns exactly the same rows.
+
+Opening a version 1 database upgrades it in place — the new table is created
+and existing data is untouched.
+
+**The three unbuilt tables do not exist.** Do not write queries against them.
 
 A query written against this document today will keep working. If a breaking
 change ever becomes unavoidable, `schema_info.version` is incremented and this
@@ -284,9 +373,10 @@ SELECT version FROM schema_info;   -- currently 1
 ## 7. Producing data
 
 ```bash
-python -m app.diagnosis --split test --save
+python -m app.diagnosis --split test --save     # runs, images, findings
 python -m app.diagnosis --list-runs
-python -m app.diagnosis --split test --save --db /custom/path.db
+python -m app.features --run 1                  # embeddings (downloads CLIP once)
+python -m app.explainability --run 1 --imgsz 672  # heatmaps
 ```
 
 Foreign keys are enforced, so consumers may rely on referential integrity.

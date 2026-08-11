@@ -93,6 +93,46 @@ Depends on: Milestone 2.
 
 ---
 
+## Week 3 — Explainability (Grad-CAM backend) · **Completed**
+
+Per-finding heatmaps showing where the model looked.
+
+| Item | Status |
+| --- | --- |
+| Grad-CAM support reviewed for the segmentation model | Completed |
+| Target layers determined by measurement | Completed |
+| Detector-agnostic CAM engine + adapter seam | Completed |
+| Raw-logit scalar selection (decoded score saturates) | Completed |
+| Letterboxing and overlay rendering | Completed |
+| `heatmaps` table, schema version 3 | Completed |
+| CLI (`python -m app.explainability`) | Completed |
+| Verified on the real model and dataset | Completed |
+
+**Deliberately excluded:** the dashboard rendering of these heatmaps, which is
+Week 4 and belongs to the dashboard developer. This milestone is the backend.
+
+---
+
+## Week 5 — Feature extraction · **Completed**
+
+Encode each failed region into a vector so failures become comparable, which is
+the input the failure-grouping milestone needs.
+
+| Item | Status |
+| --- | --- |
+| Region extraction from bounding boxes | Completed |
+| Pluggable region extractor (mask seam) | Completed |
+| CLIP encoder, lazily loaded | Completed |
+| Injectable encoder so tests need no download | Completed |
+| `embeddings` table, schema version 2 | Completed |
+| CLI (`python -m app.features`) | Completed |
+| Verified on the real model and dataset | Completed |
+
+**Deliberately excluded:** clustering, explanation, recommendations, mask-based
+crops. See [DECISIONS.md](DECISIONS.md) D-023.
+
+---
+
 ## Milestone 4 — Visual explanation · **Planned**
 
 Make individual failures visually interpretable. Method selection deferred.
@@ -123,6 +163,37 @@ Depends on: Milestone 5.
 Present analysis through a developer-facing interface.
 
 Depends on: Milestones 3–6.
+
+---
+
+## Milestone 8.5 — Mask-level diagnosis · **Planned (deferred)**
+
+Extend failure diagnosis from bounding boxes to segmentation masks. Deferred
+deliberately, not dropped — see [DECISIONS.md](DECISIONS.md) D-022 for the
+measured gap, the schema options, and the reasoning.
+
+**Why it is needed.** On a segmentation dataset the current engine reports thin
+structures as failing no worse than solid ones, because their bounding boxes
+are fine and only their outlines are poor. That failure mode is invisible to
+box IoU. Any report covering a segmentation dataset should state this
+limitation until the milestone lands.
+
+Scope:
+
+- Extract prediction outlines from model output — currently
+  `Detection.polygon` is always `None`, and this is the substantive work.
+- A mask IoU function, passed to the existing matcher as its similarity
+  argument.
+- A `mask_findings` table keyed on `finding_id`, plus a schema version bump.
+  `runs`, `images` and `findings` stay untouched, so every query written
+  against the published contract keeps working (D-020).
+
+**Not blocked by architecture.** The matcher already takes the comparison as a
+parameter (D-018), the diagnosis engine forwards it, and ground-truth outlines
+are already parsed and persisted. This is an addition, not a rewrite.
+
+Depends on: Milestone 3. Sequenced after the core reasoning modules so it does
+not widen the surface each of them must handle.
 
 ---
 

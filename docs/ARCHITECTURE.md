@@ -22,8 +22,8 @@ Dependencies point downward only. A lower layer never imports a higher one.
                  ┌──────────────▼───────────────┐
    Utilities     │  resources · dataset ·       │
                  │  annotations · geometry ·    │
-                 │  matching · exceptions ·     │
-                 │  logging_utils               │
+                 │  matching · cam ·            │
+                 │  exceptions · logging_utils  │
                  └──────────────┬───────────────┘
                                 │
                  ┌──────────────▼───────────────┐
@@ -106,6 +106,23 @@ caller's job.
 - The comparison is a **parameter**, defaulting to `box_iou`. This is the seam
   mask IoU will use; it is exercised by tests today so it cannot rot.
 
+### `utils/cam.py` — Completed
+
+Gradient-weighted class activation mapping, plus the image plumbing it needs.
+
+- `GradCAM` hooks layers, weights activations by the gradients of a scalar the
+  caller chooses, fuses levels, and normalises. It knows nothing about
+  detections.
+- `CamAdapter` is the seam: which layers, and how to get a differentiable
+  scalar. Those are the only architecture-specific questions.
+- `Letterbox` / `prepare_image` / `render_overlay` preserve aspect ratio and
+  then undo the padding, so an overlay aligns with stored box coordinates.
+
+**It lives here rather than in `app/` deliberately.** `utils` may not import
+`app`, so the layering rule makes it structurally impossible for the engine to
+acquire a detector dependency — detector-agnostic by construction rather than
+by discipline. Same split as `utils/matching.py` against `app/diagnosis.py`.
+
 ### `utils/resources.py` — Completed
 
 Answers "is it here?" — once, in one place.
@@ -171,6 +188,32 @@ Lives in `app/` because it depends on the diagnosis domain types; a `utils`
 module importing `app` would be the first upward dependency in the project
 (D-019).
 
+### `app/features.py` — Completed
+
+Encodes failed regions into vectors, so that failures become comparable to each
+other. Clustering, explanation, and recommendation are **not** here.
+
+- Runs as a pass over a **saved run**, so the write path needed no changes and
+  historical runs can be processed without re-inference (D-023).
+- `region_from_box` is a **parameter**. A polygon extractor slots in for mask
+  support with no other change; the outlines are already persisted.
+- The encoder is **injected**, so the suite tests the whole pipeline without
+  downloading a several-hundred-megabyte checkpoint.
+- Vectors are L2-normalised and stored as float32 bytes in `embeddings`.
+
+### `app/explainability.py` — Completed
+
+The detector-specific half of explanation, and the runner around it. The
+generic engine is `utils/cam.py`.
+
+- `Yolo26SegAdapter` implements `CamAdapter`: target layers 16/19/22, and a
+  scalar taken from **raw pre-sigmoid logits**, because the decoded score
+  saturates and yields exactly zero gradient (D-024).
+- `_anchor_centres` derives the pyramid layout from the anchor count, so a
+  different input size stays correct without configuration.
+- `explain_run` reads findings from the database, exactly as feature
+  extraction does, and records results in `heatmaps` (D-025).
+
 ### `app/inference.py` — Completed
 
 Converts a detector into structured, inspectable data.
@@ -217,6 +260,13 @@ Converts a detector into structured, inspectable data.
                             ▼  --save
                     db/model_doctor.db
               runs · images · findings   ◄── see SCHEMA.md
+                            │
+                            ▼  app.features
+                        embeddings          (app.features)
+              one vector per failed region
+                            +
+                         heatmaps           (app.explainability)
+              one Grad-CAM overlay per finding
 ```
 
 Predictions and ground truth are the *same type* — `Detection` is an
@@ -261,6 +311,9 @@ testable.
 | Additional detector family | New module producing `Detection` | Planned |
 | Failure classification | `app/diagnosis.py` | **Available** |
 | Segmentation analysis | Pass a mask similarity fn to the matcher | Planned |
+| Mask-based region crops | Pass a polygon extractor to `app.features` | Planned |
+| Failure clustering | Consumes the `embeddings` table | Planned |
+| Another detector's heatmaps | New `CamAdapter` implementation | Available |
 | Prediction outlines | Read masks in `_extract_detections` | Planned |
 | New image format | One entry in `config.IMAGE_EXTENSIONS` | Available |
 | Alternative output location | `MD_*` environment variables | Available |
