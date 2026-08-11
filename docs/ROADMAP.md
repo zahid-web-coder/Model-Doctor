@@ -113,6 +113,29 @@ Week 4 and belongs to the dashboard developer. This milestone is the backend.
 
 ---
 
+## Week 7 — Root-cause analysis · **Completed**
+
+Attributes failures to measurable conditions, turning "recall is low" into
+hypotheses that can be checked.
+
+| Item | Status |
+| --- | --- |
+| Blur, low light, small object, edge truncation, crowding | Completed |
+| Class imbalance, recurring misclassification | Completed |
+| Pluggable detector seam (both scopes) | Completed |
+| `root_causes` table, schema version 4 | Completed |
+| Cluster-ready by attachment point, verified by test | Completed |
+| CLI (`python -m app.root_cause`) | Completed |
+| Verified on the real model and dataset | Completed |
+
+**Documented limitation:** directed confusion pairs need the predicted class,
+which the contract does not store. Reported undirected instead — see
+[DECISIONS.md](DECISIONS.md) D-028.
+
+**Deliberately excluded:** clustering, recommendations, dashboard rendering.
+
+---
+
 ## Week 5 — Feature extraction · **Completed**
 
 Encode each failed region into a vector so failures become comparable, which is

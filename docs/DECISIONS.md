@@ -796,3 +796,95 @@ as a new table, never as an alteration.
 its ``results/`` directory has dangling paths. Accepted: storing image blobs in
 SQLite would bloat the file a consumer is meant to query cheaply, and the paths
 are as reproducible as the run itself.
+
+---
+
+## D-026 — Root causes attach to findings, not to clusters
+
+**Status:** Accepted · Week 7
+
+**Decision.** Attributed factors are recorded against a `finding_id` in a new
+`root_causes` table. Nothing references a cluster.
+
+**Reasoning.** The roadmap describes root-cause analysis as summarising
+findings *per cluster*, and clustering is a later milestone owned by another
+developer. Waiting for it would block this work; designing around a table that
+does not exist would guess at its shape.
+
+Attaching to findings avoids both. Once clusters exist, a per-cluster summary
+is a join and a `GROUP BY` over rows that are already there:
+
+```sql
+SELECT c.cluster_id, rc.factor, COUNT(*)
+FROM root_causes rc JOIN clusters c ON c.finding_id = rc.finding_id
+GROUP BY c.cluster_id, rc.factor;
+```
+
+No schema change, no second pipeline, no rework. A test constructs a stand-in
+clusters table and runs exactly that query, so the property is verified rather
+than asserted.
+
+Attaching to clusters instead would have inverted the dependency: root causes
+could not be computed until clustering existed, and re-clustering would
+invalidate every attribution.
+
+**Trade-off.** A factor that is genuinely a property of a *group* rather than
+of an individual finding — "this cluster is all night-time images" — is stored
+redundantly, once per member. Accepted: the redundancy is small, and the
+alternative is a table that cannot be written until another milestone lands.
+
+---
+
+## D-027 — Two detector scopes, one output shape
+
+**Status:** Accepted · Week 7
+
+**Decision.** `FindingFactor` examines a single finding; `RunFactor` examines
+all of them. Both emit the same `FactorEvidence` and are stored identically.
+
+**Reasoning.** Some conditions are visible in one finding — a region is dark,
+a box is tiny, an object runs off the frame. Others do not exist at that scale
+at all: a class cannot be under-represented in a single instance. Forcing both
+through one interface would mean passing whole-run statistics into a
+per-finding detector that does not need them.
+
+Keeping the output identical is what matters to consumers: a dashboard reading
+`root_causes` never has to know which kind produced a row.
+
+Detectors carry `needs_pixels`, so the runner can skip image-dependent ones
+when images are unavailable rather than having each detector rediscover that
+its input is missing. Images are read once per file and shared across every
+finding on it, which is also what makes neighbours — and therefore crowding —
+available at all.
+
+**Trade-off.** Two protocols rather than one. Justified: they model genuinely
+different scopes, and collapsing them would make the common case carry the rare
+case's parameters.
+
+---
+
+## D-028 — Confusion pairs are reported undirected, and the limit is documented
+
+**Status:** Accepted · Week 7
+
+**Decision.** The roadmap asks for "repeated confusion pairs". The engine
+reports **recurring misclassification per true class** instead: which classes
+are repeatedly named wrongly, without the direction of the confusion.
+
+**Reasoning.** A directed pair needs both the true class and the predicted one.
+The stored contract records only the class that *should* have been found —
+deliberately, so per-class statistics charge a miss to the class that was
+missed (SCHEMA.md, `findings`). The predicted class is not stored.
+
+The options were: add a column, which breaks a contract another developer is
+already querying; skip the factor; or report the half that is derivable. The
+undirected form carries most of the value — "`door_frame` is misidentified 11
+times" names the class whose labelling needs attention — and on a two-class
+dataset the direction is implied.
+
+**Trade-off, stated rather than hidden.** On a dataset with many classes the
+direction matters and is unavailable. Recorded here and in SCHEMA.md so the
+limitation is known rather than discovered. If it becomes important, the fix is
+a `predicted_class_id` column on `findings` and a schema version bump — an
+alteration to a published table, which is exactly the kind of change that
+should require a deliberate decision rather than happening incidentally.

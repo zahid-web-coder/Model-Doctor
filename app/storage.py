@@ -48,7 +48,7 @@ logger = get_logger(__name__)
 # Bumped when the schema changes in a way that existing readers must know
 # about. Recorded in the database so a consumer can detect a mismatch instead
 # of failing on a missing column.
-SCHEMA_VERSION: int = 3
+SCHEMA_VERSION: int = 4
 
 SCHEMA_STATEMENTS: tuple[str, ...] = (
     """
@@ -144,6 +144,20 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
         UNIQUE (finding_id, method)
     )
     """,
+    # Added at schema version 4. Attached to findings rather than to clusters,
+    # so that once failures are grouped a per-cluster summary is a GROUP BY
+    # over these rows and needs no schema change (D-026).
+    """
+    CREATE TABLE IF NOT EXISTS root_causes (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        finding_id  INTEGER NOT NULL REFERENCES findings(id) ON DELETE CASCADE,
+        run_id      INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+        factor      TEXT    NOT NULL,
+        score       REAL    NOT NULL,
+        evidence    TEXT    NOT NULL,
+        UNIQUE (finding_id, factor)
+    )
+    """,
     # Indexes chosen for the queries a dashboard actually issues: filter by
     # run, then by outcome or class. Without them every filter is a full scan.
     "CREATE INDEX IF NOT EXISTS idx_images_run ON images(run_id)",
@@ -153,6 +167,7 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
     "CREATE INDEX IF NOT EXISTS idx_findings_class ON findings(run_id, class_name)",
     "CREATE INDEX IF NOT EXISTS idx_embeddings_run ON embeddings(run_id)",
     "CREATE INDEX IF NOT EXISTS idx_heatmaps_run ON heatmaps(run_id)",
+    "CREATE INDEX IF NOT EXISTS idx_root_causes_run ON root_causes(run_id, factor)",
 )
 
 
@@ -839,3 +854,97 @@ def load_heatmaps(
         )
         for row in connection.execute(sql, params).fetchall()
     ]
+
+
+# ---------------------------------------------------------------------------
+# Root causes (schema version 4)
+# ---------------------------------------------------------------------------
+@dataclass(frozen=True)
+class RootCauseRow:
+    """One attributed factor, joined to the finding it concerns."""
+
+    finding_id: int
+    run_id: int
+    outcome: str
+    class_name: str
+    factor: str
+    score: float
+    evidence: str
+
+
+def save_root_causes(
+    connection: sqlite3.Connection,
+    run_id: int,
+    entries: Iterable[tuple[int, str, float, str]],
+) -> int:
+    """Record attributed factors for a run's findings.
+
+    Re-running replaces a finding's evidence for the same factor. Attribution
+    is derived data: recomputing it with different thresholds is a correction,
+    not a second observation.
+
+    Args:
+        connection: An open connection.
+        run_id: Owning run.
+        entries: Tuples of ``(finding_id, factor, score, evidence)``.
+
+    Returns:
+        Number of rows written.
+    """
+    rows = [
+        (finding_id, run_id, factor, float(score), evidence)
+        for finding_id, factor, score, evidence in entries
+    ]
+    if rows:
+        connection.executemany(
+            """
+            INSERT INTO root_causes (finding_id, run_id, factor, score, evidence)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT (finding_id, factor) DO UPDATE SET
+                score = excluded.score,
+                evidence = excluded.evidence,
+                run_id = excluded.run_id
+            """,
+            rows,
+        )
+    return len(rows)
+
+
+def load_root_causes(
+    connection: sqlite3.Connection, run_id: int, factor: str | None = None
+) -> list[RootCauseRow]:
+    """Return a run's attributed factors, strongest first."""
+    sql = """
+        SELECT rc.finding_id, rc.run_id, rc.factor, rc.score, rc.evidence,
+               f.outcome, f.class_name
+        FROM root_causes rc JOIN findings f ON f.id = rc.finding_id
+        WHERE rc.run_id = ?
+    """
+    params: list[object] = [run_id]
+    if factor is not None:
+        sql += " AND rc.factor = ?"
+        params.append(factor)
+    sql += " ORDER BY rc.score DESC, rc.finding_id"
+
+    return [
+        RootCauseRow(
+            finding_id=row["finding_id"],
+            run_id=row["run_id"],
+            outcome=row["outcome"],
+            class_name=row["class_name"],
+            factor=row["factor"],
+            score=row["score"],
+            evidence=row["evidence"],
+        )
+        for row in connection.execute(sql, params).fetchall()
+    ]
+
+
+def factor_counts(connection: sqlite3.Connection, run_id: int) -> dict[str, int]:
+    """Return how many findings each factor was attributed to."""
+    rows = connection.execute(
+        "SELECT factor, COUNT(*) AS n FROM root_causes "
+        "WHERE run_id = ? GROUP BY factor",
+        (run_id,),
+    ).fetchall()
+    return {row["factor"]: row["n"] for row in rows}
