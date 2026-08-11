@@ -181,11 +181,24 @@ Depends on: Milestone 5.
 
 ---
 
-## Milestone 7 — Developer dashboard · **Planned**
+## Milestone 7 — Developer dashboard · **In Progress**
 
-Present analysis through a developer-facing interface.
+Present saved analysis through a developer-facing interface. The first slice
+uses the stable Milestone 3 SQLite contract, so it can be useful before visual
+explanation, clustering, and recommendations publish their own tables.
 
-Depends on: Milestones 3–6.
+| Item | Status |
+| --- | --- |
+| Saved-run selector and provenance | Completed |
+| Run metrics and outcome charts | Completed |
+| Outcome filters and per-class statistics | Completed |
+| Worst-image ranking and box/polygon overlays | Completed |
+| Graceful missing database and image states | Completed |
+| Grad-CAM / visual explanation views | Planned — depends on Milestone 4 contract |
+| Cluster and recommendation views | Planned — depend on Milestones 5–6 tables |
+
+The dashboard remains read-only. It must continue to query only documented
+schema tables, including when later milestone tables are added.
 
 ---
 

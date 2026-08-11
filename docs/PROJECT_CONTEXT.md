@@ -39,6 +39,7 @@ architectural concern but is **not implemented**.
 | Feature extraction (CLIP embeddings) | **Completed** |
 | Grad-CAM explanation backend | **Completed** — schema version 3 |
 | Root-cause analysis | **Completed** — schema version 4 |
+| Developer dashboard | **In Progress** — saved-run explorer, charts, filters, and image overlays |
 | Mask IoU / segmentation analysis | **Planned (deferred)** — see D-022; a known, documented limitation |
 | Everything beyond error analysis | **Planned** — see [ROADMAP.md](ROADMAP.md) |
 
@@ -52,6 +53,8 @@ architectural concern but is **not implemented**.
   exactly once — checked on real data, not only in unit tests.
 - Every missing-resource path exits cleanly with an actionable message and a
   non-zero exit code.
+- The dashboard reads the SQLite schema directly and never modifies diagnosis
+  history. It reports missing databases and unavailable source images clearly.
 
 ### Not yet verified by execution
 
@@ -165,3 +168,15 @@ by design (D-017):
   all thresholds.
 
 Both are correct answers to different questions. Do not compare them directly.
+
+## Dashboard scope
+
+The current dashboard slice is deliberately limited to the stable Milestone 3
+schema: runs, images, and findings. It provides run provenance, outcome and
+per-class charts, filters for the four failure types, worst-image ranking, and
+prediction/ground-truth overlays. The viewer also renders a stored ground-truth
+polygon when present.
+
+Grad-CAM and other visual explanation outputs are not represented in the
+schema yet, so the dashboard does not display an empty placeholder for them.
+They will be added when Milestone 4 publishes a contract for that data.
