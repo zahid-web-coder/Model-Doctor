@@ -214,6 +214,20 @@ generic engine is `utils/cam.py`.
 - `explain_run` reads findings from the database, exactly as feature
   extraction does, and records results in `heatmaps` (D-025).
 
+### `app/root_cause.py` — Completed
+
+Attributes failures to measurable conditions — blur, low light, small object,
+edge truncation, crowding, class imbalance, recurring misclassification.
+
+- Factors attach to **findings**, so a per-cluster summary later is a join and
+  a `GROUP BY` rather than a new pipeline (D-026). A test proves the query.
+- Two detector scopes, one output: `FindingFactor` for conditions visible in a
+  single finding, `RunFactor` for those that only exist across a run (D-027).
+- Detectors are **parameters**, so a caller can narrow or extend the analysis.
+- Images are read once per file and shared across every finding on it, which is
+  what makes neighbours — and therefore crowding — measurable.
+- Reports evidence and severity, never a causal claim.
+
 ### `app/inference.py` — Completed
 
 Converts a detector into structured, inspectable data.
@@ -267,6 +281,9 @@ Converts a detector into structured, inspectable data.
                             +
                          heatmaps           (app.explainability)
               one Grad-CAM overlay per finding
+                            +
+                       root_causes          (app.root_cause)
+              attributed conditions per finding
 ```
 
 Predictions and ground truth are the *same type* — `Detection` is an
@@ -313,6 +330,8 @@ testable.
 | Segmentation analysis | Pass a mask similarity fn to the matcher | Planned |
 | Mask-based region crops | Pass a polygon extractor to `app.features` | Planned |
 | Failure clustering | Consumes the `embeddings` table | Planned |
+| Per-cluster cause summary | GROUP BY over `root_causes` | Available |
+| A new root-cause factor | Implement `FindingFactor` or `RunFactor` | Available |
 | Another detector's heatmaps | New `CamAdapter` implementation | Available |
 | Prediction outlines | Read masks in `_extract_detections` | Planned |
 | New image format | One entry in `config.IMAGE_EXTENSIONS` | Available |

@@ -488,3 +488,69 @@ Dashboard rendering, mask-based explanation, root-cause analysis, clustering.
   contrast is the evidence the method works: localised means "this is what I
   responded to", diffuse means "I was not attending here", which makes the
   false-negative maps informative rather than broken.
+
+---
+
+## Week 7 — Root-Cause Analysis · 2026-08-11
+
+Attributes failures to measurable conditions, turning "recall is low" into
+hypotheses an engineer can check.
+
+### Added
+
+- `app/root_cause.py`
+  - Per-finding factors: `blur` (Laplacian variance), `low_light` (mean
+    luminance), `small_object` (area fraction), `edge_truncation` (which sides
+    the box runs into), `crowding` (IoU with neighbouring annotations).
+  - Run-level factors: `class_imbalance`, `recurring_misclassification`.
+  - `FindingFactor` and `RunFactor` protocols; both emit the same
+    `FactorEvidence`, so a consumer never has to know which produced a row
+    (D-027). Both sets are parameters.
+  - Images read once per file and shared across every finding on it — which is
+    what makes neighbours, and therefore crowding, measurable at all.
+  - CLI: `python -m app.root_cause --run N`.
+- `root_causes` table, **schema version 4**. Attached to `finding_id`, not to
+  clusters (D-026).
+- Seven thresholds in `config.py`, each an "how bad is bad" judgement and
+  therefore configurable rather than baked into a detector.
+- `tests/test_root_cause.py` — 31 tests. Every factor is tested twice: once on
+  input that should trigger it and once on input that should not, because a
+  detector that fires on everything explains nothing.
+
+### Design decisions
+
+- **D-026** — factors attach to findings. Once clustering exists, a per-cluster
+  summary is a join and a `GROUP BY` over rows that already exist: no schema
+  change, no second pipeline. A test builds a stand-in clusters table and runs
+  exactly that query, so the property is verified rather than claimed.
+- **D-027** — two detector scopes, one output shape.
+- **D-028** — directed confusion pairs need the predicted class, which the
+  contract deliberately does not store. Reported undirected instead, with the
+  limitation documented rather than quietly shipped under the original name.
+
+### Unchanged — verified
+
+`runs`, `images`, `findings`, `embeddings` and `heatmaps` were all compared
+column-by-column against the previous commit and are identical. Fourth
+consecutive milestone in which new capability arrived as a new table.
+
+### Not implemented
+
+Clustering, recommendations, dashboard rendering, mask-based analysis.
+
+### Verified
+
+- Lint clean; **178 tests pass** (147 unchanged, plus 31 new).
+- Run against the real model and dataset: **24 of 27 failures explained (89%)**.
+- Two results are worth recording because they were independently corroborated:
+  - `edge_truncation` fired on **70.4%** of failures. The Week-1 dataset audit,
+    measuring polygons rather than failures, found 65.2% of annotations touching
+    an image edge. Two different measurements of the same underlying property.
+  - `crowding` reported IoU 0.85 between `door` and `door_frame`. That is
+    structural rather than incidental — a frame surrounds a door — and is a
+    plausible explanation for the wrong-class confusion the diagnosis engine
+    reports.
+- `small_object` fired on only 7.4%, consistent with the audit's finding that
+  over 99% of objects are large. The model is not failing on small things.
+- Both run-level factors correctly stayed silent on this run: two near-balanced
+  classes, and only two wrong-class findings, below the recurrence threshold.

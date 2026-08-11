@@ -148,6 +148,40 @@ CLIP_MODEL: Final[str] = os.getenv("MD_CLIP_MODEL", "ViT-B-32")
 CLIP_PRETRAINED: Final[str] = os.getenv("MD_CLIP_PRETRAINED", "laion2b_s34b_b79k")
 
 # ---------------------------------------------------------------------------
+# Root-cause analysis
+# ---------------------------------------------------------------------------
+# Thresholds for the factors the engine attributes failures to. Every one is a
+# judgement about "how bad is bad", so all are configurable rather than baked
+# into the detectors — a dataset of night-time photographs needs a different
+# darkness threshold than one shot indoors.
+
+# Variance of the Laplacian below which a region is considered blurred. The
+# standard sharpness measure: a blurred region has little high-frequency
+# content, so its second derivative varies little.
+BLUR_VARIANCE_THRESHOLD: Final[float] = float(os.getenv("MD_BLUR_VAR", "100.0"))
+
+# Mean luminance (0-255) below which a region is considered underexposed.
+LOW_LIGHT_THRESHOLD: Final[float] = float(os.getenv("MD_LOW_LIGHT", "60.0"))
+
+# Fraction of the image below which an object counts as small. 0.12% matches
+# the COCO convention for "small", which keeps the label comparable to how the
+# wider field reports object scale.
+SMALL_OBJECT_AREA_FRACTION: Final[float] = float(os.getenv("MD_SMALL_AREA", "0.0012"))
+
+# Distance from the frame, as a fraction of image size, within which a box is
+# treated as truncated by the edge.
+EDGE_TRUNCATION_MARGIN: Final[float] = float(os.getenv("MD_EDGE_MARGIN", "0.01"))
+
+# IoU with a neighbouring annotation above which a region is considered
+# crowded. Used as an occlusion proxy: true occlusion is not observable from
+# annotations alone, but heavy overlap is the condition under which it happens.
+CROWDING_IOU_THRESHOLD: Final[float] = float(os.getenv("MD_CROWD_IOU", "0.25"))
+
+# A class holding less than this share of instances is flagged as
+# under-represented relative to an even split across classes.
+CLASS_IMBALANCE_RATIO: Final[float] = float(os.getenv("MD_IMBALANCE", "0.5"))
+
+# ---------------------------------------------------------------------------
 # Device selection
 # ---------------------------------------------------------------------------
 DEVICE_OVERRIDE: Final[str] = os.getenv("MD_DEVICE", "").strip()

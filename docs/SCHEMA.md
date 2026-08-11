@@ -5,7 +5,7 @@ consumes it.** A dashboard, a report generator, or a notebook should be built
 against this document alone. Reading the Python is not required, and nothing
 here depends on it.
 
-Schema version: **3** · Default location: `db/model_doctor.db` (SQLite)
+Schema version: **4** · Default location: `db/model_doctor.db` (SQLite)
 
 Populated databases are **not** committed — image paths and filenames carry
 dataset-specific identifiers. This schema is committed; the data is not.
@@ -31,6 +31,7 @@ of five outcomes.
         │                                            │
         │                                            ├─▶ embeddings  (v2)
         │                                            ├─▶ heatmaps    (v3)
+        │                                            ├─▶ root_causes (v4)
         │                                            │
         │                                            │  future milestones
         │                                            ├─▶ clusters
@@ -200,6 +201,69 @@ WHERE f.run_id = ? AND f.outcome != 'correct';
 strongly to that region. A diffuse map on a false negative is meaningful rather
 than broken — it is the visual signature of the model not attending there.
 
+### `root_causes` — added in schema version 4
+
+Conditions attributed to a failure: the region was dark or blurred, the object
+was small or cut off by the frame, it sat among crowded neighbours, its class is
+under-represented, or that class is repeatedly misidentified.
+
+| Column | Type | Null | Meaning |
+| --- | --- | --- | --- |
+| `id` | INTEGER PK | no | Attribution identifier |
+| `finding_id` | INTEGER FK → `findings.id` | no | The failure this concerns |
+| `run_id` | INTEGER FK → `runs.id` | no | Owning run, for direct filtering |
+| `factor` | TEXT | no | One of the identifiers below |
+| `score` | REAL | no | Severity in `[0, 1]` |
+| `evidence` | TEXT | no | The measurement, human-readable |
+
+Unique on `(finding_id, factor)`. **A finding may have several factors** — most
+do; they are not mutually exclusive.
+
+#### Factor identifiers
+
+| Factor | Meaning | Example evidence |
+| --- | --- | --- |
+| `blur` | Little high-frequency detail in the region | `Laplacian variance 5.1 < 100` |
+| `low_light` | Region underexposed | `mean luminance 23.0/255 < 60` |
+| `small_object` | Object covers very little of the frame | `0.051% of image < 0.12%` |
+| `edge_truncation` | Object cut off by the frame | `touches left, top, bottom` |
+| `crowding` | Heavy overlap with neighbouring annotations | `1 neighbour(s) overlapping, max IoU 0.85` |
+| `class_imbalance` | Class under-represented in the run | `'handle' has 3 of 210 instances` |
+| `recurring_misclassification` | Class repeatedly named wrongly | `'door_frame' misidentified 11 time(s)` |
+
+**`score` is comparable within a factor, not across factors.** A blur score of
+0.9 and a crowding score of 0.9 do not mean the same thing. Rank within a
+factor; do not sum across them.
+
+**These are correlations, not proofs.** A blurred region the model missed may
+have been missed because of the blur or for an unrelated reason that co-occurs
+with it. Present them as hypotheses to check, not as causes established.
+
+**Not every failure has one.** Some have no measurable condition attached. Use
+a `LEFT JOIN` when you need all failures regardless.
+
+```sql
+SELECT f.id, f.outcome, f.class_name, rc.factor, rc.score, rc.evidence
+FROM findings f
+LEFT JOIN root_causes rc ON rc.finding_id = f.id
+WHERE f.run_id = ? AND f.outcome != 'correct'
+ORDER BY rc.score DESC;
+```
+
+**Once clustering exists**, a per-cluster summary needs no schema change:
+
+```sql
+SELECT c.cluster_id, rc.factor, COUNT(*) AS n
+FROM root_causes rc JOIN clusters c ON c.finding_id = rc.finding_id
+WHERE rc.run_id = ? GROUP BY c.cluster_id, rc.factor ORDER BY n DESC;
+```
+
+**One documented limitation.** The roadmap asks for directed confusion pairs
+("A mistaken for B"). That needs the *predicted* class, which `findings` does
+not store — by design, so per-class statistics charge a miss to the class that
+was missed. `recurring_misclassification` therefore reports which classes are
+repeatedly misidentified, without the direction. See DECISIONS D-028.
+
 ---
 
 ## 3. Outcome values
@@ -348,7 +412,7 @@ tables, never columns to these:
 | Feature extraction | `embeddings` | `finding_id` | **Exists (v2)** |
 | Grad-CAM explanation | `heatmaps` | `finding_id` | **Exists (v3)** |
 | Failure clustering | `clusters` | `finding_id` | Not yet created |
-| Root-cause analysis | `root_causes` | `finding_id` | Not yet created |
+| Root-cause analysis | `root_causes` | `finding_id` | **Exists (v4)** |
 | Recommendations | `recommendations` | `cluster_id` or `finding_id` | Not yet created |
 
 `embeddings` arriving in version 2 is this guarantee working as intended: a new
@@ -377,6 +441,7 @@ python -m app.diagnosis --split test --save     # runs, images, findings
 python -m app.diagnosis --list-runs
 python -m app.features --run 1                  # embeddings (downloads CLIP once)
 python -m app.explainability --run 1 --imgsz 672  # heatmaps
+python -m app.root_cause --run 1                  # root_causes
 ```
 
 Foreign keys are enforced, so consumers may rely on referential integrity.
