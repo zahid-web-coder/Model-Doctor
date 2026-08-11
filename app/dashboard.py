@@ -14,10 +14,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
-from PIL import Image, ImageDraw
 import plotly.express as px
+import plotly.graph_objects as go
 import streamlit as st
-
+from PIL import Image, ImageDraw
 
 OUTCOME_LABELS: Final = {
     "correct": "Correct",
@@ -155,6 +155,12 @@ def query_rows(
     return [dict(row) for row in rows]
 
 
+# ---------------------------------------------------------------------------
+# Cached data-loading functions
+# ---------------------------------------------------------------------------
+
+
+@st.cache_data(show_spinner=False)
 def load_runs(database: Path) -> list[dict[str, object]]:
     """List runs newest first with enough context to distinguish them.
 
@@ -176,6 +182,7 @@ def load_runs(database: Path) -> list[dict[str, object]]:
     )
 
 
+@st.cache_data(show_spinner=False)
 def load_run_summary(database: Path, run_id: int) -> RunSummary:
     """Compute transparent, non-mAP totals for a single diagnosis run.
 
@@ -219,6 +226,7 @@ def load_run_summary(database: Path, run_id: int) -> RunSummary:
     )
 
 
+@st.cache_data(show_spinner=False)
 def load_outcome_counts(
     database: Path,
     run_id: int,
@@ -258,6 +266,7 @@ def load_outcome_counts(
     return sorted(rows, key=lambda row: rank.get(str(row["outcome"]), 99))
 
 
+@st.cache_data(show_spinner=False)
 def load_class_statistics(
     database: Path,
     run_id: int,
@@ -300,6 +309,7 @@ def load_class_statistics(
     )
 
 
+@st.cache_data(show_spinner=False)
 def load_worst_images(
     database: Path,
     run_id: int,
@@ -338,6 +348,7 @@ def load_worst_images(
     )
 
 
+@st.cache_data(show_spinner=False)
 def load_image_findings(
     database: Path,
     image_id: int,
@@ -371,6 +382,7 @@ def load_image_findings(
     )
 
 
+@st.cache_data(show_spinner=False)
 def load_errored_images(database: Path, run_id: int) -> list[dict[str, object]]:
     """List images that never completed so they are not counted as clean images.
 
@@ -391,6 +403,117 @@ def load_errored_images(database: Path, run_id: int) -> list[dict[str, object]]:
         """,
         (run_id,),
     )
+
+
+@st.cache_data(show_spinner=False)
+def load_class_names(database: Path, run_id: int) -> list[str]:
+    """Return distinct class names in alphabetical order for the class filter.
+
+    Args:
+        database: Saved diagnosis database to query.
+        run_id: Identifier of the selected run.
+
+    Returns:
+        Sorted list of class name strings.
+    """
+    rows = query_rows(
+        database,
+        """
+        SELECT DISTINCT class_name
+        FROM findings
+        WHERE run_id = ?
+        ORDER BY class_name
+        """,
+        (run_id,),
+    )
+    return [str(row["class_name"]) for row in rows]
+
+
+@st.cache_data(show_spinner=False)
+def load_class_statistics_filtered(
+    database: Path,
+    run_id: int,
+    outcomes: Sequence[str],
+    class_names: Sequence[str] | None = None,
+) -> list[dict[str, object]]:
+    """Per-class statistics with optional class name filter.
+
+    Args:
+        database: Saved diagnosis database to query.
+        run_id: Identifier of the selected run.
+        outcomes: Outcomes currently enabled.
+        class_names: Class names to include. ``None`` retains all classes.
+
+    Returns:
+        Per-class outcome counts and mean IoU.
+    """
+    if not outcomes:
+        return []
+
+    outcome_placeholders = ", ".join("?" for _ in outcomes)
+    parameters: list[object] = [run_id, *outcomes]
+
+    class_sql = ""
+    if class_names is not None and class_names:
+        class_placeholders = ", ".join("?" for _ in class_names)
+        class_sql = f" AND class_name IN ({class_placeholders})"
+        parameters.extend(class_names)
+    elif class_names is not None:
+        return []
+
+    return query_rows(
+        database,
+        f"""
+        SELECT class_name,
+               SUM(CASE WHEN outcome = 'correct' THEN 1 ELSE 0 END) AS correct,
+               SUM(CASE WHEN outcome = 'wrong_class' THEN 1 ELSE 0 END)
+                   AS wrong_class,
+               SUM(CASE WHEN outcome = 'poor_localization' THEN 1 ELSE 0 END)
+                   AS poor_localization,
+               SUM(CASE WHEN outcome = 'false_positive' THEN 1 ELSE 0 END)
+                   AS false_positive,
+               SUM(CASE WHEN outcome = 'false_negative' THEN 1 ELSE 0 END)
+                   AS false_negative,
+               ROUND(AVG(iou), 4) AS mean_iou
+        FROM findings
+        WHERE run_id = ? AND outcome IN ({outcome_placeholders}){class_sql}
+        GROUP BY class_name
+        ORDER BY class_name
+        """,
+        parameters,
+    )
+
+
+@st.cache_data(show_spinner=False)
+def load_run_comparison(
+    database: Path,
+    run_id_a: int,
+    run_id_b: int,
+) -> list[dict[str, object]]:
+    """Load outcome counts for two runs side by side (SCHEMA.md §5).
+
+    Args:
+        database: Saved diagnosis database to query.
+        run_id_a: First run identifier.
+        run_id_b: Second run identifier.
+
+    Returns:
+        Rows with run_id, outcome, and count.
+    """
+    return query_rows(
+        database,
+        """
+        SELECT run_id, outcome, COUNT(*) AS n
+        FROM findings WHERE run_id IN (?, ?)
+        GROUP BY run_id, outcome
+        """,
+        (run_id_a, run_id_b),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Image rendering
+# ---------------------------------------------------------------------------
 
 
 def image_with_overlays(
@@ -420,11 +543,14 @@ def image_with_overlays(
     canvas = ImageDraw.Draw(source)
     line_width = max(2, round(3 * scale))
     for finding in findings:
+        outcome = str(finding.get("outcome", ""))
+        outcome_color = OUTCOME_COLORS.get(outcome, PREDICTION_COLOR)
+
         _draw_box(
             canvas,
             finding,
             prefix="pred",
-            color=PREDICTION_COLOR,
+            color=outcome_color,
             label="Pred",
             scale=scale,
             line_width=line_width,
@@ -461,8 +587,10 @@ def _draw_box(
     canvas.rectangle(scaled, outline=color, width=line_width)
     class_name = str(finding["class_name"])
     confidence = finding["confidence"]
+    iou = finding["iou"]
     confidence_text = f" {float(confidence):.2f}" if confidence is not None else ""
-    text = f"{label}: {class_name}{confidence_text}"
+    iou_text = f" IoU:{float(iou):.2f}" if iou is not None else ""
+    text = f"{label}: {class_name}{confidence_text}{iou_text}"
     text_origin = (scaled[0] + 3, max(0, scaled[1] - 14))
     canvas.text(text_origin, text, fill=color, stroke_width=1, stroke_fill="#0b1020")
 
@@ -492,6 +620,11 @@ def _draw_polygon(
         )
 
 
+# ---------------------------------------------------------------------------
+# Label helpers
+# ---------------------------------------------------------------------------
+
+
 def run_label(run: dict[str, object]) -> str:
     """Format a concise selector label while retaining reproducibility context."""
     model_hash = str(run["model_sha256"])[:8]
@@ -500,35 +633,196 @@ def run_label(run: dict[str, object]) -> str:
     )
 
 
-def inject_theme() -> None:
-    """Apply a restrained visual system.
+def _outcome_badge_html(outcome: str) -> str:
+    """Return an inline HTML pill badge coloured by outcome type."""
+    color = OUTCOME_COLORS.get(outcome, "#94a3b8")
+    label = OUTCOME_LABELS.get(outcome, outcome)
+    return (
+        f'<span style="background:{color}22; color:{color}; '
+        f'padding:2px 10px; border-radius:20px; font-size:.82rem; '
+        f'font-weight:600; border:1px solid {color}44;">{label}</span>'
+    )
 
-    This keeps the dashboard from looking default.
+
+# ---------------------------------------------------------------------------
+# Theme
+# ---------------------------------------------------------------------------
+
+
+def inject_theme() -> None:
+    """Apply a dark-mode glassmorphism design system with Inter font.
+
+    This transforms the default Streamlit appearance into a premium
+    portfolio-quality interface with consistent spacing, subtle animations,
+    and a refined colour palette.
     """
     st.markdown(
         """
         <style>
-          .stApp { background: #f5f7fb; color: #172033; }
-          [data-testid="stSidebar"] { background: #101828; }
-          [data-testid="stSidebar"] * { color: #e5e7eb; }
-          [data-testid="stMetric"] {
-            background: #ffffff; border: 1px solid #e6eaf0; border-radius: 14px;
-            padding: 16px; box-shadow: 0 5px 18px rgba(15, 23, 42, 0.05);
+          @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+
+          /* ── Global ─────────────────────────────────────────── */
+          .stApp {
+            background: linear-gradient(135deg, #0b1120 0%, #101d35 50%, #0f172a 100%);
+            color: #e2e8f0;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
           }
-          .eyebrow { color: #64748b; font-size: 0.78rem; font-weight: 700;
-            letter-spacing: .14em; text-transform: uppercase; margin-bottom: .35rem; }
-          .hero-title { color: #101828; font-size: 2.4rem; font-weight: 750;
-            letter-spacing: -.05em; margin: 0 0 .2rem; }
-          .hero-subtitle { color: #667085; font-size: 1.02rem; margin-bottom: 1.5rem; }
-          .section-title { color: #172033; font-size: 1.2rem; font-weight: 700;
-            margin: 1.4rem 0 .4rem; }
-          .legend { color: #475467; font-size: .9rem; }
-          .legend-dot { display: inline-block; width: 10px; height: 10px;
-            border-radius: 50%; margin: 0 6px 0 14px; }
+          /* Streamlit text elements */
+          .stApp p, .stApp span, .stApp label, .stApp div {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+          }
+
+          /* ── Sidebar ────────────────────────────────────────── */
+          [data-testid="stSidebar"] {
+            background: linear-gradient(180deg, #0f172a 0%, #1e293b 100%);
+            border-right: 1px solid rgba(148, 163, 184, 0.08);
+          }
+          [data-testid="stSidebar"] * { color: #cbd5e1; }
+          [data-testid="stSidebar"] .stSelectbox label,
+          [data-testid="stSidebar"] .stMultiSelect label {
+            color: #94a3b8; font-weight: 600; font-size: .82rem;
+            text-transform: uppercase; letter-spacing: .08em;
+          }
+
+          /* ── Metric cards (glassmorphism) ────────────────── */
+          [data-testid="stMetric"] {
+            background: rgba(30, 41, 59, 0.65);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            border: 1px solid rgba(148, 163, 184, 0.1);
+            border-radius: 16px;
+            padding: 20px 18px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.25);
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+          }
+          [data-testid="stMetric"]:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+          }
+          [data-testid="stMetric"] label {
+            color: #94a3b8 !important;
+            font-weight: 600; font-size: .78rem;
+            letter-spacing: .06em; text-transform: uppercase;
+          }
+          [data-testid="stMetric"] [data-testid="stMetricValue"] {
+            color: #f1f5f9 !important;
+            font-weight: 800; font-size: 1.8rem;
+          }
+          [data-testid="stMetric"] [data-testid="stMetricDelta"] {
+            font-weight: 600;
+          }
+
+          /* ── Glass panels ──────────────────────────────────── */
+          .glass-panel {
+            background: rgba(30, 41, 59, 0.5);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid rgba(148, 163, 184, 0.08);
+            border-radius: 16px;
+            padding: 24px;
+            margin-bottom: 1rem;
+          }
+
+          /* ── Typography ────────────────────────────────────── */
+          .eyebrow {
+            color: #2dd4bf; font-size: 0.78rem; font-weight: 700;
+            letter-spacing: .14em; text-transform: uppercase;
+            margin-bottom: .35rem;
+          }
+          .hero-title {
+            color: #f1f5f9; font-size: 2.6rem; font-weight: 800;
+            letter-spacing: -.04em; margin: 0 0 .2rem;
+            background: linear-gradient(135deg, #f1f5f9 0%, #94a3b8 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+          }
+          .hero-subtitle {
+            color: #94a3b8; font-size: 1.02rem; margin-bottom: 1.5rem;
+            line-height: 1.6;
+          }
+          .section-title {
+            color: #e2e8f0; font-size: 1.25rem; font-weight: 700;
+            margin: 1.8rem 0 .6rem;
+            padding-bottom: .4rem;
+            border-bottom: 2px solid rgba(45, 212, 191, 0.2);
+          }
+
+          /* ── Legend ─────────────────────────────────────────── */
+          .legend { color: #94a3b8; font-size: .9rem; }
+          .legend-dot {
+            display: inline-block; width: 10px; height: 10px;
+            border-radius: 50%; margin: 0 6px 0 14px;
+          }
+
+          /* ── Dataframes ────────────────────────────────────── */
+          [data-testid="stDataFrame"] {
+            border-radius: 12px; overflow: hidden;
+          }
+
+          /* ── Expanders ─────────────────────────────────────── */
+          .streamlit-expanderHeader {
+            background: rgba(30, 41, 59, 0.4);
+            border-radius: 12px;
+            color: #94a3b8 !important;
+          }
+
+          /* ── Divider ───────────────────────────────────────── */
+          hr { border-color: rgba(148, 163, 184, 0.1); }
+
+          /* ── Tabs ──────────────────────────────────────────── */
+          .stTabs [data-baseweb="tab-list"] {
+            gap: 8px;
+            background: rgba(30, 41, 59, 0.3);
+            border-radius: 12px;
+            padding: 4px;
+          }
+          .stTabs [data-baseweb="tab"] {
+            border-radius: 8px;
+            color: #94a3b8;
+            font-weight: 600;
+          }
+          .stTabs [aria-selected="true"] {
+            background: rgba(45, 212, 191, 0.15);
+            color: #2dd4bf !important;
+          }
+
+          /* ── Onboarding card ───────────────────────────────── */
+          .onboard-card {
+            background: rgba(30, 41, 59, 0.6);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(45, 212, 191, 0.15);
+            border-radius: 20px;
+            padding: 48px 40px;
+            text-align: center;
+            max-width: 600px;
+            margin: 80px auto;
+          }
+          .onboard-card h2 {
+            color: #f1f5f9; font-size: 1.8rem; margin-bottom: .8rem;
+          }
+          .onboard-card p {
+            color: #94a3b8; font-size: 1rem; line-height: 1.7;
+          }
+          .onboard-card code {
+            background: rgba(45, 212, 191, 0.1);
+            color: #2dd4bf;
+            padding: 2px 8px; border-radius: 6px;
+          }
+
+          /* ── Comparison delta badges ───────────────────────── */
+          .delta-up { color: #2dd4bf; font-weight: 700; }
+          .delta-down { color: #fb7185; font-weight: 700; }
+          .delta-neutral { color: #94a3b8; font-weight: 600; }
         </style>
         """,
         unsafe_allow_html=True,
     )
+
+
+# ---------------------------------------------------------------------------
+# Chart renderers
+# ---------------------------------------------------------------------------
 
 
 def render_outcome_chart(counts: Sequence[dict[str, object]]) -> None:
@@ -556,10 +850,18 @@ def render_outcome_chart(counts: Sequence[dict[str, object]]) -> None:
         height=320,
         margin=dict(l=10, r=10, t=10, b=10),
         paper_bgcolor="rgba(0,0,0,0)",
-        legend=dict(orientation="h", yanchor="bottom", y=-0.25),
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(family="Inter", color="#e2e8f0"),
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=-0.25,
+            font=dict(color="#94a3b8"),
+        ),
     )
     figure.update_traces(
         textinfo="percent+label",
+        textfont=dict(color="#e2e8f0"),
         hovertemplate="%{label}: %{value}<extra></extra>",
     )
     st.plotly_chart(figure, use_container_width=True, config={"displayModeBar": False})
@@ -600,9 +902,21 @@ def render_class_chart(statistics: Sequence[dict[str, object]]) -> None:
         margin=dict(l=10, r=10, t=10, b=10),
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
-        legend=dict(orientation="h", yanchor="bottom", y=-0.35),
-        xaxis_title=None,
-        yaxis_title="Findings",
+        font=dict(family="Inter", color="#e2e8f0"),
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=-0.35,
+            font=dict(color="#94a3b8"),
+        ),
+        xaxis=dict(
+            title=None, color="#94a3b8",
+            gridcolor="rgba(148,163,184,0.08)",
+        ),
+        yaxis=dict(
+            title="Findings", color="#94a3b8",
+            gridcolor="rgba(148,163,184,0.08)",
+        ),
     )
     st.plotly_chart(
         figure,
@@ -611,18 +925,160 @@ def render_class_chart(statistics: Sequence[dict[str, object]]) -> None:
     )
 
 
+def render_comparison_chart(
+    run_a: dict[str, object],
+    run_b: dict[str, object],
+    comparison_rows: Sequence[dict[str, object]],
+) -> None:
+    """Render side-by-side outcome comparison of two runs with delta indicators."""
+    run_a_id = int(run_a["id"])
+    run_b_id = int(run_b["id"])
+    run_a_hash = str(run_a["model_sha256"])[:8]
+    run_b_hash = str(run_b["model_sha256"])[:8]
+
+    if run_a["model_sha256"] != run_b["model_sha256"]:
+        st.warning(
+            f"⚠️ These runs use different models "
+            f"(`{run_a_hash}…` vs `{run_b_hash}…`). "
+            "Outcome deltas may reflect model changes, not data changes."
+        )
+
+    counts_a: dict[str, int] = {}
+    counts_b: dict[str, int] = {}
+    for row in comparison_rows:
+        rid = int(row["run_id"])
+        outcome = str(row["outcome"])
+        count = int(row["n"])
+        if rid == run_a_id:
+            counts_a[outcome] = count
+        elif rid == run_b_id:
+            counts_b[outcome] = count
+
+    outcomes_in_order = list(OUTCOME_LABELS.keys())
+    labels = [OUTCOME_LABELS[o] for o in outcomes_in_order]
+    vals_a = [counts_a.get(o, 0) for o in outcomes_in_order]
+    vals_b = [counts_b.get(o, 0) for o in outcomes_in_order]
+    colors = [OUTCOME_COLORS[o] for o in outcomes_in_order]
+
+    figure = go.Figure()
+    figure.add_trace(go.Bar(
+        name=f"Run {run_a_id}",
+        x=labels,
+        y=vals_a,
+        marker_color=colors,
+        marker_line=dict(width=0),
+        opacity=0.75,
+    ))
+    figure.add_trace(go.Bar(
+        name=f"Run {run_b_id}",
+        x=labels,
+        y=vals_b,
+        marker_color=colors,
+        marker_line=dict(width=2, color="#f1f5f9"),
+        marker_pattern_shape="/",
+        opacity=0.5,
+    ))
+    figure.update_layout(
+        barmode="group",
+        height=340,
+        margin=dict(l=10, r=10, t=30, b=10),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(family="Inter", color="#e2e8f0"),
+        legend=dict(
+            orientation="h", yanchor="bottom", y=-0.2,
+            font=dict(color="#94a3b8"),
+        ),
+        xaxis=dict(
+            color="#94a3b8",
+            gridcolor="rgba(148,163,184,0.08)",
+        ),
+        yaxis=dict(
+            title="Findings", color="#94a3b8",
+            gridcolor="rgba(148,163,184,0.08)",
+        ),
+    )
+    st.plotly_chart(figure, use_container_width=True, config={"displayModeBar": False})
+
+    # Delta table
+    delta_rows = []
+    for outcome in outcomes_in_order:
+        val_a = counts_a.get(outcome, 0)
+        val_b = counts_b.get(outcome, 0)
+        diff = val_b - val_a
+        if outcome == "correct":
+            if diff > 0:
+                css = "delta-up"
+            elif diff < 0:
+                css = "delta-down"
+            else:
+                css = "delta-neutral"
+        else:
+            if diff > 0:
+                css = "delta-down"
+            elif diff < 0:
+                css = "delta-up"
+            else:
+                css = "delta-neutral"
+        arrow = "↑" if diff > 0 else ("↓" if diff < 0 else "—")
+        delta_rows.append(
+            f'<tr><td>{_outcome_badge_html(outcome)}</td>'
+            f'<td style="text-align:right">{val_a}</td>'
+            f'<td style="text-align:right">{val_b}</td>'
+            f'<td style="text-align:right" class="{css}">'
+            f'{arrow} {abs(diff)}</td></tr>'
+        )
+    table_html = (
+        '<div class="glass-panel">'
+        '<table style="width:100%; border-collapse:collapse; color:#e2e8f0;">'
+        '<thead><tr style="border-bottom:1px solid rgba(148,163,184,0.15);">'
+        '<th style="text-align:left;padding:8px;color:#94a3b8;">Outcome</th>'
+        f'<th style="text-align:right;padding:8px;color:#94a3b8;">Run {run_a_id}</th>'
+        f'<th style="text-align:right;padding:8px;color:#94a3b8;">Run {run_b_id}</th>'
+        '<th style="text-align:right;padding:8px;color:#94a3b8;">Delta</th>'
+        '</tr></thead><tbody>'
+        + "".join(delta_rows) +
+        '</tbody></table></div>'
+    )
+    st.markdown(table_html, unsafe_allow_html=True)
+
+
+# ---------------------------------------------------------------------------
+# Dashboard pages
+# ---------------------------------------------------------------------------
+
+
+def render_onboarding() -> None:
+    """Show a premium empty state when no database or no runs exist."""
+    st.markdown(
+        """
+        <div class="onboard-card">
+            <h2>🔬 Welcome to Model Doctor</h2>
+            <p>
+                No diagnosis runs found yet.<br>
+                Generate your first run with:
+            </p>
+            <p><code>python -m app.diagnosis --split test --save</code></p>
+            <p style="margin-top:1.5rem; font-size:.88rem;">
+                The dashboard will populate automatically once a run is saved
+                to the configured SQLite database.
+            </p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def render_dashboard(database: Path) -> None:
     """Render all dashboard surfaces after a usable database is selected."""
     runs = load_runs(database)
     if not runs:
-        st.info(
-            "No saved runs yet. Run `python -m app.diagnosis --split test "
-            "--save` first."
-        )
+        render_onboarding()
         return
 
+    # ── Sidebar ──────────────────────────────────────────────────────────
     with st.sidebar:
-        st.markdown("### Explore diagnosis runs")
+        st.markdown("### 🔬 Explore diagnosis runs")
         selected_run = st.selectbox("Run", runs, format_func=run_label)
         selected_outcomes = st.multiselect(
             "Outcome filter",
@@ -630,17 +1086,40 @@ def render_dashboard(database: Path) -> None:
             default=list(OUTCOME_LABELS),
             format_func=lambda outcome: OUTCOME_LABELS[outcome],
         )
+
+        # Class filter (new)
+        run_id = int(selected_run["id"])
+        available_classes = load_class_names(database, run_id)
+        selected_classes = st.multiselect(
+            "Class filter",
+            options=available_classes,
+            default=[],
+            help="Leave empty to include all classes.",
+        )
+
+        st.divider()
         st.caption(
             "Filters refine charts and the image explorer. Summary cards show "
             "the complete run."
         )
 
-    run_id = int(selected_run["id"])
+    # ── Data queries ─────────────────────────────────────────────────────
     summary = load_run_summary(database, run_id)
-    all_outcomes = load_outcome_counts(database, run_id)
-    filtered_outcomes = load_outcome_counts(database, run_id, selected_outcomes)
-    class_statistics = load_class_statistics(database, run_id, selected_outcomes)
+    filtered_outcomes = load_outcome_counts(
+        database,
+        run_id,
+        tuple(selected_outcomes) if selected_outcomes else None,
+    )
 
+    effective_classes = tuple(selected_classes) if selected_classes else None
+    class_statistics = load_class_statistics_filtered(
+        database,
+        run_id,
+        tuple(selected_outcomes),
+        effective_classes,
+    )
+
+    # ── Hero header ──────────────────────────────────────────────────────
     st.markdown(
         '<div class="eyebrow">Diagnosis intelligence</div>',
         unsafe_allow_html=True,
@@ -655,6 +1134,7 @@ def render_dashboard(database: Path) -> None:
         unsafe_allow_html=True,
     )
 
+    # ── Metric cards ─────────────────────────────────────────────────────
     metrics = st.columns(5)
     metrics[0].metric("Images", summary.image_count)
     metrics[1].metric("Processed", summary.processed_image_count)
@@ -666,137 +1146,238 @@ def render_dashboard(database: Path) -> None:
         "run's fixed thresholds."
     )
 
-    chart_column, run_column = st.columns((1.15, 0.85), gap="large")
-    with chart_column:
-        st.markdown(
-            '<div class="section-title">Outcome mix</div>',
-            unsafe_allow_html=True,
-        )
-        render_outcome_chart(filtered_outcomes)
-    with run_column:
-        st.markdown(
-            '<div class="section-title">Run provenance</div>',
-            unsafe_allow_html=True,
-        )
-        st.dataframe(
-            {
-                "Setting": [
-                    "Split",
-                    "Model hash",
-                    "Confidence threshold",
-                    "Match IoU",
-                    "Localization floor",
-                    "Image size",
-                ],
-                "Value": [
-                    selected_run["split"],
-                    str(selected_run["model_sha256"])[:12],
-                    selected_run["confidence_threshold"],
-                    selected_run["match_iou_threshold"],
-                    selected_run["localization_iou_floor"],
-                    selected_run["image_size"],
-                ],
-            },
-            hide_index=True,
-            use_container_width=True,
-        )
-        st.caption(f"{len(all_outcomes)} outcome types recorded in this run.")
-
-    st.markdown(
-        '<div class="section-title">Per-class statistics</div>',
-        unsafe_allow_html=True,
+    # ── Tabs ─────────────────────────────────────────────────────────────
+    tab_overview, tab_classes, tab_images, tab_compare = st.tabs(
+        ["📊 Overview", "📋 Per-class", "🔍 Image explorer", "⚖️ Run comparison"]
     )
-    render_class_chart(class_statistics)
-    if class_statistics:
-        display_rows = [
-            {
-                "Class": row["class_name"],
-                "Correct": row["correct"],
-                "Wrong class": row["wrong_class"],
-                "Poor localization": row["poor_localization"],
-                "False positive": row["false_positive"],
-                "False negative": row["false_negative"],
-                "Mean IoU": row["mean_iou"],
-            }
-            for row in class_statistics
-        ]
-        st.dataframe(display_rows, hide_index=True, use_container_width=True)
 
-    st.markdown(
-        '<div class="section-title">Worst-image explorer</div>',
-        unsafe_allow_html=True,
-    )
-    worst_images = load_worst_images(database, run_id, selected_outcomes)
-    if not worst_images:
-        st.info(
-            "No failures match the active filter. Select a failure outcome to "
-            "explore images."
-        )
-    else:
-        selected_image = st.selectbox(
-            "Image ranked by failure count",
-            worst_images,
-            format_func=lambda row: (
-                f"{row['filename']} · {row['failure_count']} selected failures"
-            ),
-        )
-        findings = load_image_findings(
-            database,
-            int(selected_image["id"]),
-            selected_outcomes,
-        )
-        image_column, detail_column = st.columns((1.55, 0.85), gap="large")
-        with image_column:
+    # ── Tab 1: Overview ──────────────────────────────────────────────────
+    with tab_overview:
+        chart_col, provenance_col = st.columns((1.15, 0.85), gap="large")
+        with chart_col:
             st.markdown(
-                '<div class="legend"><span class="legend-dot" '
-                'style="background:#fb7185"></span>Prediction '
-                '<span class="legend-dot" style="background:#2dd4bf"></span>'
-                'Ground truth / polygon</div>',
+                '<div class="section-title">Outcome mix</div>',
                 unsafe_allow_html=True,
             )
-            image_path = Path(str(selected_image["path"]))
-            if image_path.is_file():
-                st.image(
-                    image_with_overlays(image_path, findings),
-                    use_column_width=True,
-                )
-            else:
-                st.warning(
-                    f"Image file is unavailable at {image_path}. The stored "
-                    "findings remain visible."
-                )
-        with detail_column:
-            st.markdown("#### Selected image")
-            st.write(selected_image["filename"])
-            st.caption(f"{selected_image['width']} × {selected_image['height']} px")
-            st.metric("Selected failures", selected_image["failure_count"])
-            finding_rows = [
+            render_outcome_chart(filtered_outcomes)
+        with provenance_col:
+            st.markdown(
+                '<div class="section-title">Run provenance</div>',
+                unsafe_allow_html=True,
+            )
+            st.dataframe(
                 {
-                    "Outcome": OUTCOME_LABELS.get(str(row["outcome"]), row["outcome"]),
-                    "Class": row["class_name"],
-                    "Confidence": row["confidence"],
-                    "IoU": row["iou"],
-                }
-                for row in findings
-            ]
-            st.dataframe(finding_rows, hide_index=True, use_container_width=True)
+                    "Setting": [
+                        "Split",
+                        "Model hash",
+                        "Confidence threshold",
+                        "Match IoU",
+                        "Localization floor",
+                        "Image size",
+                    ],
+                    "Value": [
+                        selected_run["split"],
+                        str(selected_run["model_sha256"])[:12],
+                        selected_run["confidence_threshold"],
+                        selected_run["match_iou_threshold"],
+                        selected_run["localization_iou_floor"],
+                        selected_run["image_size"],
+                    ],
+                },
+                hide_index=True,
+                use_container_width=True,
+            )
 
-    errored_images = load_errored_images(database, run_id)
-    if errored_images:
-        with st.expander(f"{len(errored_images)} image processing error(s)"):
-            st.dataframe(errored_images, hide_index=True, use_container_width=True)
+        errored_images = load_errored_images(database, run_id)
+        if errored_images:
+            with st.expander(
+                f"⚠️ {len(errored_images)} image processing error(s)"
+            ):
+                st.dataframe(
+                    errored_images, hide_index=True, use_container_width=True
+                )
+
+    # ── Tab 2: Per-class ─────────────────────────────────────────────────
+    with tab_classes:
+        st.markdown(
+            '<div class="section-title">Per-class statistics</div>',
+            unsafe_allow_html=True,
+        )
+        if selected_classes:
+            st.info(
+                f"Filtered to {len(selected_classes)} class(es): "
+                + ", ".join(selected_classes)
+            )
+        render_class_chart(class_statistics)
+        if class_statistics:
+            display_rows = []
+            for row in class_statistics:
+                total = sum(
+                    int(row[o] or 0) for o in OUTCOME_LABELS
+                )
+                correct_count = int(row["correct"] or 0)
+                success_rate = (
+                    round(100 * correct_count / total, 1)
+                    if total > 0
+                    else 0.0
+                )
+                display_rows.append(
+                    {
+                        "Class": row["class_name"],
+                        "Correct": row["correct"],
+                        "Wrong class": row["wrong_class"],
+                        "Poor localization": row["poor_localization"],
+                        "False positive": row["false_positive"],
+                        "False negative": row["false_negative"],
+                        "Mean IoU": row["mean_iou"],
+                        "Success %": success_rate,
+                    }
+                )
+            st.dataframe(display_rows, hide_index=True, use_container_width=True)
+
+    # ── Tab 3: Image explorer ────────────────────────────────────────────
+    with tab_images:
+        st.markdown(
+            '<div class="section-title">Worst-image explorer</div>',
+            unsafe_allow_html=True,
+        )
+        worst_images = load_worst_images(
+            database, run_id, tuple(selected_outcomes)
+        )
+        if not worst_images:
+            st.info(
+                "No failures match the active filter. Select a failure outcome to "
+                "explore images."
+            )
+        else:
+            selected_image = st.selectbox(
+                "Image ranked by failure count",
+                worst_images,
+                format_func=lambda row: (
+                    f"{row['filename']} · {row['failure_count']} failures"
+                ),
+            )
+            findings = load_image_findings(
+                database,
+                int(selected_image["id"]),
+                tuple(selected_outcomes),
+            )
+            image_column, detail_column = st.columns((1.55, 0.85), gap="large")
+            with image_column:
+                # Colour legend by outcome
+                legend_items = []
+                for outcome_key, outcome_label in OUTCOME_LABELS.items():
+                    colour = OUTCOME_COLORS[outcome_key]
+                    legend_items.append(
+                        f'<span class="legend-dot" '
+                        f'style="background:{colour}"></span>{outcome_label}'
+                    )
+                legend_html = (
+                    '<div class="legend">Boxes coloured by outcome: '
+                    + " ".join(legend_items) + "</div>"
+                )
+                st.markdown(legend_html, unsafe_allow_html=True)
+
+                image_path = Path(str(selected_image["path"]))
+                if image_path.is_file():
+                    st.image(
+                        image_with_overlays(image_path, findings),
+                        use_container_width=True,
+                    )
+                else:
+                    st.warning(
+                        f"Image file is unavailable at `{image_path}`. "
+                        "The stored findings remain visible."
+                    )
+            with detail_column:
+                st.markdown("#### Selected image")
+                st.write(selected_image["filename"])
+                width = selected_image.get("width")
+                height = selected_image.get("height")
+                if width and height:
+                    st.caption(f"{width} × {height} px")
+                st.metric("Selected failures", selected_image["failure_count"])
+
+                # Outcome breakdown mini-badges
+                outcome_counts: dict[str, int] = {}
+                for finding in findings:
+                    outcome_val = str(finding["outcome"])
+                    outcome_counts[outcome_val] = (
+                        outcome_counts.get(outcome_val, 0) + 1
+                    )
+                if outcome_counts:
+                    badges_html = " ".join(
+                        f'{_outcome_badge_html(o)} <span '
+                        f'style="color:#94a3b8;font-size:.85rem;margin-right:8px;">'
+                        f'×{c}</span>'
+                        for o, c in outcome_counts.items()
+                    )
+                    st.markdown(badges_html, unsafe_allow_html=True)
+
+                st.markdown("---")
+                finding_rows = [
+                    {
+                        "Outcome": OUTCOME_LABELS.get(
+                            str(row["outcome"]), row["outcome"]
+                        ),
+                        "Class": row["class_name"],
+                        "Confidence": row["confidence"],
+                        "IoU": row["iou"],
+                    }
+                    for row in findings
+                ]
+                st.dataframe(
+                    finding_rows, hide_index=True, use_container_width=True
+                )
+
+    # ── Tab 4: Run comparison ────────────────────────────────────────────
+    with tab_compare:
+        st.markdown(
+            '<div class="section-title">Run comparison</div>',
+            unsafe_allow_html=True,
+        )
+        if len(runs) < 2:
+            st.info(
+                "Run comparison requires at least two saved runs. "
+                "Execute diagnosis again with different settings to compare."
+            )
+        else:
+            compare_col_a, compare_col_b = st.columns(2)
+            with compare_col_a:
+                run_a = st.selectbox(
+                    "Baseline run (A)",
+                    runs,
+                    index=min(1, len(runs) - 1),
+                    format_func=run_label,
+                    key="compare_run_a",
+                )
+            with compare_col_b:
+                run_b = st.selectbox(
+                    "Candidate run (B)",
+                    runs,
+                    index=0,
+                    format_func=run_label,
+                    key="compare_run_b",
+                )
+            if int(run_a["id"]) == int(run_b["id"]):
+                st.info("Select two different runs to compare.")
+            else:
+                comparison_data = load_run_comparison(
+                    database, int(run_a["id"]), int(run_b["id"])
+                )
+                render_comparison_chart(run_a, run_b, comparison_data)
 
 
 def main() -> None:
     """Start the Streamlit dashboard with a database picker and safe error state."""
     st.set_page_config(
         page_title="Model Doctor",
-        page_icon="◈",
+        page_icon="🔬",
         layout="wide",
     )
     inject_theme()
     with st.sidebar:
-        st.markdown("## Model Doctor")
+        st.markdown("## 🔬 Model Doctor")
         database_text = st.text_input(
             "SQLite database",
             value=str(default_database_path()),
