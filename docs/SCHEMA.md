@@ -34,10 +34,9 @@ of five outcomes.
         │                                            ├─▶ root_causes (v4)
         │                                            │
         │                                            │  future milestones
-        │                                            ├─▶ clusters
-        │                                            ├─▶ root_causes
-        └── reproducibility: model SHA,              └─▶ recommendations
-            thresholds, split, image size                (not yet created)
+        └── reproducibility: model SHA,              ├─▶ clusters
+            thresholds, split, image size            └─▶ recommendations
+                                                        (not yet created)
 ```
 
 `findings` also carries `run_id` directly, so run-scoped queries need no join
