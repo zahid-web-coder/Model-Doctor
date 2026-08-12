@@ -183,12 +183,15 @@ def load_runs(database: Path) -> list[dict[str, object]]:
 
 
 @st.cache_data(show_spinner=False)
-def load_run_summary(database: Path, run_id: int) -> RunSummary:
+def load_run_summary(
+    database: Path, run_id: int, min_confidence: float = 0.0
+) -> RunSummary:
     """Compute transparent, non-mAP totals for a single diagnosis run.
 
     Args:
         database: Saved diagnosis database to query.
         run_id: Identifier of the selected run.
+        min_confidence: Minimum confidence threshold.
 
     Returns:
         Totals for images and findings in the run.
@@ -213,9 +216,9 @@ def load_run_summary(database: Path, run_id: int) -> RunSummary:
                SUM(CASE WHEN outcome != 'correct' THEN 1 ELSE 0 END)
                    AS failure_count
         FROM findings
-        WHERE run_id = ?
+        WHERE run_id = ? AND (confidence IS NULL OR confidence >= ?)
         """,
-        (run_id,),
+        (run_id, min_confidence),
     )[0]
     return RunSummary(
         image_count=int(image_row["image_count"] or 0),
@@ -231,6 +234,7 @@ def load_outcome_counts(
     database: Path,
     run_id: int,
     outcomes: Sequence[str] | None = None,
+    min_confidence: float = 0.0,
 ) -> list[dict[str, object]]:
     """Return diagnosis outcome counts, optionally narrowed by the UI filter.
 
@@ -238,6 +242,7 @@ def load_outcome_counts(
         database: Saved diagnosis database to query.
         run_id: Identifier of the selected run.
         outcomes: Outcomes to include. ``None`` retains every schema outcome.
+        min_confidence: Minimum confidence threshold.
 
     Returns:
         Outcome and count rows sorted by the schema's display order.
@@ -252,12 +257,15 @@ def load_outcome_counts(
         filter_sql = f" AND outcome IN ({placeholders})"
         parameters.extend(outcomes)
 
+    confidence_sql = " AND (confidence IS NULL OR confidence >= ?)"
+    parameters.append(min_confidence)
+
     rows = query_rows(
         database,
         f"""
         SELECT outcome, COUNT(*) AS count
         FROM findings
-        WHERE run_id = ?{filter_sql}
+        WHERE run_id = ?{filter_sql}{confidence_sql}
         GROUP BY outcome
         """,
         parameters,
@@ -271,6 +279,7 @@ def load_class_statistics(
     database: Path,
     run_id: int,
     outcomes: Sequence[str],
+    min_confidence: float = 0.0,
 ) -> list[dict[str, object]]:
     """Aggregate filtered findings by their ground-truth-attributed class.
 
@@ -278,6 +287,7 @@ def load_class_statistics(
         database: Saved diagnosis database to query.
         run_id: Identifier of the selected run.
         outcomes: Diagnosis outcomes currently enabled in the sidebar filter.
+        min_confidence: Minimum confidence threshold.
 
     Returns:
         Per-class outcome counts and mean IoU, alphabetically ordered.
@@ -301,11 +311,11 @@ def load_class_statistics(
                    AS false_negative,
                ROUND(AVG(iou), 4) AS mean_iou
         FROM findings
-        WHERE run_id = ? AND outcome IN ({placeholders})
+        WHERE run_id = ? AND outcome IN ({placeholders}) AND (confidence IS NULL OR confidence >= ?)
         GROUP BY class_name
         ORDER BY class_name
         """,
-        [run_id, *outcomes],
+        [run_id, *outcomes, min_confidence],
     )
 
 
@@ -315,6 +325,7 @@ def load_worst_images(
     run_id: int,
     outcomes: Sequence[str],
     limit: int = 50,
+    min_confidence: float = 0.0,
 ) -> list[dict[str, object]]:
     """Rank images by selected failure count for rapid visual investigation.
 
@@ -323,6 +334,7 @@ def load_worst_images(
         run_id: Identifier of the selected run.
         outcomes: Failure outcomes currently enabled in the sidebar filter.
         limit: Maximum number of rows to return for the explorer.
+        min_confidence: Minimum confidence threshold.
 
     Returns:
         Images with at least one selected failure, ordered worst first.
@@ -339,12 +351,12 @@ def load_worst_images(
                COUNT(*) AS failure_count
         FROM findings AS f
         JOIN images AS i ON i.id = f.image_id
-        WHERE f.run_id = ? AND f.outcome IN ({placeholders})
+        WHERE f.run_id = ? AND f.outcome IN ({placeholders}) AND (f.confidence IS NULL OR f.confidence >= ?)
         GROUP BY i.id
         ORDER BY failure_count DESC, i.filename ASC
         LIMIT ?
         """,
-        [run_id, *selected_failures, limit],
+        [run_id, *selected_failures, min_confidence, limit],
     )
 
 
@@ -353,6 +365,7 @@ def load_image_findings(
     database: Path,
     image_id: int,
     outcomes: Sequence[str],
+    min_confidence: float = 0.0,
 ) -> list[dict[str, object]]:
     """Load all selected annotations needed to render one image's overlays.
 
@@ -360,6 +373,7 @@ def load_image_findings(
         database: Saved diagnosis database to query.
         image_id: Identifier of the image being inspected.
         outcomes: Outcomes currently enabled in the sidebar filter.
+        min_confidence: Minimum confidence threshold.
 
     Returns:
         Finding rows with prediction, truth, and optional polygon geometry.
@@ -371,14 +385,25 @@ def load_image_findings(
     return query_rows(
         database,
         f"""
-        SELECT outcome, class_name, confidence, iou,
-               pred_x1, pred_y1, pred_x2, pred_y2,
-               truth_x1, truth_y1, truth_x2, truth_y2, truth_polygon
-        FROM findings
-        WHERE image_id = ? AND outcome IN ({placeholders})
-        ORDER BY outcome, class_name
+        SELECT f.id AS finding_id, f.outcome, f.class_name, f.confidence, f.iou,
+               f.pred_x1, f.pred_y1, f.pred_x2, f.pred_y2,
+               f.truth_x1, f.truth_y1, f.truth_x2, f.truth_y2, f.truth_polygon,
+               h.path AS heatmap_path,
+               (
+                   SELECT json_group_array(json_object('factor', factor, 'score', score, 'evidence', evidence))
+                   FROM (
+                       SELECT factor, score, evidence
+                       FROM root_causes
+                       WHERE finding_id = f.id
+                       ORDER BY score DESC
+                   )
+               ) AS root_causes_json
+        FROM findings f
+        LEFT JOIN heatmaps h ON h.finding_id = f.id AND h.method = 'grad-cam'
+        WHERE f.image_id = ? AND f.outcome IN ({placeholders}) AND (f.confidence IS NULL OR f.confidence >= ?)
+        ORDER BY f.outcome, f.class_name
         """,
-        [image_id, *outcomes],
+        [image_id, *outcomes, min_confidence],
     )
 
 
@@ -435,6 +460,7 @@ def load_class_statistics_filtered(
     run_id: int,
     outcomes: Sequence[str],
     class_names: Sequence[str] | None = None,
+    min_confidence: float = 0.0,
 ) -> list[dict[str, object]]:
     """Per-class statistics with optional class name filter.
 
@@ -443,6 +469,7 @@ def load_class_statistics_filtered(
         run_id: Identifier of the selected run.
         outcomes: Outcomes currently enabled.
         class_names: Class names to include. ``None`` retains all classes.
+        min_confidence: Minimum confidence threshold.
 
     Returns:
         Per-class outcome counts and mean IoU.
@@ -476,11 +503,27 @@ def load_class_statistics_filtered(
                    AS false_negative,
                ROUND(AVG(iou), 4) AS mean_iou
         FROM findings
-        WHERE run_id = ? AND outcome IN ({outcome_placeholders}){class_sql}
+        WHERE run_id = ? AND outcome IN ({outcome_placeholders}){class_sql} AND (confidence IS NULL OR confidence >= ?)
         GROUP BY class_name
         ORDER BY class_name
         """,
-        parameters,
+        parameters + [min_confidence],
+    )
+
+
+@st.cache_data(show_spinner=False)
+def load_root_causes_summary(database: Path, run_id: int) -> list[dict[str, object]]:
+    """Aggregate root causes for the run."""
+    return query_rows(
+        database,
+        """
+        SELECT factor, COUNT(DISTINCT finding_id) AS count
+        FROM root_causes
+        WHERE run_id = ?
+        GROUP BY factor
+        ORDER BY count DESC
+        """,
+        [run_id],
     )
 
 
@@ -489,13 +532,15 @@ def load_run_comparison(
     database: Path,
     run_id_a: int,
     run_id_b: int,
+    min_confidence: float = 0.0,
 ) -> list[dict[str, object]]:
     """Load outcome counts for two runs side by side (SCHEMA.md §5).
 
     Args:
         database: Saved diagnosis database to query.
-        run_id_a: First run identifier.
-        run_id_b: Second run identifier.
+        run_id_a: Identifier of the baseline run.
+        run_id_b: Identifier of the candidate run.
+        min_confidence: Minimum confidence threshold.
 
     Returns:
         Rows with run_id, outcome, and count.
@@ -504,10 +549,10 @@ def load_run_comparison(
         database,
         """
         SELECT run_id, outcome, COUNT(*) AS n
-        FROM findings WHERE run_id IN (?, ?)
+        FROM findings WHERE run_id IN (?, ?) AND (confidence IS NULL OR confidence >= ?)
         GROUP BY run_id, outcome
         """,
-        (run_id_a, run_id_b),
+        (run_id_a, run_id_b, min_confidence),
     )
 
 
@@ -586,11 +631,18 @@ def _draw_box(
     scaled = tuple(float(value) * scale for value in coordinates)
     canvas.rectangle(scaled, outline=color, width=line_width)
     class_name = str(finding["class_name"])
+
+    outcome = str(finding.get("outcome", ""))
     confidence = finding["confidence"]
     iou = finding["iou"]
     confidence_text = f" {float(confidence):.2f}" if confidence is not None else ""
     iou_text = f" IoU:{float(iou):.2f}" if iou is not None else ""
-    text = f"{label}: {class_name}{confidence_text}{iou_text}"
+
+    if outcome == "wrong_class" and label == "Pred":
+        text = f"Pred: NOT '{class_name}' (predicted class not stored)"
+    else:
+        text = f"{label}: {class_name}{confidence_text}{iou_text}"
+
     text_origin = (scaled[0] + 3, max(0, scaled[1] - 14))
     canvas.text(text_origin, text, fill=color, stroke_width=1, stroke_fill="#0b1020")
 
@@ -628,9 +680,7 @@ def _draw_polygon(
 def run_label(run: dict[str, object]) -> str:
     """Format a concise selector label while retaining reproducibility context."""
     model_hash = str(run["model_sha256"])[:8]
-    return (
-        f"Run {run['id']} · {run['split']} · {run['created_at']} · {model_hash}"
-    )
+    return f"Run {run['id']} · {run['split']} · {run['created_at']} · {model_hash}"
 
 
 def _outcome_badge_html(outcome: str) -> str:
@@ -639,7 +689,7 @@ def _outcome_badge_html(outcome: str) -> str:
     label = OUTCOME_LABELS.get(outcome, outcome)
     return (
         f'<span style="background:{color}22; color:{color}; '
-        f'padding:2px 10px; border-radius:20px; font-size:.82rem; '
+        f"padding:2px 10px; border-radius:20px; font-size:.82rem; "
         f'font-weight:600; border:1px solid {color}44;">{label}</span>'
     )
 
@@ -910,11 +960,13 @@ def render_class_chart(statistics: Sequence[dict[str, object]]) -> None:
             font=dict(color="#94a3b8"),
         ),
         xaxis=dict(
-            title=None, color="#94a3b8",
+            title=None,
+            color="#94a3b8",
             gridcolor="rgba(148,163,184,0.08)",
         ),
         yaxis=dict(
-            title="Findings", color="#94a3b8",
+            title="Findings",
+            color="#94a3b8",
             gridcolor="rgba(148,163,184,0.08)",
         ),
     )
@@ -961,23 +1013,27 @@ def render_comparison_chart(
     colors = [OUTCOME_COLORS[o] for o in outcomes_in_order]
 
     figure = go.Figure()
-    figure.add_trace(go.Bar(
-        name=f"Run {run_a_id}",
-        x=labels,
-        y=vals_a,
-        marker_color=colors,
-        marker_line=dict(width=0),
-        opacity=0.75,
-    ))
-    figure.add_trace(go.Bar(
-        name=f"Run {run_b_id}",
-        x=labels,
-        y=vals_b,
-        marker_color=colors,
-        marker_line=dict(width=2, color="#f1f5f9"),
-        marker_pattern_shape="/",
-        opacity=0.5,
-    ))
+    figure.add_trace(
+        go.Bar(
+            name=f"Run {run_a_id}",
+            x=labels,
+            y=vals_a,
+            marker_color=colors,
+            marker_line=dict(width=0),
+            opacity=0.75,
+        )
+    )
+    figure.add_trace(
+        go.Bar(
+            name=f"Run {run_b_id}",
+            x=labels,
+            y=vals_b,
+            marker_color=colors,
+            marker_line=dict(width=2, color="#f1f5f9"),
+            marker_pattern_shape="/",
+            opacity=0.5,
+        )
+    )
     figure.update_layout(
         barmode="group",
         height=340,
@@ -986,7 +1042,9 @@ def render_comparison_chart(
         plot_bgcolor="rgba(0,0,0,0)",
         font=dict(family="Inter", color="#e2e8f0"),
         legend=dict(
-            orientation="h", yanchor="bottom", y=-0.2,
+            orientation="h",
+            yanchor="bottom",
+            y=-0.2,
             font=dict(color="#94a3b8"),
         ),
         xaxis=dict(
@@ -994,7 +1052,8 @@ def render_comparison_chart(
             gridcolor="rgba(148,163,184,0.08)",
         ),
         yaxis=dict(
-            title="Findings", color="#94a3b8",
+            title="Findings",
+            color="#94a3b8",
             gridcolor="rgba(148,163,184,0.08)",
         ),
     )
@@ -1022,11 +1081,11 @@ def render_comparison_chart(
                 css = "delta-neutral"
         arrow = "↑" if diff > 0 else ("↓" if diff < 0 else "—")
         delta_rows.append(
-            f'<tr><td>{_outcome_badge_html(outcome)}</td>'
+            f"<tr><td>{_outcome_badge_html(outcome)}</td>"
             f'<td style="text-align:right">{val_a}</td>'
             f'<td style="text-align:right">{val_b}</td>'
             f'<td style="text-align:right" class="{css}">'
-            f'{arrow} {abs(diff)}</td></tr>'
+            f"{arrow} {abs(diff)}</td></tr>"
         )
     table_html = (
         '<div class="glass-panel">'
@@ -1036,9 +1095,7 @@ def render_comparison_chart(
         f'<th style="text-align:right;padding:8px;color:#94a3b8;">Run {run_a_id}</th>'
         f'<th style="text-align:right;padding:8px;color:#94a3b8;">Run {run_b_id}</th>'
         '<th style="text-align:right;padding:8px;color:#94a3b8;">Delta</th>'
-        '</tr></thead><tbody>'
-        + "".join(delta_rows) +
-        '</tbody></table></div>'
+        "</tr></thead><tbody>" + "".join(delta_rows) + "</tbody></table></div>"
     )
     st.markdown(table_html, unsafe_allow_html=True)
 
@@ -1097,6 +1154,15 @@ def render_dashboard(database: Path) -> None:
             help="Leave empty to include all classes.",
         )
 
+        min_confidence = st.slider(
+            "Confidence threshold",
+            min_value=0.0,
+            max_value=1.0,
+            value=float(selected_run["confidence_threshold"]),
+            step=0.05,
+            help="Filter out predictions below this threshold. Does not affect false negatives.",
+        )
+
         st.divider()
         st.caption(
             "Filters refine charts and the image explorer. Summary cards show "
@@ -1104,11 +1170,12 @@ def render_dashboard(database: Path) -> None:
         )
 
     # ── Data queries ─────────────────────────────────────────────────────
-    summary = load_run_summary(database, run_id)
+    summary = load_run_summary(database, run_id, min_confidence=min_confidence)
     filtered_outcomes = load_outcome_counts(
         database,
         run_id,
         tuple(selected_outcomes) if selected_outcomes else None,
+        min_confidence=min_confidence,
     )
 
     effective_classes = tuple(selected_classes) if selected_classes else None
@@ -1117,6 +1184,7 @@ def render_dashboard(database: Path) -> None:
         run_id,
         tuple(selected_outcomes),
         effective_classes,
+        min_confidence=min_confidence,
     )
 
     # ── Hero header ──────────────────────────────────────────────────────
@@ -1130,7 +1198,7 @@ def render_dashboard(database: Path) -> None:
     )
     st.markdown(
         '<div class="hero-subtitle">Inspect saved model runs, isolate failure '
-        'modes, and open the images that need attention.</div>',
+        "modes, and open the images that need attention.</div>",
         unsafe_allow_html=True,
     )
 
@@ -1147,8 +1215,14 @@ def render_dashboard(database: Path) -> None:
     )
 
     # ── Tabs ─────────────────────────────────────────────────────────────
-    tab_overview, tab_classes, tab_images, tab_compare = st.tabs(
-        ["📊 Overview", "📋 Per-class", "🔍 Image explorer", "⚖️ Run comparison"]
+    tab_overview, tab_classes, tab_images, tab_compare, tab_root_causes = st.tabs(
+        [
+            "📊 Overview",
+            "📋 Per-class",
+            "🔍 Image explorer",
+            "⚖️ Run comparison",
+            "🌱 Root causes",
+        ]
     )
 
     # ── Tab 1: Overview ──────────────────────────────────────────────────
@@ -1190,12 +1264,8 @@ def render_dashboard(database: Path) -> None:
 
         errored_images = load_errored_images(database, run_id)
         if errored_images:
-            with st.expander(
-                f"⚠️ {len(errored_images)} image processing error(s)"
-            ):
-                st.dataframe(
-                    errored_images, hide_index=True, use_container_width=True
-                )
+            with st.expander(f"⚠️ {len(errored_images)} image processing error(s)"):
+                st.dataframe(errored_images, hide_index=True, use_container_width=True)
 
     # ── Tab 2: Per-class ─────────────────────────────────────────────────
     with tab_classes:
@@ -1212,14 +1282,10 @@ def render_dashboard(database: Path) -> None:
         if class_statistics:
             display_rows = []
             for row in class_statistics:
-                total = sum(
-                    int(row[o] or 0) for o in OUTCOME_LABELS
-                )
+                total = sum(int(row[o] or 0) for o in OUTCOME_LABELS)
                 correct_count = int(row["correct"] or 0)
                 success_rate = (
-                    round(100 * correct_count / total, 1)
-                    if total > 0
-                    else 0.0
+                    round(100 * correct_count / total, 1) if total > 0 else 0.0
                 )
                 display_rows.append(
                     {
@@ -1242,7 +1308,7 @@ def render_dashboard(database: Path) -> None:
             unsafe_allow_html=True,
         )
         worst_images = load_worst_images(
-            database, run_id, tuple(selected_outcomes)
+            database, run_id, tuple(selected_outcomes), min_confidence=min_confidence
         )
         if not worst_images:
             st.info(
@@ -1261,6 +1327,7 @@ def render_dashboard(database: Path) -> None:
                 database,
                 int(selected_image["id"]),
                 tuple(selected_outcomes),
+                min_confidence=min_confidence,
             )
             image_column, detail_column = st.columns((1.55, 0.85), gap="large")
             with image_column:
@@ -1274,16 +1341,36 @@ def render_dashboard(database: Path) -> None:
                     )
                 legend_html = (
                     '<div class="legend">Boxes coloured by outcome: '
-                    + " ".join(legend_items) + "</div>"
+                    + " ".join(legend_items)
+                    + "</div>"
                 )
                 st.markdown(legend_html, unsafe_allow_html=True)
 
                 image_path = Path(str(selected_image["path"]))
                 if image_path.is_file():
-                    st.image(
-                        image_with_overlays(image_path, findings),
-                        use_container_width=True,
-                    )
+                    show_heatmaps = st.toggle("Show heatmaps", value=False)
+                    if show_heatmaps:
+                        heatmaps = [f for f in findings if f.get("heatmap_path")]
+                        if not heatmaps:
+                            st.info("No heatmaps available for these findings.")
+                        else:
+                            for h in heatmaps:
+                                h_path = Path(str(h["heatmap_path"]))
+                                if h_path.is_file():
+                                    st.image(
+                                        str(h_path),
+                                        caption=f"Heatmap: {h['class_name']} ({h.get('outcome', '')})",
+                                        use_container_width=True,
+                                    )
+                                else:
+                                    st.warning(
+                                        f"Heatmap file unavailable at `{h_path}`"
+                                    )
+                    else:
+                        st.image(
+                            image_with_overlays(image_path, findings),
+                            use_container_width=True,
+                        )
                 else:
                     st.warning(
                         f"Image file is unavailable at `{image_path}`. "
@@ -1302,33 +1389,48 @@ def render_dashboard(database: Path) -> None:
                 outcome_counts: dict[str, int] = {}
                 for finding in findings:
                     outcome_val = str(finding["outcome"])
-                    outcome_counts[outcome_val] = (
-                        outcome_counts.get(outcome_val, 0) + 1
-                    )
+                    outcome_counts[outcome_val] = outcome_counts.get(outcome_val, 0) + 1
                 if outcome_counts:
                     badges_html = " ".join(
-                        f'{_outcome_badge_html(o)} <span '
+                        f"{_outcome_badge_html(o)} <span "
                         f'style="color:#94a3b8;font-size:.85rem;margin-right:8px;">'
-                        f'×{c}</span>'
+                        f"×{c}</span>"
                         for o, c in outcome_counts.items()
                     )
                     st.markdown(badges_html, unsafe_allow_html=True)
 
                 st.markdown("---")
-                finding_rows = [
-                    {
-                        "Outcome": OUTCOME_LABELS.get(
-                            str(row["outcome"]), row["outcome"]
-                        ),
-                        "Class": row["class_name"],
-                        "Confidence": row["confidence"],
-                        "IoU": row["iou"],
-                    }
-                    for row in findings
-                ]
-                st.dataframe(
-                    finding_rows, hide_index=True, use_container_width=True
-                )
+                finding_rows = []
+                for row in findings:
+                    rc_text = ""
+                    if row.get("root_causes_json"):
+                        try:
+                            rc_list = json.loads(str(row["root_causes_json"]))
+                            if isinstance(rc_list, list) and rc_list:
+                                factors = []
+                                for rc in rc_list:
+                                    if isinstance(rc, dict) and "factor" in rc:
+                                        factors.append(
+                                            f"{rc['factor']}\nScore: {rc['score']:.2f}\nEvidence: {rc['evidence']}"
+                                        )
+                                if factors:
+                                    rc_text = "\n\n".join(factors)
+                        except json.JSONDecodeError:
+                            pass
+
+                    finding_rows.append(
+                        {
+                            "Outcome": OUTCOME_LABELS.get(
+                                str(row["outcome"]), row["outcome"]
+                            ),
+                            "Class": row["class_name"],
+                            "Confidence": row["confidence"],
+                            "IoU": row["iou"],
+                            "Root Causes": rc_text,
+                        }
+                    )
+
+                st.dataframe(finding_rows, hide_index=True, use_container_width=True)
 
     # ── Tab 4: Run comparison ────────────────────────────────────────────
     with tab_compare:
@@ -1363,9 +1465,56 @@ def render_dashboard(database: Path) -> None:
                 st.info("Select two different runs to compare.")
             else:
                 comparison_data = load_run_comparison(
-                    database, int(run_a["id"]), int(run_b["id"])
+                    database,
+                    int(run_a["id"]),
+                    int(run_b["id"]),
+                    min_confidence=min_confidence,
                 )
                 render_comparison_chart(run_a, run_b, comparison_data)
+
+    # ── Tab 5: Root causes ───────────────────────────────────────────────
+    with tab_root_causes:
+        st.markdown(
+            '<div class="section-title">Root causes</div>',
+            unsafe_allow_html=True,
+        )
+        rc_summary = load_root_causes_summary(database, run_id)
+        if not rc_summary:
+            st.info(
+                "No root causes recorded for this run. Run `python -m app.root_cause --run <id>` to generate them."
+            )
+        else:
+            rc_rows = [
+                {"Factor": row["factor"], "Findings": row["count"]}
+                for row in rc_summary
+            ]
+            fig = px.bar(
+                rc_rows,
+                x="Factor",
+                y="Findings",
+                color_discrete_sequence=["#a78bfa"],
+            )
+            fig.update_layout(
+                height=360,
+                margin=dict(l=10, r=10, t=10, b=10),
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(0,0,0,0)",
+                font=dict(family="Inter", color="#e2e8f0"),
+                xaxis=dict(
+                    title=None,
+                    color="#94a3b8",
+                    gridcolor="rgba(148,163,184,0.08)",
+                ),
+                yaxis=dict(
+                    title="Findings",
+                    color="#94a3b8",
+                    gridcolor="rgba(148,163,184,0.08)",
+                ),
+            )
+            st.plotly_chart(
+                fig, use_container_width=True, config={"displayModeBar": False}
+            )
+            st.dataframe(rc_rows, hide_index=True, use_container_width=True)
 
 
 def main() -> None:
