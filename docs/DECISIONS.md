@@ -888,3 +888,31 @@ limitation is known rather than discovered. If it becomes important, the fix is
 a `predicted_class_id` column on `findings` and a schema version bump — an
 alteration to a published table, which is exactly the kind of change that
 should require a deliberate decision rather than happening incidentally.
+
+---
+
+## D-029 — The dashboard is a read-only consumer of the published schema
+
+**Status:** Accepted · Dashboard workstream
+
+**Decision.** The Streamlit dashboard lives in `app/dashboard.py` and opens
+SQLite using a read-only URI. It queries only `runs`, `images`, and `findings`
+as documented in `SCHEMA.md`; it does not import the diagnosis engine or the
+persistence implementation.
+
+**Reasoning.** The schema exists specifically to decouple the dashboard from
+backend implementation. A direct read-only consumer keeps the user interface
+small, prevents accidental modification of diagnosis history, and lets saved
+runs be inspected even when model dependencies cannot be exercised. Image
+paths are treated as external resources: a missing image yields a clear viewer
+state while its stored findings remain usable.
+
+Grad-CAM has no published storage contract yet. Adding a visual explanation
+placeholder would create a misleading feature surface and couple this module to
+an unknown future schema, so it is deferred until Milestone 4.
+
+**Trade-off.** A single Streamlit module keeps the first dashboard slice easy
+to review, but page-level decomposition can be introduced once visual
+explanations, clusters, or recommendations add enough independent UI surface to
+justify it.
+

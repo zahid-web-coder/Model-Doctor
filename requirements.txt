@@ -19,6 +19,7 @@ torchvision>=0.17.0       # NMS, IoU ops, and image transforms
 opencv-python>=4.9.0      # Image read/write and annotated-output rendering
 numpy>=1.26.0             # Array interchange between torch and everything else
 pandas>=2.2.0             # Tabular aggregation of detections and metrics
+pillow>=10.0.0            # Prediction and ground-truth overlays in the dashboard
 
 # --- Analysis and presentation ---
 matplotlib>=3.8.0         # Metric plots and visual diagnostics

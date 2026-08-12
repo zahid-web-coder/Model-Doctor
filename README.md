@@ -12,6 +12,11 @@ additional architectures can be added later without touching analysis code.
 Milestone 3 — the diagnosis engine works. Inference, validation, and failure
 diagnosis all run against a real trained model and a real labelled dataset.
 
+The developer dashboard is now in progress. Its first slice reads saved SQLite
+runs and makes findings, per-class statistics, failure filters, and image
+overlays explorable. Visual explanation data, including Grad-CAM, remains a
+separate planned integration.
+
 Mask IoU and segmentation analysis are **architecture-ready but not built**.
 
 ## Setup
@@ -91,6 +96,21 @@ outlines it badly is reported as one *poor localisation*, not as a false
 positive plus a false negative. That is deliberate: it names a cause instead of
 describing one object as two unrelated errors. See
 [DECISIONS.md](docs/DECISIONS.md) D-017.
+
+## Explore saved runs
+
+Save a diagnosis run, then launch the read-only Streamlit explorer:
+
+```bash
+./.venv/bin/python -m app.diagnosis --split test --save
+./.venv/bin/streamlit run app/dashboard.py
+```
+
+The dashboard starts at `db/model_doctor.db`; select another saved SQLite file
+in the sidebar when needed. It renders only the tables published in
+`docs/SCHEMA.md`, so it does not depend on the diagnosis implementation. When
+image paths are unavailable on the current machine, the finding details remain
+visible and the UI reports the missing image rather than failing.
 
 ## Configuration
 
