@@ -15,7 +15,9 @@ from app.dashboard import (
     load_class_names,
     load_class_statistics,
     load_class_statistics_filtered,
+    load_image_findings,
     load_outcome_counts,
+    load_root_causes_summary,
     load_run_comparison,
     load_run_summary,
     load_runs,
@@ -341,3 +343,27 @@ def test_load_runs_returns_newest_first(two_run_database: Path) -> None:
     assert len(runs) == 2
     assert int(runs[0]["id"]) == 2
     assert int(runs[1]["id"]) == 1
+
+
+def test_image_findings_degrade_when_optional_tables_are_absent(
+    dashboard_database: Path,
+) -> None:
+    """A database without heatmaps or root causes still renders its findings.
+
+    ``validate_database`` requires only runs, images, and findings, so a run
+    saved before those tables existed must not take the whole page down.
+    """
+    findings = load_image_findings(
+        dashboard_database, image_id=1, outcomes=("correct", "false_positive")
+    )
+
+    assert len(findings) == 3
+    assert all(row["heatmap_path"] is None for row in findings)
+    assert all(row["root_causes_json"] is None for row in findings)
+
+
+def test_root_causes_summary_is_empty_when_the_table_is_absent(
+    dashboard_database: Path,
+) -> None:
+    """The root-cause surface reports nothing rather than raising."""
+    assert load_root_causes_summary(dashboard_database, run_id=1) == []

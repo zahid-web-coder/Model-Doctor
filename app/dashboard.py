@@ -39,6 +39,7 @@ OUTCOME_COLORS: Final = {
 PREDICTION_COLOR: Final = "#fb7185"
 GROUND_TRUTH_COLOR: Final = "#2dd4bf"
 REQUIRED_TABLES: Final = frozenset({"runs", "images", "findings"})
+OPTIONAL_TABLES: Final = frozenset({"heatmaps", "root_causes"})
 
 
 class DashboardDataError(RuntimeError):
@@ -158,6 +159,28 @@ def query_rows(
 # ---------------------------------------------------------------------------
 # Cached data-loading functions
 # ---------------------------------------------------------------------------
+
+
+@st.cache_data(show_spinner=False)
+def available_tables(database: Path) -> frozenset[str]:
+    """Report which optional schema tables the selected database provides.
+
+    Heatmaps and root causes arrived in later schema versions. A database saved
+    before those milestones still satisfies the required contract enforced by
+    ``validate_database``, so the surfaces that consume them degrade to empty
+    instead of failing the whole page.
+
+    Args:
+        database: Saved diagnosis database to inspect.
+
+    Returns:
+        The subset of ``OPTIONAL_TABLES`` this database actually contains.
+    """
+    rows = query_rows(
+        database,
+        "SELECT name FROM sqlite_master WHERE type = 'table'",
+    )
+    return OPTIONAL_TABLES & {str(row["name"]) for row in rows}
 
 
 @st.cache_data(show_spinner=False)
@@ -311,7 +334,8 @@ def load_class_statistics(
                    AS false_negative,
                ROUND(AVG(iou), 4) AS mean_iou
         FROM findings
-        WHERE run_id = ? AND outcome IN ({placeholders}) AND (confidence IS NULL OR confidence >= ?)
+        WHERE run_id = ? AND outcome IN ({placeholders})
+          AND (confidence IS NULL OR confidence >= ?)
         GROUP BY class_name
         ORDER BY class_name
         """,
@@ -351,7 +375,8 @@ def load_worst_images(
                COUNT(*) AS failure_count
         FROM findings AS f
         JOIN images AS i ON i.id = f.image_id
-        WHERE f.run_id = ? AND f.outcome IN ({placeholders}) AND (f.confidence IS NULL OR f.confidence >= ?)
+        WHERE f.run_id = ? AND f.outcome IN ({placeholders})
+          AND (f.confidence IS NULL OR f.confidence >= ?)
         GROUP BY i.id
         ORDER BY failure_count DESC, i.filename ASC
         LIMIT ?
@@ -382,25 +407,46 @@ def load_image_findings(
         return []
 
     placeholders = ", ".join("?" for _ in outcomes)
-    return query_rows(
-        database,
-        f"""
-        SELECT f.id AS finding_id, f.outcome, f.class_name, f.confidence, f.iou,
-               f.pred_x1, f.pred_y1, f.pred_x2, f.pred_y2,
-               f.truth_x1, f.truth_y1, f.truth_x2, f.truth_y2, f.truth_polygon,
-               h.path AS heatmap_path,
-               (
-                   SELECT json_group_array(json_object('factor', factor, 'score', score, 'evidence', evidence))
+    optional = available_tables(database)
+
+    # These fragments are literals selected by table presence, never user input,
+    # so they carry no injection risk. Values stay parameterised.
+    if "heatmaps" in optional:
+        heatmap_select = "h.path AS heatmap_path"
+        heatmap_join = (
+            "LEFT JOIN heatmaps h ON h.finding_id = f.id AND h.method = 'grad-cam'"
+        )
+    else:
+        heatmap_select = "NULL AS heatmap_path"
+        heatmap_join = ""
+
+    if "root_causes" in optional:
+        root_cause_select = """(
+                   SELECT json_group_array(json_object(
+                       'factor', factor, 'score', score, 'evidence', evidence
+                   ))
                    FROM (
                        SELECT factor, score, evidence
                        FROM root_causes
                        WHERE finding_id = f.id
                        ORDER BY score DESC
                    )
-               ) AS root_causes_json
+               ) AS root_causes_json"""
+    else:
+        root_cause_select = "NULL AS root_causes_json"
+
+    return query_rows(
+        database,
+        f"""
+        SELECT f.id AS finding_id, f.outcome, f.class_name, f.confidence, f.iou,
+               f.pred_x1, f.pred_y1, f.pred_x2, f.pred_y2,
+               f.truth_x1, f.truth_y1, f.truth_x2, f.truth_y2, f.truth_polygon,
+               {heatmap_select},
+               {root_cause_select}
         FROM findings f
-        LEFT JOIN heatmaps h ON h.finding_id = f.id AND h.method = 'grad-cam'
-        WHERE f.image_id = ? AND f.outcome IN ({placeholders}) AND (f.confidence IS NULL OR f.confidence >= ?)
+        {heatmap_join}
+        WHERE f.image_id = ? AND f.outcome IN ({placeholders})
+          AND (f.confidence IS NULL OR f.confidence >= ?)
         ORDER BY f.outcome, f.class_name
         """,
         [image_id, *outcomes, min_confidence],
@@ -503,7 +549,8 @@ def load_class_statistics_filtered(
                    AS false_negative,
                ROUND(AVG(iou), 4) AS mean_iou
         FROM findings
-        WHERE run_id = ? AND outcome IN ({outcome_placeholders}){class_sql} AND (confidence IS NULL OR confidence >= ?)
+        WHERE run_id = ? AND outcome IN ({outcome_placeholders}){class_sql}
+          AND (confidence IS NULL OR confidence >= ?)
         GROUP BY class_name
         ORDER BY class_name
         """,
@@ -513,7 +560,21 @@ def load_class_statistics_filtered(
 
 @st.cache_data(show_spinner=False)
 def load_root_causes_summary(database: Path, run_id: int) -> list[dict[str, object]]:
-    """Aggregate root causes for the run."""
+    """Count how many findings each root-cause factor explains in the run.
+
+    A finding may carry several factors, so findings are counted distinctly.
+    Summing the counts across factors would exceed the number of findings.
+
+    Args:
+        database: Saved diagnosis database to query.
+        run_id: Identifier of the selected run.
+
+    Returns:
+        Factor and finding-count rows, most common first. Empty when the
+        database predates the root-cause table.
+    """
+    if "root_causes" not in available_tables(database):
+        return []
     return query_rows(
         database,
         """
@@ -1160,13 +1221,17 @@ def render_dashboard(database: Path) -> None:
             max_value=1.0,
             value=float(selected_run["confidence_threshold"]),
             step=0.05,
-            help="Filter out predictions below this threshold. Does not affect false negatives.",
+            help=(
+                "Filter out predictions below this threshold. "
+                "Does not affect false negatives."
+            ),
         )
 
         st.divider()
         st.caption(
-            "Filters refine charts and the image explorer. Summary cards show "
-            "the complete run."
+            "Outcome and class filters refine the charts and the image "
+            "explorer. The confidence threshold also narrows the finding and "
+            "failure counts on the summary cards."
         )
 
     # ── Data queries ─────────────────────────────────────────────────────
@@ -1359,7 +1424,10 @@ def render_dashboard(database: Path) -> None:
                                 if h_path.is_file():
                                     st.image(
                                         str(h_path),
-                                        caption=f"Heatmap: {h['class_name']} ({h.get('outcome', '')})",
+                                        caption=(
+                                            f"Heatmap: {h['class_name']} "
+                                            f"({h.get('outcome', '')})"
+                                        ),
                                         use_container_width=True,
                                     )
                                 else:
@@ -1411,7 +1479,9 @@ def render_dashboard(database: Path) -> None:
                                 for rc in rc_list:
                                     if isinstance(rc, dict) and "factor" in rc:
                                         factors.append(
-                                            f"{rc['factor']}\nScore: {rc['score']:.2f}\nEvidence: {rc['evidence']}"
+                                            f"{rc['factor']}\n"
+                                            f"Score: {rc['score']:.2f}\n"
+                                            f"Evidence: {rc['evidence']}"
                                         )
                                 if factors:
                                     rc_text = "\n\n".join(factors)
@@ -1481,7 +1551,8 @@ def render_dashboard(database: Path) -> None:
         rc_summary = load_root_causes_summary(database, run_id)
         if not rc_summary:
             st.info(
-                "No root causes recorded for this run. Run `python -m app.root_cause --run <id>` to generate them."
+                "No root causes recorded for this run. Run "
+                "`python -m app.root_cause --run <id>` to generate them."
             )
         else:
             rc_rows = [
