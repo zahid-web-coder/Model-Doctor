@@ -97,6 +97,25 @@ positive plus a false negative. That is deliberate: it names a cause instead of
 describing one object as two unrelated errors. See
 [DECISIONS.md](docs/DECISIONS.md) D-017.
 
+## Group failures
+
+Fixing one image at a time does not scale. Grouping asks which failures share a
+cause, so you address a pattern instead:
+
+```bash
+./.venv/bin/python -m app.root_cause --run 1     # attribute causes first
+./.venv/bin/python -m app.clustering --run 1     # then group by them
+```
+
+Each group is named by the conditions its members share — `edge_truncation`,
+`blur + crowding` — so a group needs no interpreting. Failures that no factor
+explains form an `unexplained` group rather than being dropped; those are the
+ones worth opening first.
+
+**This is deterministic grouping, not unsupervised clustering.** K-means over
+the CLIP embeddings was implemented and measured first, and rejected on the
+numbers — see [DECISIONS.md](docs/DECISIONS.md) D-030.
+
 ## Explore saved runs
 
 Save a diagnosis run, then launch the read-only Streamlit explorer:
@@ -136,6 +155,8 @@ variable — no code edits needed to point at different data:
 config.py              Single source of truth for paths and constants
 app/inference.py       Model loading, prediction, metrics, CLI
 app/diagnosis.py       Failure classification and reporting, CLI
+app/clustering.py      Failure grouping by root-cause signature, CLI
+app/similarity.py      Nearest-neighbour retrieval over stored embeddings
 utils/annotations.py   Generic annotation model (box + optional polygon)
 utils/geometry.py      Box geometry and IoU
 utils/matching.py      Generic one-to-one annotation matching

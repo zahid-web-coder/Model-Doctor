@@ -48,7 +48,7 @@ logger = get_logger(__name__)
 # Bumped when the schema changes in a way that existing readers must know
 # about. Recorded in the database so a consumer can detect a mismatch instead
 # of failing on a missing column.
-SCHEMA_VERSION: int = 4
+SCHEMA_VERSION: int = 5
 
 SCHEMA_STATEMENTS: tuple[str, ...] = (
     """
@@ -158,6 +158,32 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
         UNIQUE (finding_id, factor)
     )
     """,
+    # Added at schema version 5. Failure groups: the label *is* the
+    # explanation, so a consumer needs no second lookup to name a group.
+    # `method` records how the grouping was produced and is what allows a
+    # second method to be added later without a schema change — the same seam
+    # `heatmaps.method` provides (D-030).
+    """
+    CREATE TABLE IF NOT EXISTS clusters (
+        id      INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id  INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+        method  TEXT    NOT NULL,
+        label   TEXT    NOT NULL,
+        size    INTEGER NOT NULL,
+        UNIQUE (run_id, method, label)
+    )
+    """,
+    # Membership is its own table because a group has many findings. The
+    # composite primary key enforces the rule that a finding belongs to at most
+    # one group *per method*: a second method may group the same finding
+    # differently, which is the point of keeping `method` on `clusters`.
+    """
+    CREATE TABLE IF NOT EXISTS cluster_members (
+        cluster_id INTEGER NOT NULL REFERENCES clusters(id) ON DELETE CASCADE,
+        finding_id INTEGER NOT NULL REFERENCES findings(id) ON DELETE CASCADE,
+        PRIMARY KEY (cluster_id, finding_id)
+    )
+    """,
     # Indexes chosen for the queries a dashboard actually issues: filter by
     # run, then by outcome or class. Without them every filter is a full scan.
     "CREATE INDEX IF NOT EXISTS idx_images_run ON images(run_id)",
@@ -168,6 +194,9 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
     "CREATE INDEX IF NOT EXISTS idx_embeddings_run ON embeddings(run_id)",
     "CREATE INDEX IF NOT EXISTS idx_heatmaps_run ON heatmaps(run_id)",
     "CREATE INDEX IF NOT EXISTS idx_root_causes_run ON root_causes(run_id, factor)",
+    "CREATE INDEX IF NOT EXISTS idx_clusters_run ON clusters(run_id, method)",
+    "CREATE INDEX IF NOT EXISTS idx_cluster_members_finding "
+    "ON cluster_members(finding_id)",
 )
 
 
@@ -948,3 +977,174 @@ def factor_counts(connection: sqlite3.Connection, run_id: int) -> dict[str, int]
         (run_id,),
     ).fetchall()
     return {row["factor"]: row["n"] for row in rows}
+
+
+# ---------------------------------------------------------------------------
+# Failure groups (schema version 5)
+# ---------------------------------------------------------------------------
+@dataclass(frozen=True)
+class ClusterRow:
+    """One stored failure group.
+
+    Named for the table it comes from. The concept is a *failure group*: the
+    default method assigns membership deterministically rather than by
+    unsupervised clustering, and the prose in ``docs/SCHEMA.md`` says so
+    (D-030).
+    """
+
+    id: int
+    run_id: int
+    method: str
+    label: str
+    size: int
+
+
+def save_clusters(
+    connection: sqlite3.Connection,
+    run_id: int,
+    method: str,
+    groups: Iterable[tuple[str, Sequence[int]]],
+) -> int:
+    """Replace a run's failure groups for one method.
+
+    Existing groups for this ``(run_id, method)`` are deleted first, and their
+    memberships fall with them by cascade. Replacement rather than upsert is
+    correct here because regrouping changes which findings belong together —
+    an upsert would leave members of a group that no longer exists. Grouping is
+    derived data, so recomputing it is a correction, not a second observation
+    (D-021). Groups produced by a *different* method are untouched.
+
+    Args:
+        connection: An open connection.
+        run_id: Owning run.
+        method: How the grouping was produced, e.g. ``"factor-signature"``.
+        groups: Pairs of ``(label, finding_ids)``. Empty groups are skipped —
+            a group nothing belongs to would be a row that explains nothing.
+
+    Returns:
+        Number of groups written.
+    """
+    connection.execute(
+        "DELETE FROM clusters WHERE run_id = ? AND method = ?", (run_id, method)
+    )
+
+    written = 0
+    for label, finding_ids in groups:
+        members = list(finding_ids)
+        if not members:
+            continue
+        cursor = connection.execute(
+            "INSERT INTO clusters (run_id, method, label, size) VALUES (?, ?, ?, ?)",
+            (run_id, method, label, len(members)),
+        )
+        cluster_id = int(cursor.lastrowid)
+        connection.executemany(
+            "INSERT INTO cluster_members (cluster_id, finding_id) VALUES (?, ?)",
+            [(cluster_id, finding_id) for finding_id in members],
+        )
+        written += 1
+    return written
+
+
+def load_clusters(
+    connection: sqlite3.Connection, run_id: int, method: str | None = None
+) -> list[ClusterRow]:
+    """Return a run's failure groups, largest first.
+
+    Args:
+        connection: An open connection.
+        run_id: Which run to read.
+        method: Restrict to one grouping method. Recommended once more than one
+            has been run, since two methods partition the same findings
+            differently and their groups are not comparable.
+
+    Returns:
+        Groups ordered by descending size, then label for a stable tie-break.
+    """
+    sql = "SELECT id, run_id, method, label, size FROM clusters WHERE run_id = ?"
+    params: list[object] = [run_id]
+    if method is not None:
+        sql += " AND method = ?"
+        params.append(method)
+    sql += " ORDER BY size DESC, label"
+
+    return [
+        ClusterRow(
+            id=row["id"],
+            run_id=row["run_id"],
+            method=row["method"],
+            label=row["label"],
+            size=row["size"],
+        )
+        for row in connection.execute(sql, params).fetchall()
+    ]
+
+
+def load_cluster_members(
+    connection: sqlite3.Connection, cluster_id: int
+) -> list[sqlite3.Row]:
+    """Return the findings in one group, with the columns needed to show them.
+
+    Args:
+        connection: An open connection.
+        cluster_id: Group to read.
+
+    Returns:
+        Rows carrying each finding's outcome, class, and owning image.
+    """
+    return connection.execute(
+        """
+        SELECT f.id AS finding_id, f.outcome, f.class_name, f.confidence, f.iou,
+               i.filename, i.path
+        FROM cluster_members cm
+        JOIN findings f ON f.id = cm.finding_id
+        JOIN images i ON i.id = f.image_id
+        WHERE cm.cluster_id = ?
+        ORDER BY f.id
+        """,
+        (cluster_id,),
+    ).fetchall()
+
+
+def load_factors_by_finding(
+    connection: sqlite3.Connection, run_id: int
+) -> dict[int, list[str]]:
+    """Return each failure's attributed factors, keyed by finding id.
+
+    The input to factor-signature grouping. Findings with no attributed factor
+    are absent from the mapping rather than present with an empty list — the
+    caller supplies the full set of failures, so absence is what marks a
+    finding unexplained.
+
+    Args:
+        connection: An open connection.
+        run_id: Which run to read.
+
+    Returns:
+        Mapping of finding id to its factors, each list sorted so that the
+        signature built from it does not depend on insertion order.
+    """
+    rows = connection.execute(
+        "SELECT finding_id, factor FROM root_causes WHERE run_id = ? "
+        "ORDER BY finding_id, factor",
+        (run_id,),
+    ).fetchall()
+
+    factors: dict[int, list[str]] = {}
+    for row in rows:
+        factors.setdefault(row["finding_id"], []).append(row["factor"])
+    return factors
+
+
+def load_failure_ids(connection: sqlite3.Connection, run_id: int) -> list[int]:
+    """Return the ids of every finding in a run that represents a mistake.
+
+    Grouping covers failures, not correct findings: a group of things the model
+    got right names no problem to act on.
+    """
+    rows = connection.execute(
+        "SELECT id FROM findings WHERE run_id = ? AND outcome != 'correct' "
+        "ORDER BY id",
+        (run_id,),
+    ).fetchall()
+    return [int(row["id"]) for row in rows]

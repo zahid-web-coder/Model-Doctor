@@ -156,18 +156,43 @@ crops. See [DECISIONS.md](DECISIONS.md) D-023.
 
 ---
 
-## Milestone 4 — Visual explanation · **Planned**
+## Milestone 4 — Visual explanation · **Completed**
 
-Make individual failures visually interpretable. Method selection deferred.
+Make individual failures visually interpretable.
+
+Delivered in two parts: the Grad-CAM backend (Week 3, schema version 3) and the
+dashboard views that render its output. Method selection resolved to Grad-CAM
+against raw class logits — see [DECISIONS.md](DECISIONS.md) D-024.
 
 Depends on: Milestone 3.
 
 ---
 
-## Milestone 5 — Failure grouping · **Planned**
+## Milestone 5 — Failure grouping · **Completed**
 
 Group failures sharing a probable cause, so an engineer addresses patterns
 rather than individual images.
+
+Delivered as **deterministic grouping by root-cause signature**, not
+unsupervised clustering. K-means over the CLIP embeddings was implemented and
+measured first; it scored a silhouette of 0.13–0.23 across every *k* from 2 to
+8, below the 0.25 threshold for substantial structure, and its clusters largely
+re-encoded class and outcome. Factor signatures give 22 named groups over the
+136-image run, 74% of failures in groups of five or more. See
+[DECISIONS.md](DECISIONS.md) D-030 for the numbers and the trade-offs accepted.
+
+| Item | Status |
+| --- | --- |
+| `clusters` / `cluster_members` tables, schema version 5 | Completed |
+| Factor-signature grouping, `app/clustering.py` | Completed |
+| `unexplained` group for failures no factor accounts for | Completed |
+| Nearest-neighbour retrieval, `app/similarity.py` | Completed |
+| `method` column so another grouping method needs no schema change | Completed |
+| Dashboard failure-group view | Planned — dashboard work |
+
+**Naming.** Every user-facing surface says *failure group*. The tables and
+module keep `cluster` names so a genuinely unsupervised method can be added
+later under the same `method` seam.
 
 Depends on: Milestones 3, 4.
 
@@ -194,8 +219,10 @@ explanation, clustering, and recommendations publish their own tables.
 | Outcome filters and per-class statistics | Completed |
 | Worst-image ranking and box/polygon overlays | Completed |
 | Graceful missing database and image states | Completed |
-| Grad-CAM / visual explanation views | Planned — depends on Milestone 4 contract |
-| Cluster and recommendation views | Planned — depend on Milestones 5–6 tables |
+| Grad-CAM / visual explanation views | Completed |
+| Root-cause views | Completed |
+| Failure-group views | Planned — the `clusters` contract is published (v5) |
+| Recommendation views | Planned — depends on the Milestone 6 table |
 
 The dashboard remains read-only. It must continue to query only documented
 schema tables, including when later milestone tables are added.
