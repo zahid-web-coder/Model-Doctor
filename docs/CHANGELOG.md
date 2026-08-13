@@ -5,8 +5,6 @@ anything non-obvious, why — with a link to the decision record.
 
 Status vocabulary matches [ROADMAP.md](ROADMAP.md).
 
----
-
 ## Milestone 2 — Inference Foundation · 2026-08-07
 
 First working code. Establishes the configuration, resource, dataset, geometry,
@@ -554,3 +552,57 @@ Clustering, recommendations, dashboard rendering, mask-based analysis.
   over 99% of objects are large. The model is not failing on small things.
 - Both run-level factors correctly stayed silent on this run: two near-balanced
   classes, and only two wrong-class findings, below the recurrence threshold.
+
+---
+
+## Milestone 5 — Failure Grouping · 2026-08-13
+
+Failures are grouped so an engineer addresses patterns rather than individual
+images. The grouping is deterministic, not learned.
+
+### Added
+
+**Grouping**
+- `app/clustering.py` — groups a saved run's failures by the exact set of
+  root-cause factors attributed to each. The group's label *is* its
+  explanation (`blur + edge_truncation`), so naming a group needs no separate
+  step. Runs as a pass over an already-saved run, like feature extraction,
+  explanation, and root-cause analysis before it.
+- `unexplained` group for failures no factor accounts for — 12 of 127 on the
+  reference run. Named rather than dropped, so group sizes sum to the failure
+  count and the gap in the detectors stays visible.
+- `--run`, `--db`, `--detail` CLI, matching the other analysis passes.
+
+**Retrieval**
+- `app/similarity.py` — nearest-neighbour search over the existing CLIP
+  embeddings, answering "show me failures that look like this one". Kept
+  separate from grouping: ranking by similarity needs no cluster structure,
+  where partitioning does. Computed on demand, not stored.
+
+**Schema — version 5**
+- `clusters` and `cluster_members`. `runs`, `images`, `findings`, `embeddings`,
+  `heatmaps` and `root_causes` are unchanged, so every existing query returns
+  exactly the same rows (D-020).
+- `clusters.method` records how a grouping was produced, so a second method can
+  be added later without a schema change — the seam `heatmaps.method` provides.
+
+### Decided
+
+- **D-030** — failures are grouped by root-cause signature, not by clustering
+  embeddings. K-means was implemented and measured before being rejected:
+  silhouette 0.13–0.23 across every *k* from 2 to 8 and both PCA-10 and PCA-20
+  projections, with clusters that largely re-encoded class and outcome. The
+  record includes the full table, the trade-offs accepted, and why the
+  `cluster` table names survive a decision not to cluster.
+
+### Verified
+
+- 221 tests pass; ruff reports no findings.
+- Grouping the 136-image reference run: 127 failures, 127 grouped, 22 groups,
+  largest `edge_truncation` at 36 (28.3%), `unexplained` at 12 (9.4%).
+
+### Naming
+
+User-facing surfaces say **failure group**, never "cluster" and never
+"unsupervised clustering". The default method is deterministic and the
+documentation says so.

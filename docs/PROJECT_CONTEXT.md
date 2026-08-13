@@ -39,7 +39,9 @@ architectural concern but is **not implemented**.
 | Feature extraction (CLIP embeddings) | **Completed** |
 | Grad-CAM explanation backend | **Completed** — schema version 3 |
 | Root-cause analysis | **Completed** — schema version 4 |
-| Developer dashboard | **In Progress** — saved-run explorer, charts, filters, and image overlays |
+| Failure grouping (deterministic, by root cause) | **Completed** — schema version 5 |
+| Similar-failure retrieval (nearest neighbour) | **Completed** — reads existing embeddings |
+| Developer dashboard | **In Progress** — saved-run explorer, charts, filters, image overlays, heatmaps, root causes |
 | Mask IoU / segmentation analysis | **Planned (deferred)** — see D-022; a known, documented limitation |
 | Everything beyond error analysis | **Planned** — see [ROADMAP.md](ROADMAP.md) |
 
@@ -55,6 +57,12 @@ architectural concern but is **not implemented**.
   non-zero exit code.
 - The dashboard reads the SQLite schema directly and never modifies diagnosis
   history. It reports missing databases and unavailable source images clearly.
+- Failure grouping was run on the 136-image reference run: 127 failures, all
+  127 grouped, 22 groups, largest `edge_truncation` at 28.3%, `unexplained` at
+  9.4%. Grouped total equals the failure count.
+- K-means over the embeddings was implemented and measured before being
+  rejected — silhouette 0.13–0.23 across every *k* tried (D-030). The rejection
+  is evidence-based, not assumed.
 
 ### Not yet verified by execution
 

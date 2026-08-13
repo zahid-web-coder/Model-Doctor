@@ -916,3 +916,76 @@ to review, but page-level decomposition can be introduced once visual
 explanations, clusters, or recommendations add enough independent UI surface to
 justify it.
 
+
+---
+
+## D-030 — Failures are grouped by root-cause signature, not by clustering embeddings
+
+**Status:** Accepted · Milestone 5
+
+**Decision.** Group a run's failures deterministically by the set of
+root-cause factors attributed to each one. Two failures share a group when
+they share a factor set. The group's label *is* that set — `blur +
+edge_truncation` — so a group needs no separate naming step. Failures with no
+attributed factor form an `unexplained` group rather than being dropped.
+
+Do not call this clustering in any user-facing surface. It is *failure
+grouping*, and the distinction is not cosmetic: nothing is learned or fitted,
+and the same input always produces the same partition.
+
+**Reasoning.** K-means over the CLIP embeddings was tried first, on the
+136-image run with 126 embedded failures, and measured before it was judged:
+
+| Projection | k=2 | k=3 | k=4 | k=5 | k=6 | k=7 | k=8 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| PCA-10 | 0.228 | 0.206 | 0.192 | 0.179 | 0.194 | 0.199 | 0.184 |
+| PCA-20 | 0.178 | 0.153 | 0.132 | 0.150 | 0.143 | 0.142 | 0.139 |
+
+Silhouette below 0.25 indicates no substantial structure. Every value is
+below it. PCA needed 20 components to retain 68% of variance, so there is no
+low-dimensional shape to exploit either. The embedding space itself is not
+degenerate — cosine distances run 0.00 to 0.78, a spread ratio of 2.01 — so
+this is a real absence of cluster structure, not distance concentration.
+
+Inspecting what k-means did produce settled it. At k=5 one cluster was 78%
+false-negative and 75% `door_frame`, another 100% `door`. The clusters were
+substantially re-encoding class and outcome, both already columns on
+`findings`, and presenting that as discovery.
+
+Factor-signature grouping on the same 127 failures gives 22 groups, with 74%
+of failures in groups of five or more and only six singletons. Every group
+arrives named.
+
+**Rejected.** *K-means or HDBSCAN over embeddings* — measured above; it would
+have produced a feature that appears to work and silently misleads, which is
+the exact failure mode this project exists to expose. *Grouping by outcome or
+class alone* — that is a `GROUP BY` on an existing table, not a milestone.
+*Dropping unexplained failures* — group sizes would stop summing to the failure
+count, and the failures no detector can account for are the most interesting
+ones.
+
+**Trade-off.** Group count is not controllable: it is whatever the factor
+combinations produce, 22 here, and a run with more factors would fragment
+further. Groups are only as good as the factors feeding them — grouping
+inherits every blind spot of the seven detectors, and adding a factor
+re-partitions every group. Accepted, because a group that cannot be explained
+is not worth acting on, and this method cannot produce one.
+
+This also rules out discovering a failure mode nobody has written a detector
+for. That gap is real, and `unexplained` — 12 of 127 failures here — is
+deliberately where it surfaces rather than being hidden inside a numbered
+cluster.
+
+**Kept, not repurposed.** The embeddings remain untouched and now serve
+nearest-neighbour retrieval in `app/similarity.py`. Ranking by similarity to
+one query point needs no cluster structure — it is a sort, and it degrades
+honestly, reporting a low score rather than asserting a cluster membership.
+Neighbours are computed on demand and not stored: the answer depends on which
+finding is asked about, so a table of them would be answers to questions
+nobody has asked.
+
+**Naming.** The tables are `clusters` and `cluster_members`, and the module is
+`app/clustering.py`, because a second method — genuinely unsupervised — may be
+added later under the same `method` seam. Every human-readable surface says
+*failure group*. The mismatch is deliberate and documented here so it does not
+read as an oversight.

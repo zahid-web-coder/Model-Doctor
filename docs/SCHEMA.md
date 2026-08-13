@@ -5,7 +5,7 @@ consumes it.** A dashboard, a report generator, or a notebook should be built
 against this document alone. Reading the Python is not required, and nothing
 here depends on it.
 
-Schema version: **4** · Default location: `db/model_doctor.db` (SQLite)
+Schema version: **5** · Default location: `db/model_doctor.db` (SQLite)
 
 Populated databases are **not** committed — image paths and filenames carry
 dataset-specific identifiers. This schema is committed; the data is not.
@@ -33,10 +33,13 @@ of five outcomes.
         │                                            ├─▶ heatmaps    (v3)
         │                                            ├─▶ root_causes (v4)
         │                                            │
+        │    ┌────────────┐ 1      n ┌─────────────────┐
+        ├────┤  clusters  ├──────────┤ cluster_members ├──▶ findings   (v5)
+        │    └────────────┘          └─────────────────┘
+        │                                            │
         │                                            │  future milestones
-        └── reproducibility: model SHA,              ├─▶ clusters
-            thresholds, split, image size            └─▶ recommendations
-                                                        (not yet created)
+        └── reproducibility: model SHA,              └─▶ recommendations
+            thresholds, split, image size                (not yet created)
 ```
 
 `findings` also carries `run_id` directly, so run-scoped queries need no join
@@ -249,19 +252,87 @@ WHERE f.run_id = ? AND f.outcome != 'correct'
 ORDER BY rc.score DESC;
 ```
 
-**Once clustering exists**, a per-cluster summary needs no schema change:
-
-```sql
-SELECT c.cluster_id, rc.factor, COUNT(*) AS n
-FROM root_causes rc JOIN clusters c ON c.finding_id = rc.finding_id
-WHERE rc.run_id = ? GROUP BY c.cluster_id, rc.factor ORDER BY n DESC;
-```
+These factors are also what **failure groups** are built from — see `clusters`
+below. That was the plan recorded in D-026, and it held: grouping needed no
+change to this table.
 
 **One documented limitation.** The roadmap asks for directed confusion pairs
 ("A mistaken for B"). That needs the *predicted* class, which `findings` does
 not store — by design, so per-class statistics charge a miss to the class that
 was missed. `recurring_misclassification` therefore reports which classes are
 repeatedly misidentified, without the direction. See DECISIONS D-028.
+
+---
+
+### `clusters` and `cluster_members` — added in schema version 5
+
+**Failure groups.** Each row in `clusters` is one group of failures that share
+a cause; `cluster_members` says which failures belong to it.
+
+> **Call these "Failure Groups" in the UI, not "clusters" and never
+> "unsupervised clustering".** The default method assigns membership
+> deterministically from attributed root causes — nothing is learned or fitted.
+> The table names are `clusters`/`cluster_members` only so a genuinely
+> unsupervised method can be added later under the same `method` column. See
+> DECISIONS D-030, which records the k-means silhouette scores that ruled that
+> approach out for now.
+
+#### `clusters`
+
+| Column | Type | Null | Meaning |
+| --- | --- | --- | --- |
+| `id` | INTEGER PK | no | Group identifier |
+| `run_id` | INTEGER FK → `runs.id` | no | Owning run |
+| `method` | TEXT | no | How the grouping was produced |
+| `label` | TEXT | no | The group's name — **this is also its explanation** |
+| `size` | INTEGER | no | Number of members, denormalised for cheap ordering |
+
+Unique on `(run_id, method, label)`.
+
+#### `cluster_members`
+
+| Column | Type | Null | Meaning |
+| --- | --- | --- | --- |
+| `cluster_id` | INTEGER FK → `clusters.id` | no | The group |
+| `finding_id` | INTEGER FK → `findings.id` | no | A failure in it |
+
+Primary key `(cluster_id, finding_id)`.
+
+#### Method values
+
+| Method | Meaning |
+| --- | --- |
+| `factor-signature` | Grouped by the exact set of root-cause factors attributed to each failure. The only method implemented. |
+
+#### What the label means
+
+For `factor-signature`, the label is the failure's factors, sorted and joined
+with `" + "`. **No lookup is needed to name a group — the label is the name.**
+
+| Example label | Meaning |
+| --- | --- |
+| `edge_truncation` | Only that factor was attributed |
+| `blur + edge_truncation` | Both were attributed to every member |
+| `unexplained` | No factor was attributed |
+
+`unexplained` is a real group, not a null. Do not filter it out by default: it
+is the set of failures no current detector accounts for, which makes it the
+most interesting group on the page, not the least.
+
+#### Guarantees you can rely on
+
+- **Every failure is in exactly one group per method.** Group sizes sum to the
+  run's failure count. If they do not, something is wrong — say so rather than
+  rendering it.
+- **Correct findings are never grouped.** Only `outcome != 'correct'`.
+- **`size` always equals the member count.** A test enforces it.
+- **Regrouping replaces.** Re-running deletes that run's groups *for that
+  method* and writes fresh ones, so ids are not stable across runs of the
+  grouping pass. Groups from a different `method` are untouched.
+- **A run may have no groups at all** — the grouping pass is optional and may
+  not have been run. Treat an empty result as "not grouped yet", not "no
+  failures". `clusters` is an optional table: a database written before version
+  5 does not have it, so check before querying.
 
 ---
 
@@ -399,6 +470,63 @@ FROM findings WHERE run_id IN (?, ?)
 GROUP BY run_id, outcome;
 ```
 
+**Failure groups, largest first** — the group list for a run
+```sql
+SELECT id, label, size
+FROM clusters
+WHERE run_id = ? AND method = 'factor-signature'
+ORDER BY size DESC, label;
+```
+
+**The failures inside one group**
+```sql
+SELECT f.id, f.outcome, f.class_name, f.confidence, f.iou, i.filename, i.path
+FROM cluster_members cm
+JOIN findings f ON f.id = cm.finding_id
+JOIN images i ON i.id = f.image_id
+WHERE cm.cluster_id = ?
+ORDER BY f.id;
+```
+
+**Group composition by outcome** — what kind of failure each group contains
+```sql
+SELECT c.label, f.outcome, COUNT(*) AS n
+FROM clusters c
+JOIN cluster_members cm ON cm.cluster_id = c.id
+JOIN findings f ON f.id = cm.finding_id
+WHERE c.run_id = ? AND c.method = 'factor-signature'
+GROUP BY c.label, f.outcome
+ORDER BY c.label, n DESC;
+```
+
+**Group composition by class** — which class each group hurts most
+```sql
+SELECT c.label, f.class_name, COUNT(*) AS n
+FROM clusters c
+JOIN cluster_members cm ON cm.cluster_id = c.id
+JOIN findings f ON f.id = cm.finding_id
+WHERE c.run_id = ? AND c.method = 'factor-signature'
+GROUP BY c.label, f.class_name
+ORDER BY n DESC;
+```
+
+**Which group a given finding is in** — for the image explorer
+```sql
+SELECT c.label
+FROM cluster_members cm
+JOIN clusters c ON c.id = cm.cluster_id
+WHERE cm.finding_id = ? AND c.method = 'factor-signature';
+```
+
+**Check the arithmetic** — grouped total must equal the failure count
+```sql
+SELECT
+  (SELECT COALESCE(SUM(size), 0) FROM clusters
+    WHERE run_id = ? AND method = 'factor-signature')          AS grouped,
+  (SELECT COUNT(*) FROM findings
+    WHERE run_id = ? AND outcome != 'correct')                 AS failures;
+```
+
 ---
 
 ## 6. Stability guarantees
@@ -410,25 +538,36 @@ tables, never columns to these:
 | --- | --- | --- | --- |
 | Feature extraction | `embeddings` | `finding_id` | **Exists (v2)** |
 | Grad-CAM explanation | `heatmaps` | `finding_id` | **Exists (v3)** |
-| Failure clustering | `clusters` | `finding_id` | Not yet created |
 | Root-cause analysis | `root_causes` | `finding_id` | **Exists (v4)** |
+| Failure grouping | `clusters`, `cluster_members` | `run_id`, `finding_id` | **Exists (v5)** |
 | Recommendations | `recommendations` | `cluster_id` or `finding_id` | Not yet created |
 
 `embeddings` arriving in version 2 is this guarantee working as intended: a new
 table was added and **`runs`, `images` and `findings` did not change**. Every
-query written against version 1 still returns exactly the same rows.
+query written against version 1 still returns exactly the same rows. Versions
+3, 4 and 5 held the same line.
 
-Opening a version 1 database upgrades it in place — the new table is created
-and existing data is untouched.
+Opening an older database upgrades it in place — the new tables are created and
+existing data is untouched.
 
-**The three unbuilt tables do not exist.** Do not write queries against them.
+**Check before querying the optional tables.** `embeddings`, `heatmaps`,
+`root_causes`, `clusters` and `cluster_members` each arrived after version 1,
+so a database saved by an earlier version will not have them. Only `runs`,
+`images` and `findings` are guaranteed. A missing table should degrade the one
+surface that needs it, never the whole page:
+
+```sql
+SELECT name FROM sqlite_master WHERE type = 'table';
+```
+
+**`recommendations` does not exist.** Do not write queries against it.
 
 A query written against this document today will keep working. If a breaking
 change ever becomes unavoidable, `schema_info.version` is incremented and this
 document is updated first.
 
 ```sql
-SELECT version FROM schema_info;   -- currently 1
+SELECT version FROM schema_info;   -- currently 5
 ```
 
 ---
@@ -441,7 +580,11 @@ python -m app.diagnosis --list-runs
 python -m app.features --run 1                  # embeddings (downloads CLIP once)
 python -m app.explainability --run 1 --imgsz 672  # heatmaps
 python -m app.root_cause --run 1                  # root_causes
+python -m app.clustering --run 1                  # clusters, cluster_members
 ```
 
+Grouping reads `root_causes`, so run `app.root_cause` first. Running it before
+attribution is not an error — every failure simply lands in `unexplained`.
+
 Foreign keys are enforced, so consumers may rely on referential integrity.
-Deleting a run cascades to its images and findings.
+Deleting a run cascades to its images, findings, and groups.
