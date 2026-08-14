@@ -18,6 +18,14 @@ from app.dashboard import (
     load_image_findings,
     load_outcome_counts,
     load_root_causes_summary,
+    load_root_causes_by_class,
+    load_root_causes_by_outcome,
+    load_failure_groups,
+    load_failure_group_members,
+    load_failure_group_outcomes,
+    load_failure_group_classes,
+    load_finding_failure_group,
+    check_failure_groups_integrity,
     load_run_comparison,
     load_run_summary,
     load_runs,
@@ -193,11 +201,91 @@ def create_two_run_database(database: Path) -> None:
     connection.close()
 
 
+def create_optional_dashboard_database(database: Path) -> None:
+    """Create a database that includes the optional tables."""
+    create_dashboard_database(database)
+    connection = sqlite3.connect(database)
+    connection.executescript(
+        """
+        CREATE TABLE heatmaps (
+            id INTEGER PRIMARY KEY,
+            finding_id INTEGER NOT NULL,
+            run_id INTEGER NOT NULL,
+            path TEXT NOT NULL,
+            method TEXT NOT NULL,
+            target_layers TEXT NOT NULL
+        );
+        CREATE TABLE root_causes (
+            id INTEGER PRIMARY KEY,
+            finding_id INTEGER NOT NULL,
+            run_id INTEGER NOT NULL,
+            factor TEXT NOT NULL,
+            score REAL NOT NULL,
+            evidence TEXT NOT NULL
+        );
+        CREATE TABLE clusters (
+            id INTEGER PRIMARY KEY,
+            run_id INTEGER NOT NULL,
+            method TEXT NOT NULL,
+            label TEXT NOT NULL,
+            size INTEGER NOT NULL
+        );
+        CREATE TABLE cluster_members (
+            cluster_id INTEGER NOT NULL,
+            finding_id INTEGER NOT NULL,
+            PRIMARY KEY (cluster_id, finding_id)
+        );
+        """
+    )
+    
+    # Insert heatmap for Finding 2
+    connection.execute(
+        "INSERT INTO heatmaps VALUES (1, 2, 1, '/data/heatmap_2.jpg', 'grad-cam', 'layer4')"
+    )
+    
+    # Insert multiple root causes for Finding 2
+    connection.executemany(
+        "INSERT INTO root_causes VALUES (?, ?, 1, ?, ?, ?)",
+        [
+            (1, 2, 'blur', 0.9, 'Laplacian variance 5.1 < 100'),
+            (2, 2, 'edge_truncation', 0.85, 'touches left, top, bottom'),
+        ]
+    )
+
+    # Insert clusters and members
+    connection.executemany(
+        "INSERT INTO clusters VALUES (?, 1, 'factor-signature', ?, ?)",
+        [
+            (1, 'blur + edge_truncation', 1),
+            (2, 'unexplained', 2),
+        ]
+    )
+    connection.executemany(
+        "INSERT INTO cluster_members VALUES (?, ?)",
+        [
+            (1, 2),
+            (2, 3),
+            (2, 4),
+        ]
+    )
+    
+    connection.commit()
+    connection.close()
+
+
 @pytest.fixture
 def dashboard_database(tmp_path: Path) -> Path:
     """Provide a schema-valid saved run with varied outcomes and an image error."""
     database = tmp_path / "model_doctor.db"
     create_dashboard_database(database)
+    return database
+
+
+@pytest.fixture
+def optional_dashboard_database(tmp_path: Path) -> Path:
+    """Provide a database with all optional schema tables populated."""
+    database = tmp_path / "optional_model_doctor.db"
+    create_optional_dashboard_database(database)
     return database
 
 
@@ -367,3 +455,111 @@ def test_root_causes_summary_is_empty_when_the_table_is_absent(
 ) -> None:
     """The root-cause surface reports nothing rather than raising."""
     assert load_root_causes_summary(dashboard_database, run_id=1) == []
+
+
+def test_load_image_findings_with_optional_data(
+    optional_dashboard_database: Path,
+) -> None:
+    """Findings optionally carry heatmaps and root causes."""
+    findings = load_image_findings(
+        optional_dashboard_database, image_id=1, outcomes=("correct", "false_positive")
+    )
+    assert len(findings) == 3
+    
+    # Finding 1: Case A (correct, no optional data)
+    finding_1 = next(f for f in findings if f["finding_id"] == 1)
+    assert finding_1["heatmap_path"] is None
+    assert finding_1["root_causes_json"] == "[]"
+    
+    # Finding 2: Case B (heatmap and multiple root causes)
+    finding_2 = next(f for f in findings if f["finding_id"] == 2)
+    assert finding_2["heatmap_path"] == "/data/heatmap_2.jpg"
+    import json
+    rc_list = json.loads(str(finding_2["root_causes_json"]))
+    assert len(rc_list) == 2
+    factors = [rc["factor"] for rc in rc_list]
+    assert "blur" in factors
+    assert "edge_truncation" in factors
+    
+    # Finding 3: Case C (no heatmap, no root causes)
+    finding_3 = next(f for f in findings if f["finding_id"] == 3)
+    assert finding_3["heatmap_path"] is None
+    assert finding_3["root_causes_json"] == "[]"
+
+
+def test_root_causes_breakdowns_with_optional_data(
+    optional_dashboard_database: Path,
+) -> None:
+    """Breakdowns calculate percentages correctly and use COUNT(DISTINCT)."""
+    # Total failures: crack (1 false_positive finding #2, 1 false_positive finding #3) -> total 2
+    # spall (1 false_negative finding #4) -> total 1
+    # Note: Finding 1 is correct (not a failure). Finding 2 has blur & edge_truncation.
+    
+    class_breakdown = load_root_causes_by_class(optional_dashboard_database, run_id=1)
+    
+    blur_class = next(r for r in class_breakdown if r["factor"] == "blur" and r["class_name"] == "crack")
+    assert blur_class["count"] == 1
+    # total crack failures = 2 (finding 2 & 3). So 1/2 = 50.0%
+    assert blur_class["percentage"] == 50.0
+    
+    outcome_breakdown = load_root_causes_by_outcome(optional_dashboard_database, run_id=1)
+    blur_outcome = next(r for r in outcome_breakdown if r["factor"] == "blur" and r["outcome"] == "false_positive")
+    assert blur_outcome["count"] == 1
+    # total false_positive = 2. So 1/2 = 50.0%
+    assert blur_outcome["percentage"] == 50.0
+
+
+def test_failure_groups_degrade_when_optional_tables_are_absent(
+    dashboard_database: Path,
+) -> None:
+    """Missing clusters/cluster_members tables result in graceful empty returns."""
+    assert load_failure_groups(dashboard_database, 1) == []
+    assert load_failure_group_members(dashboard_database, 1) == []
+    assert load_failure_group_outcomes(dashboard_database, 1) == []
+    assert load_failure_group_classes(dashboard_database, 1) == []
+    assert load_finding_failure_group(dashboard_database, 1) is None
+    assert check_failure_groups_integrity(dashboard_database, 1) is None
+
+
+def test_failure_groups_queries(
+    optional_dashboard_database: Path,
+) -> None:
+    """Failure group endpoints execute correctly over populated schema."""
+    # Group list
+    groups = load_failure_groups(optional_dashboard_database, 1)
+    assert len(groups) == 2
+    # unexplained group check
+    unexplained = next(g for g in groups if g["label"] == "unexplained")
+    assert unexplained["size"] == 2
+    blur_edge = next(g for g in groups if g["label"] == "blur + edge_truncation")
+    assert blur_edge["size"] == 1
+
+    # Group members
+    members = load_failure_group_members(optional_dashboard_database, unexplained["id"])
+    assert len(members) == 2
+    # Finding 3 (false_positive) and Finding 4 (false_negative) are in unexplained
+    member_ids = [m["id"] for m in members]
+    assert 3 in member_ids
+    assert 4 in member_ids
+
+    # Outcome breakdown
+    outcomes = load_failure_group_outcomes(optional_dashboard_database, 1)
+    # unexplained has 1 false_positive (finding 3) and 1 false_negative (finding 4)
+    unexp_fp = next(o for o in outcomes if o["label"] == "unexplained" and o["outcome"] == "false_positive")
+    assert unexp_fp["n"] == 1
+
+    # Class breakdown
+    classes = load_failure_group_classes(optional_dashboard_database, 1)
+    unexp_crack = next(c for c in classes if c["label"] == "unexplained" and c["class_name"] == "crack")
+    assert unexp_crack["n"] == 1
+
+    # Finding lookup
+    label_3 = load_finding_failure_group(optional_dashboard_database, 3)
+    assert label_3 == "unexplained"
+    label_2 = load_finding_failure_group(optional_dashboard_database, 2)
+    assert label_2 == "blur + edge_truncation"
+
+    # Integrity check
+    assert check_failure_groups_integrity(optional_dashboard_database, 1) is None
+
+
