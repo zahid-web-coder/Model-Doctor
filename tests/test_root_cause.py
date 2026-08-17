@@ -19,6 +19,7 @@ from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import config
 from app import storage
 from app.diagnosis import DatasetDiagnosis, diagnose_image
 from app.root_cause import (
@@ -29,6 +30,7 @@ from app.root_cause import (
     LOW_LIGHT,
     RECURRING_MISCLASSIFICATION,
     SMALL_OBJECT,
+    THIN_STRUCTURE,
     BlurFactor,
     ClassImbalanceFactor,
     CrowdingFactor,
@@ -38,8 +40,10 @@ from app.root_cause import (
     RecurringMisclassificationFactor,
     RootCauseError,
     SmallObjectFactor,
+    ThinStructureFactor,
     analyse_run,
     build_contexts,
+    calibrate_finding_factors,
     measure_factor_rates,
 )
 from utils.annotations import ObjectAnnotation
@@ -596,3 +600,136 @@ def test_factor_rates_cascade_on_run_delete(tmp_path: Path) -> None:
         conn.execute("DELETE FROM runs WHERE id = ?", (run_id,))
 
         assert storage.load_factor_rates(conn, run_id) == []
+
+
+# ---------------------------------------------------------------------------
+# Thin structures (D-032)
+# ---------------------------------------------------------------------------
+def test_thin_structure_fires_on_a_long_narrow_box() -> None:
+    """A 10:1 box is emphatically thin and must be flagged."""
+    factor = ThinStructureFactor(ratio=4.0)
+
+    evidence = factor.detect(_context(box=(0.0, 0.0, 20.0, 200.0)))
+
+    assert evidence is not None
+    assert evidence.factor == THIN_STRUCTURE
+    assert "10.0:1" in evidence.evidence
+    assert "tall" in evidence.evidence
+
+
+def test_thin_structure_ignores_a_square_box() -> None:
+    """A detector that fires on everything explains nothing."""
+    factor = ThinStructureFactor(ratio=4.0)
+
+    assert factor.detect(_context(box=(0.0, 0.0, 100.0, 100.0))) is None
+
+
+def test_thin_structure_is_orientation_agnostic() -> None:
+    """A wide sliver is as thin as a tall one; only the wording differs."""
+    factor = ThinStructureFactor(ratio=4.0)
+
+    tall = factor.detect(_context(box=(0.0, 0.0, 20.0, 200.0)))
+    wide = factor.detect(_context(box=(0.0, 0.0, 200.0, 20.0)))
+
+    assert tall is not None and wide is not None
+    assert tall.score == wide.score
+    assert "wide" in wide.evidence
+
+
+def test_thin_structure_ignores_degenerate_boxes() -> None:
+    """A zero-width box would divide by zero, not be infinitely thin."""
+    factor = ThinStructureFactor(ratio=4.0)
+
+    assert factor.detect(_context(box=(10.0, 10.0, 10.0, 200.0))) is None
+    assert factor.detect(_context(box=None)) is None
+
+
+def test_thin_structure_score_rises_with_the_ratio() -> None:
+    """Severity must rank instances within the factor."""
+    factor = ThinStructureFactor(ratio=4.0)
+
+    mild = factor.detect(_context(box=(0.0, 0.0, 10.0, 45.0)))
+    severe = factor.detect(_context(box=(0.0, 0.0, 10.0, 200.0)))
+
+    assert mild is not None and severe is not None
+    assert severe.score > mild.score
+
+
+# ---------------------------------------------------------------------------
+# Calibration (D-032)
+# ---------------------------------------------------------------------------
+def test_calibration_derives_thresholds_from_the_data() -> None:
+    """"Small" must mean small for this dataset, not against a constant.
+
+    The configured fallback is 0.12% of image area. These objects span 1% to
+    10%, so a calibrated threshold must land inside that range — a constant
+    would never fire.
+    """
+    contexts = [
+        _context(finding_id=i, box=(0.0, 0.0, float(side), float(side)))
+        for i, side in enumerate((100, 150, 200, 250, 300), start=1)
+    ]
+
+    factors = {f.name: f for f in calibrate_finding_factors(contexts)}
+
+    small = factors[SMALL_OBJECT]
+    assert small.fraction is not None
+    assert 0.01 <= small.fraction <= 0.10
+    assert small.fraction > config.SMALL_OBJECT_AREA_FRACTION
+
+
+def test_calibration_falls_back_when_there_is_no_geometry() -> None:
+    """With nothing to learn from, the configured defaults must still apply."""
+    factors = {f.name: f for f in calibrate_finding_factors([])}
+
+    assert factors[SMALL_OBJECT].fraction == config.SMALL_OBJECT_AREA_FRACTION
+    assert factors[THIN_STRUCTURE].ratio == config.THIN_STRUCTURE_RATIO
+
+
+def test_calibration_leaves_absolute_factors_alone() -> None:
+    """A dark region is dark regardless of how dark the rest of the run is."""
+    contexts = [_context(box=(0.0, 0.0, 100.0, 100.0))]
+
+    factors = {f.name: f for f in calibrate_finding_factors(contexts)}
+
+    assert factors[BLUR].threshold == config.BLUR_VARIANCE_THRESHOLD
+    assert factors[LOW_LIGHT].threshold == config.LOW_LIGHT_THRESHOLD
+    assert factors[EDGE_TRUNCATION].margin == config.EDGE_TRUNCATION_MARGIN
+
+
+def test_calibration_uses_every_finding_not_only_failures() -> None:
+    """Calibrating on failures alone would make the reference the measurement.
+
+    The threshold derived from a mixed set must differ from one derived from
+    the failures alone, or the distinction is not being made.
+    """
+    # Two small failures against eight large correct findings. The lower
+    # quartile of the mixed set falls among the large ones; of the failures
+    # alone it falls among the small ones. If calibration used only failures,
+    # the two thresholds would be identical.
+    small_failures = [
+        _context(finding_id=i, outcome="false_negative", box=(0.0, 0.0, 50.0, 50.0))
+        for i in range(1, 3)
+    ]
+    large_correct = [
+        _context(finding_id=i, outcome="correct", box=(0.0, 0.0, 800.0, 800.0))
+        for i in range(3, 11)
+    ]
+
+    mixed = {f.name: f for f in calibrate_finding_factors(
+        small_failures + large_correct
+    )}[SMALL_OBJECT]
+    failures_only = {f.name: f for f in calibrate_finding_factors(small_failures)}[
+        SMALL_OBJECT
+    ]
+
+    assert mixed.fraction != failures_only.fraction
+
+
+def test_calibrated_factors_include_the_full_standard_set() -> None:
+    """Calibration must not silently drop a detector."""
+    names = {f.name for f in calibrate_finding_factors([])}
+
+    assert names == {
+        BLUR, LOW_LIGHT, SMALL_OBJECT, THIN_STRUCTURE, EDGE_TRUNCATION, CROWDING
+    }

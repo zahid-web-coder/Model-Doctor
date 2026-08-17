@@ -221,6 +221,34 @@ Depends on: Milestone 3, Week 7.
 
 ---
 
+## Milestone 5.6 — Factors that discriminate · **Completed**
+
+D-031 found that no factor separated failures from successes. This established
+that the fault lay with the factors, not the dataset.
+
+`small_object` used the COCO convention of 0.12% of image area and fired on 2
+of 278 findings on one split and none of 496 on another. Recalibrated against
+the run's own size distribution it became the strongest signal in the system.
+A new `thin_structure` factor names the weakness the metrics had shown since
+training — `door_frame` mask mAP50-95 of 0.246 against `door` at 0.599.
+
+| Factor | test | val |
+| --- | --- | --- |
+| `small_object` (calibrated) | 2.77x, p < 0.001 | 3.45x, p < 0.001 |
+| `thin_structure` (new) | 2.14x, p < 0.001 | 2.32x, p < 0.001 |
+
+| Item | Status |
+| --- | --- |
+| `thin_structure` factor | Completed |
+| `small_object` calibrated from the run's distribution | Completed |
+| `calibrate_finding_factors()`, `percentile()` | Completed |
+| Replicated across two splits | Completed |
+| Regroup on discriminating factors only | Deferred to Milestone 6 (D-032) |
+
+Depends on: Milestone 5.5.
+
+---
+
 ## Milestone 6 — Recommendations · **Planned**
 
 Translate grouped failures into concrete suggested actions.
@@ -228,7 +256,14 @@ Translate grouped failures into concrete suggested actions.
 **Constrained by D-031.** Recommendations may not be built on raw factor
 counts. Any advice must cite lift and significance, and must be capable of
 saying "this condition is common but does not distinguish failures" — which on
-the reference dataset is the honest verdict for the two largest factors.
+the reference dataset is the honest verdict for `edge_truncation` and `blur`.
+
+**Two open questions from D-032.** Adding discriminating factors fragmented
+failure groups from 22 to 35. Grouping on only the factors with lift > 1 and
+p < 0.05 gives 8 groups of median size 11, which is far more actionable — but
+the qualifying set differs between runs, so groups would stop being comparable.
+This milestone should settle it, likely by fixing the factor set once from
+pooled evidence rather than per run.
 
 Depends on: Milestone 5.
 

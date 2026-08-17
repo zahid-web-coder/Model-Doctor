@@ -48,7 +48,7 @@ from app import storage
 from utils.exceptions import ModelDoctorError
 from utils.geometry import box_iou
 from utils.logging_utils import get_logger
-from utils.statistics import fisher_exact_two_sided, lift
+from utils.statistics import fisher_exact_two_sided, lift, percentile
 
 logger = get_logger(__name__)
 
@@ -64,6 +64,7 @@ LOW_LIGHT = "low_light"
 SMALL_OBJECT = "small_object"
 EDGE_TRUNCATION = "edge_truncation"
 CROWDING = "crowding"
+THIN_STRUCTURE = "thin_structure"
 CLASS_IMBALANCE = "class_imbalance"
 RECURRING_MISCLASSIFICATION = "recurring_misclassification"
 
@@ -243,6 +244,52 @@ class SmallObjectFactor:
             self.name,
             score,
             f"{share * 100:.3f}% of image < {self.fraction * 100:.2f}%",
+        )
+
+
+class ThinStructureFactor:
+    """Flags long, narrow objects by the aspect ratio of their bounding box.
+
+    Thin structures are what detectors handle worst, and nothing else in the
+    factor set names the condition. It is not a proxy for size: measured within
+    a single class, and with area held at its median, thinness still separates
+    failures from successes (D-032).
+
+    A door frame is the canonical case here — a thin rectangle around an
+    opening. Its mask mAP50-95 on this project's model is 0.246 against 0.599
+    for the solid door, a gap invisible to box-level analysis and unnamed by
+    any factor until now.
+    """
+
+    name = THIN_STRUCTURE
+    needs_pixels = False
+
+    def __init__(self, ratio: float | None = None) -> None:
+        """Store the aspect ratio above which an object counts as thin."""
+        self.ratio = ratio if ratio is not None else config.THIN_STRUCTURE_RATIO
+
+    def detect(self, context: FindingContext) -> FactorEvidence | None:
+        """Return evidence when the box is much longer than it is wide."""
+        if context.box is None:
+            return None
+        x1, y1, x2, y2 = context.box
+        width, height = x2 - x1, y2 - y1
+        if width <= 0 or height <= 0:
+            return None
+
+        longer, shorter = max(width, height), min(width, height)
+        aspect = longer / shorter
+        if aspect < self.ratio:
+            return None
+
+        # Severity saturates at twice the threshold: past that the object is
+        # emphatically thin and finer gradations say nothing useful.
+        score = max(0.0, min(1.0, (aspect - self.ratio) / self.ratio))
+        orientation = "tall" if height > width else "wide"
+        return FactorEvidence(
+            self.name,
+            score,
+            f"{aspect:.1f}:1 {orientation}, above {self.ratio:.1f}:1",
         )
 
 
@@ -433,11 +480,88 @@ class RecurringMisclassificationFactor:
 
 
 def default_finding_factors() -> list[FindingFactor]:
-    """Return the per-finding detectors used unless a caller overrides them."""
+    """Return the per-finding detectors used unless a caller overrides them.
+
+    Thresholds come from configuration. Prefer :func:`calibrate_finding_factors`
+    when the run's own contexts are available — two of these detectors measure
+    "unusual for this dataset", which a fixed constant cannot express.
+    """
     return [
         BlurFactor(),
         LowLightFactor(),
         SmallObjectFactor(),
+        ThinStructureFactor(),
+        EdgeTruncationFactor(),
+        CrowdingFactor(),
+    ]
+
+
+def calibrate_finding_factors(
+    contexts: Sequence[FindingContext],
+) -> list[FindingFactor]:
+    """Return the per-finding detectors with thresholds drawn from the data.
+
+    Size and shape are relative properties. "Small" means small *for this
+    dataset*, and a constant cannot say that: the configured 0.12% of image
+    area comes from the COCO convention and fired on 2 of 278 findings here,
+    while "smaller than three quarters of the others" is among the strongest
+    predictors of failure this project has measured (D-032).
+
+    Both thresholds are computed over **every** finding, correct ones included.
+    Deriving them from failures alone would make the reference distribution the
+    thing being measured, and the factor would then fire on a fixed share of
+    failures by construction.
+
+    Detectors whose thresholds are absolute physical quantities — blur, light,
+    edge proximity, overlap — are unchanged. A dark region is dark regardless
+    of how dark the rest of the dataset is.
+
+    Args:
+        contexts: Every finding in the run. An empty or geometry-free sequence
+            leaves all detectors on their configured defaults.
+
+    Returns:
+        The standard detector set, with size and thinness calibrated where the
+        data allowed it.
+    """
+    areas: list[float] = []
+    aspects: list[float] = []
+    for context in contexts:
+        if context.box is None:
+            continue
+        x1, y1, x2, y2 = context.box
+        width, height = x2 - x1, y2 - y1
+        if width <= 0 or height <= 0:
+            continue
+        if context.image_width and context.image_height:
+            total = float(context.image_width * context.image_height)
+            if total > 0:
+                areas.append((width * height) / total)
+        aspects.append(max(width, height) / min(width, height))
+
+    area_threshold = percentile(areas, config.SMALL_OBJECT_PERCENTILE)
+    aspect_threshold = percentile(aspects, config.THIN_STRUCTURE_PERCENTILE)
+
+    if area_threshold is not None:
+        logger.debug(
+            "Calibrated small_object to %.4f of image area (p%d of %d objects)",
+            area_threshold,
+            round(config.SMALL_OBJECT_PERCENTILE * 100),
+            len(areas),
+        )
+    if aspect_threshold is not None:
+        logger.debug(
+            "Calibrated thin_structure to %.2f:1 (p%d of %d objects)",
+            aspect_threshold,
+            round(config.THIN_STRUCTURE_PERCENTILE * 100),
+            len(aspects),
+        )
+
+    return [
+        BlurFactor(),
+        LowLightFactor(),
+        SmallObjectFactor(area_threshold),
+        ThinStructureFactor(aspect_threshold),
         EdgeTruncationFactor(),
         CrowdingFactor(),
     ]
@@ -605,10 +729,6 @@ def analyse_run(
     Raises:
         RootCauseError: If the run has no failures to analyse.
     """
-    per_finding = (
-        list(finding_factors) if finding_factors is not None
-        else default_finding_factors()
-    )
     per_run = list(run_factors) if run_factors is not None else default_run_factors()
 
     # Every finding is loaded, not just the failures, so that each failure's
@@ -624,6 +744,14 @@ def analyse_run(
         raise RootCauseError(
             f"Run {run_id} has no failures to analyse. Diagnose and save it first."
         )
+
+    # Calibrated against every finding, so "small" and "thin" mean unusual for
+    # this dataset rather than unusual against a constant from another one.
+    per_finding = (
+        list(finding_factors)
+        if finding_factors is not None
+        else calibrate_finding_factors(contexts)
+    )
 
     entries: list[tuple[int, str, float, str]] = []
     explained: set[int] = set()
@@ -755,12 +883,6 @@ def measure_factor_rates(
     Raises:
         RootCauseError: If the run has no findings at all.
     """
-    per_finding = (
-        list(finding_factors)
-        if finding_factors is not None
-        else default_finding_factors()
-    )
-
     rows = storage.load_findings_for_embedding(connection, run_id, failures_only=False)
     if not rows:
         raise RootCauseError(
@@ -770,6 +892,14 @@ def measure_factor_rates(
     contexts, unreadable = build_contexts(rows, load_pixels=load_pixels)
     failures = [c for c in contexts if c.outcome != "correct"]
     correct = [c for c in contexts if c.outcome == "correct"]
+
+    # The same calibration `analyse_run` uses, over the same contexts, so a
+    # stored attribution and its base rate cannot disagree about the threshold.
+    per_finding = (
+        list(finding_factors)
+        if finding_factors is not None
+        else calibrate_finding_factors(contexts)
+    )
 
     if not failures or not correct:
         logger.warning(

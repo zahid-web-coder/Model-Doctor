@@ -163,10 +163,30 @@ BLUR_VARIANCE_THRESHOLD: Final[float] = float(os.getenv("MD_BLUR_VAR", "100.0"))
 # Mean luminance (0-255) below which a region is considered underexposed.
 LOW_LIGHT_THRESHOLD: Final[float] = float(os.getenv("MD_LOW_LIGHT", "60.0"))
 
-# Fraction of the image below which an object counts as small. 0.12% matches
-# the COCO convention for "small", which keeps the label comparable to how the
-# wider field reports object scale.
+# Fallback fraction of the image below which an object counts as small. 0.12%
+# matches the COCO convention for "small". It is only used when the run's own
+# size distribution is unavailable — a fixed cut-off does not transfer between
+# datasets. On a dataset photographed close up it fired on 2 of 278 findings
+# while "smaller than most" was a strong predictor of failure (D-032).
 SMALL_OBJECT_AREA_FRACTION: Final[float] = float(os.getenv("MD_SMALL_AREA", "0.0012"))
+
+# Percentile of the run's own object areas below which an object counts as
+# small. Chosen from measurement, not convention: lift rises monotonically as
+# the threshold tightens — 1.3x at the 75th percentile, 1.7x at the 50th,
+# 2.2-2.7x at the 25th — and the 25th keeps enough findings to be worth
+# reporting. Replicated across two splits (D-032).
+SMALL_OBJECT_PERCENTILE: Final[float] = float(os.getenv("MD_SMALL_PCT", "0.25"))
+
+# Percentile of the run's own aspect ratios above which an object counts as a
+# thin structure. Thin objects are what this project's model handles worst —
+# `door_frame` mask mAP50-95 is 0.246 against `door` at 0.599 — and nothing in
+# the factor set named it. Lift is 1.7-2.2x at the 75th percentile and vanishes
+# below the median, so the effect lives at the extreme (D-032).
+THIN_STRUCTURE_PERCENTILE: Final[float] = float(os.getenv("MD_THIN_PCT", "0.75"))
+
+# Fallback aspect ratio above which an object counts as thin, used when the
+# run's own distribution is unavailable.
+THIN_STRUCTURE_RATIO: Final[float] = float(os.getenv("MD_THIN_RATIO", "4.0"))
 
 # Distance from the frame, as a fraction of image size, within which a box is
 # treated as truncated by the edge.

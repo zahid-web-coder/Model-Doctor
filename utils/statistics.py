@@ -17,11 +17,52 @@ Nothing here knows about detection, findings, or factors. It takes four counts.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from math import comb
 
 # Guards against a table one floating-point ulp above the observed probability
 # being excluded from the two-sided sum, which would understate the p-value.
 _TOLERANCE: float = 1e-9
+
+
+def percentile(values: Sequence[float], fraction: float) -> float | None:
+    """Return the value below which ``fraction`` of the sample falls.
+
+    Used to derive a threshold from the data being measured rather than from a
+    constant. A fixed cut-off does not transfer between datasets: this
+    project's ``small_object`` threshold of 0.12% of image area was calibrated
+    for benchmarks where objects are small, and fired on 2 of 278 findings for
+    a dataset photographed close up — while "smaller than a quarter of the
+    others" turned out to be one of its strongest predictors of failure
+    (D-032).
+
+    Linear interpolation between the two neighbouring order statistics, which
+    is the common definition and behaves sensibly on small samples.
+
+    Args:
+        values: The sample. Order does not matter; it is sorted internally.
+        fraction: Position in ``[0, 1]``. ``0.25`` returns the lower quartile.
+
+    Returns:
+        The interpolated value, or ``None`` for an empty sample — a percentile
+        of nothing is undefined, not zero.
+
+    Raises:
+        ValueError: If ``fraction`` lies outside ``[0, 1]``.
+    """
+    if not 0.0 <= fraction <= 1.0:
+        raise ValueError(f"fraction must be within [0, 1], got {fraction}.")
+    ordered = sorted(values)
+    if not ordered:
+        return None
+    if len(ordered) == 1:
+        return float(ordered[0])
+
+    position = fraction * (len(ordered) - 1)
+    lower = int(position)
+    upper = min(lower + 1, len(ordered) - 1)
+    weight = position - lower
+    return float(ordered[lower] * (1 - weight) + ordered[upper] * weight)
 
 
 def lift(

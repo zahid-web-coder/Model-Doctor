@@ -680,3 +680,63 @@ from `edge_truncation` (36) to `crowding + edge_truncation` (29), and
 - The crowding regression test fails against the previous implementation with an
   empty attribution list, and passes now.
 
+---
+
+## Milestone 5.6 — Factors That Actually Discriminate · 2026-08-13
+
+D-031 showed no factor distinguished failure from success. This establishes
+that was a property of the factors, not the dataset.
+
+### Added
+
+- `thin_structure` factor — long, narrow objects by bounding-box aspect ratio.
+  Names the weakness the metrics had shown since training: `door_frame` mask
+  mAP50-95 is 0.246 against `door` at 0.599, and a door frame is a thin
+  rectangle. Nothing in the factor set could express that.
+- `calibrate_finding_factors()` — derives size and shape thresholds from the
+  run's own distribution, over every finding rather than failures alone.
+- `percentile()` in `utils/statistics.py`.
+- `MD_SMALL_PCT`, `MD_THIN_PCT`, `MD_THIN_RATIO` configuration.
+
+### Fixed
+
+- **`small_object` was measuring nothing.** Its threshold of 0.12% of image
+  area is the COCO convention for "small"; on a dataset photographed close up
+  it fired on 2 of 278 findings on one split and 0 of 496 on another.
+  Recalibrated to the 25th percentile of the run's own object areas, it becomes
+  the strongest signal in the system.
+
+### Measured
+
+Both splits, threshold chosen on test and applied unchanged to val:
+
+| Factor | test | val |
+| --- | --- | --- |
+| `small_object` (calibrated) | 2.77x, p < 0.001 | 3.45x, p < 0.001 |
+| `thin_structure` (new) | 2.14x, p < 0.001 | 2.32x, p < 0.001 |
+| `crowding` | 1.28x, p = 0.041 | 1.12x, p = 0.310 |
+| `edge_truncation` | 0.93x, p = 0.340 | 1.04x, p = 0.542 |
+
+Size shows a clean dose-response — 1.25x at the 75th percentile rising to 8.62x
+below the 10th — and holds within a single class, so it is not class in
+disguise. `crowding`, the only previously significant factor, failed to
+replicate on the larger split.
+
+### Known consequence
+
+Failure groups fragmented from 22 to 35 on test and 43 on val, median size
+falling to 2, while `unexplained` fell from 10 to 1. Grouping on only the
+discriminating factors would give 8 groups of median size 11, but the
+qualifying set differs between runs. Left for Milestone 6 to decide; recorded
+in D-032.
+
+### Decided
+
+- **D-032** — size and shape thresholds are derived from the data, not from
+  constants.
+
+### Verified
+
+- 264 tests pass; ruff clean.
+- Both new factors measured on two splits, 136 and 258 images.
+

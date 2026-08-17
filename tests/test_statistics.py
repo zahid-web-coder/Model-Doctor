@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from utils.statistics import fisher_exact_two_sided, lift
+from utils.statistics import fisher_exact_two_sided, lift, percentile
 
 
 # ---------------------------------------------------------------------------
@@ -100,3 +100,44 @@ def test_p_value_never_exceeds_one() -> None:
     """Floating-point summation must not produce an impossible probability."""
     for group_count in range(0, 21):
         assert fisher_exact_two_sided(group_count, 20, 10, 20) <= 1.0
+
+
+# ---------------------------------------------------------------------------
+# percentile
+# ---------------------------------------------------------------------------
+def test_percentile_returns_the_median_at_half() -> None:
+    """The most familiar case anchors the definition."""
+    assert percentile([1.0, 2.0, 3.0], 0.5) == pytest.approx(2.0)
+
+
+def test_percentile_interpolates_between_neighbours() -> None:
+    """Small samples need interpolation, not a nearest-rank jump."""
+    assert percentile([0.0, 10.0], 0.25) == pytest.approx(2.5)
+
+
+def test_percentile_returns_the_extremes_at_zero_and_one() -> None:
+    """The bounds must be the smallest and largest observations."""
+    values = [5.0, 1.0, 9.0]
+    assert percentile(values, 0.0) == pytest.approx(1.0)
+    assert percentile(values, 1.0) == pytest.approx(9.0)
+
+
+def test_percentile_does_not_depend_on_input_order() -> None:
+    """Callers pass unsorted measurements; the result must not vary."""
+    assert percentile([3.0, 1.0, 2.0], 0.5) == percentile([1.0, 2.0, 3.0], 0.5)
+
+
+def test_percentile_of_an_empty_sample_is_undefined() -> None:
+    """Returning 0.0 would become a threshold that silently never fires."""
+    assert percentile([], 0.5) is None
+
+
+def test_percentile_of_one_value_is_that_value() -> None:
+    """A single observation is every percentile of itself."""
+    assert percentile([7.0], 0.25) == pytest.approx(7.0)
+
+
+def test_percentile_rejects_a_fraction_outside_the_range() -> None:
+    """A fraction above 1 is caller error, not an extrapolation request."""
+    with pytest.raises(ValueError, match=r"within \[0, 1\]"):
+        percentile([1.0, 2.0], 1.5)
