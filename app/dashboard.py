@@ -39,7 +39,9 @@ OUTCOME_COLORS: Final = {
 PREDICTION_COLOR: Final = "#fb7185"
 GROUND_TRUTH_COLOR: Final = "#2dd4bf"
 REQUIRED_TABLES: Final = frozenset({"runs", "images", "findings"})
-OPTIONAL_TABLES: Final = frozenset({"heatmaps", "root_causes"})
+OPTIONAL_TABLES: Final = frozenset(
+    {"heatmaps", "root_causes", "clusters", "cluster_members"}
+)
 
 
 class DashboardDataError(RuntimeError):
@@ -586,6 +588,344 @@ def load_root_causes_summary(database: Path, run_id: int) -> list[dict[str, obje
         """,
         [run_id],
     )
+
+
+@st.cache_data(show_spinner=False)
+def load_root_causes_by_class(database: Path, run_id: int) -> list[dict[str, object]]:
+    """Count findings per factor broken down by class, with percentage.
+
+    Args:
+        database: Saved diagnosis database to query.
+        run_id: Identifier of the selected run.
+
+    Returns:
+        List of factor, class_name, count, and percentage.
+    """
+    if "root_causes" not in available_tables(database):
+        return []
+
+    class_totals_rows = query_rows(
+        database,
+        """
+        SELECT class_name, COUNT(*) AS total_failures
+        FROM findings
+        WHERE run_id = ? AND outcome != 'correct'
+        GROUP BY class_name
+        """,
+        [run_id],
+    )
+    class_totals = {
+        str(row["class_name"]): int(row["total_failures"])
+        for row in class_totals_rows
+    }
+
+    breakdown_rows = query_rows(
+        database,
+        """
+        SELECT rc.factor, f.class_name, COUNT(DISTINCT rc.finding_id) AS count
+        FROM root_causes rc
+        JOIN findings f ON f.id = rc.finding_id
+        WHERE rc.run_id = ?
+        GROUP BY rc.factor, f.class_name
+        ORDER BY rc.factor, count DESC
+        """,
+        [run_id],
+    )
+
+    result = []
+    for row in breakdown_rows:
+        factor = str(row["factor"])
+        class_name = str(row["class_name"])
+        count = int(row["count"])
+        total = class_totals.get(class_name, 1)
+        percentage = round((count / total) * 100, 1)
+        result.append({
+            "factor": factor,
+            "class_name": class_name,
+            "count": count,
+            "percentage": percentage,
+        })
+    return result
+
+
+@st.cache_data(show_spinner=False)
+def load_root_causes_by_outcome(database: Path, run_id: int) -> list[dict[str, object]]:
+    """Count findings per factor broken down by outcome, with percentage.
+
+    Args:
+        database: Saved diagnosis database to query.
+        run_id: Identifier of the selected run.
+
+    Returns:
+        List of factor, outcome, count, and percentage.
+    """
+    if "root_causes" not in available_tables(database):
+        return []
+
+    outcome_totals_rows = query_rows(
+        database,
+        """
+        SELECT outcome, COUNT(*) AS total_failures
+        FROM findings
+        WHERE run_id = ? AND outcome != 'correct'
+        GROUP BY outcome
+        """,
+        [run_id],
+    )
+    outcome_totals = {
+        str(row["outcome"]): int(row["total_failures"])
+        for row in outcome_totals_rows
+    }
+
+    breakdown_rows = query_rows(
+        database,
+        """
+        SELECT rc.factor, f.outcome, COUNT(DISTINCT rc.finding_id) AS count
+        FROM root_causes rc
+        JOIN findings f ON f.id = rc.finding_id
+        WHERE rc.run_id = ?
+        GROUP BY rc.factor, f.outcome
+        ORDER BY rc.factor, count DESC
+        """,
+        [run_id],
+    )
+
+    result = []
+    for row in breakdown_rows:
+        factor = str(row["factor"])
+        outcome = str(row["outcome"])
+        count = int(row["count"])
+        total = outcome_totals.get(outcome, 1)
+        percentage = round((count / total) * 100, 1)
+        result.append({
+            "factor": factor,
+            "outcome": outcome,
+            "count": count,
+            "percentage": percentage,
+        })
+    return result
+
+
+@st.cache_data(show_spinner=False)
+def load_failure_groups(database: Path, run_id: int) -> list[dict[str, object]]:
+    """Load the list of failure groups for the run.
+
+    Args:
+        database: Saved diagnosis database to query.
+        run_id: Identifier of the selected run.
+
+    Returns:
+        List of cluster id, label, and size.
+    """
+    if not {"clusters", "cluster_members"}.issubset(available_tables(database)):
+        return []
+
+    rows = query_rows(
+        database,
+        """
+        SELECT id, label, size
+        FROM clusters
+        WHERE run_id = ? AND method = 'factor-signature'
+        ORDER BY size DESC, label;
+        """,
+        [run_id],
+    )
+    return [
+        {
+            "id": int(row["id"]),
+            "label": str(row["label"]),
+            "size": int(row["size"]),
+        }
+        for row in rows
+    ]
+
+
+@st.cache_data(show_spinner=False)
+def load_failure_group_members(
+    database: Path, cluster_id: int
+) -> list[dict[str, object]]:
+    """Load the finding members of a failure group.
+
+    Args:
+        database: Saved diagnosis database to query.
+        cluster_id: Identifier of the failure group (cluster).
+
+    Returns:
+        List of findings in the group.
+    """
+    if not {"clusters", "cluster_members"}.issubset(available_tables(database)):
+        return []
+
+    rows = query_rows(
+        database,
+        """
+        SELECT f.id, f.outcome, f.class_name, f.confidence, f.iou, i.filename, i.path
+        FROM cluster_members cm
+        JOIN findings f ON f.id = cm.finding_id
+        JOIN images i ON i.id = f.image_id
+        WHERE cm.cluster_id = ?
+        ORDER BY f.id;
+        """,
+        [cluster_id],
+    )
+    return [
+        {
+            "id": int(row["id"]),
+            "outcome": str(row["outcome"]),
+            "class_name": str(row["class_name"]),
+            "confidence": (
+                float(row["confidence"]) if row["confidence"] is not None else None
+            ),
+            "iou": float(row["iou"]) if row["iou"] is not None else None,
+            "filename": str(row["filename"]),
+            "path": str(row["path"]),
+        }
+        for row in rows
+    ]
+
+
+@st.cache_data(show_spinner=False)
+def load_failure_group_outcomes(database: Path, run_id: int) -> list[dict[str, object]]:
+    """Count distinct findings per failure group, broken down by outcome.
+
+    Args:
+        database: Saved diagnosis database to query.
+        run_id: Identifier of the selected run.
+
+    Returns:
+        List of label, outcome, and count.
+    """
+    if not {"clusters", "cluster_members"}.issubset(available_tables(database)):
+        return []
+
+    rows = query_rows(
+        database,
+        """
+        SELECT c.label, f.outcome, COUNT(DISTINCT f.id) AS n
+        FROM clusters c
+        JOIN cluster_members cm ON cm.cluster_id = c.id
+        JOIN findings f ON f.id = cm.finding_id
+        WHERE c.run_id = ? AND c.method = 'factor-signature'
+        GROUP BY c.label, f.outcome
+        ORDER BY c.label, n DESC;
+        """,
+        [run_id],
+    )
+    return [
+        {
+            "label": str(row["label"]),
+            "outcome": str(row["outcome"]),
+            "n": int(row["n"]),
+        }
+        for row in rows
+    ]
+
+
+@st.cache_data(show_spinner=False)
+def load_failure_group_classes(database: Path, run_id: int) -> list[dict[str, object]]:
+    """Count distinct findings per failure group, broken down by class.
+
+    Args:
+        database: Saved diagnosis database to query.
+        run_id: Identifier of the selected run.
+
+    Returns:
+        List of label, class_name, and count.
+    """
+    if not {"clusters", "cluster_members"}.issubset(available_tables(database)):
+        return []
+
+    rows = query_rows(
+        database,
+        """
+        SELECT c.label, f.class_name, COUNT(DISTINCT f.id) AS n
+        FROM clusters c
+        JOIN cluster_members cm ON cm.cluster_id = c.id
+        JOIN findings f ON f.id = cm.finding_id
+        WHERE c.run_id = ? AND c.method = 'factor-signature'
+        GROUP BY c.label, f.class_name
+        ORDER BY n DESC;
+        """,
+        [run_id],
+    )
+    return [
+        {
+            "label": str(row["label"]),
+            "class_name": str(row["class_name"]),
+            "n": int(row["n"]),
+        }
+        for row in rows
+    ]
+
+
+@st.cache_data(show_spinner=False)
+def load_finding_failure_group(database: Path, finding_id: int) -> str | None:
+    """Find which failure group a given finding belongs to.
+
+    Args:
+        database: Saved diagnosis database to query.
+        finding_id: Identifier of the finding.
+
+    Returns:
+        The label of the failure group, or None if not found/grouped.
+    """
+    if not {"clusters", "cluster_members"}.issubset(available_tables(database)):
+        return None
+
+    rows = query_rows(
+        database,
+        """
+        SELECT c.label
+        FROM cluster_members cm
+        JOIN clusters c ON c.id = cm.cluster_id
+        WHERE cm.finding_id = ? AND c.method = 'factor-signature';
+        """,
+        [finding_id],
+    )
+    if not rows:
+        return None
+    return str(rows[0]["label"])
+
+
+@st.cache_data(show_spinner=False)
+def check_failure_groups_integrity(database: Path, run_id: int) -> str | None:
+    """Check if the grouped failures sum exactly to the total run failures.
+
+    Args:
+        database: Saved diagnosis database to query.
+        run_id: Identifier of the selected run.
+
+    Returns:
+        An error message if the counts differ, otherwise None.
+    """
+    if not {"clusters", "cluster_members"}.issubset(available_tables(database)):
+        return None
+
+    rows = query_rows(
+        database,
+        """
+        SELECT
+          (SELECT COALESCE(SUM(size), 0) FROM clusters
+            WHERE run_id = ? AND method = 'factor-signature')          AS grouped,
+          (SELECT COUNT(*) FROM findings
+            WHERE run_id = ? AND outcome != 'correct')                 AS failures;
+        """,
+        [run_id, run_id],
+    )
+
+    if not rows:
+        return "Failed to evaluate arithmetic integrity check."
+
+    grouped = int(rows[0]["grouped"] or 0)
+    failures = int(rows[0]["failures"] or 0)
+
+    if grouped != failures:
+        return (
+            f"Integrity check failed: grouped failures ({grouped}) do not "
+            f"equal total failures ({failures})."
+        )
+
+    return None
 
 
 @st.cache_data(show_spinner=False)
@@ -1280,13 +1620,21 @@ def render_dashboard(database: Path) -> None:
     )
 
     # ── Tabs ─────────────────────────────────────────────────────────────
-    tab_overview, tab_classes, tab_images, tab_compare, tab_root_causes = st.tabs(
+    (
+        tab_overview,
+        tab_classes,
+        tab_images,
+        tab_compare,
+        tab_root_causes,
+        tab_failure_groups,
+    ) = st.tabs(
         [
             "📊 Overview",
             "📋 Per-class",
             "🔍 Image explorer",
             "⚖️ Run comparison",
             "🌱 Root causes",
+            "🧩 Failure Groups",
         ]
     )
 
@@ -1415,25 +1763,32 @@ def render_dashboard(database: Path) -> None:
                 if image_path.is_file():
                     show_heatmaps = st.toggle("Show heatmaps", value=False)
                     if show_heatmaps:
-                        heatmaps = [f for f in findings if f.get("heatmap_path")]
-                        if not heatmaps:
-                            st.info("No heatmaps available for these findings.")
-                        else:
-                            for h in heatmaps:
-                                h_path = Path(str(h["heatmap_path"]))
-                                if h_path.is_file():
-                                    st.image(
-                                        str(h_path),
-                                        caption=(
-                                            f"Heatmap: {h['class_name']} "
-                                            f"({h.get('outcome', '')})"
-                                        ),
-                                        use_container_width=True,
-                                    )
-                                else:
-                                    st.warning(
-                                        f"Heatmap file unavailable at `{h_path}`"
-                                    )
+                        img_col, heat_col = st.columns(2)
+                        with img_col:
+                            st.image(
+                                image_with_overlays(image_path, findings),
+                                use_container_width=True,
+                            )
+                        with heat_col:
+                            heatmaps = [f for f in findings if f.get("heatmap_path")]
+                            if not heatmaps:
+                                st.info("No heatmaps available for these findings.")
+                            else:
+                                for h in heatmaps:
+                                    h_path = Path(str(h["heatmap_path"]))
+                                    if h_path.is_file():
+                                        st.image(
+                                            str(h_path),
+                                            caption=(
+                                                f"Heatmap: {h['class_name']} "
+                                                f"({h.get('outcome', '')})"
+                                            ),
+                                            use_container_width=True,
+                                        )
+                                    else:
+                                        st.warning(
+                                            f"Heatmap file unavailable at `{h_path}`"
+                                        )
                     else:
                         st.image(
                             image_with_overlays(image_path, findings),
@@ -1586,6 +1941,148 @@ def render_dashboard(database: Path) -> None:
                 fig, use_container_width=True, config={"displayModeBar": False}
             )
             st.dataframe(rc_rows, hide_index=True, use_container_width=True)
+
+            st.markdown(
+                '<div class="section-title" style="font-size: 1.1rem;">'
+                "Breakdowns</div>",
+                unsafe_allow_html=True,
+            )
+
+            class_breakdown = load_root_causes_by_class(database, run_id)
+            outcome_breakdown = load_root_causes_by_outcome(database, run_id)
+
+            rc_col_a, rc_col_b = st.columns(2)
+            with rc_col_a:
+                st.markdown("#### By Class")
+                if class_breakdown:
+                    st.dataframe(
+                        [
+                            {
+                                "Factor": r["factor"],
+                                "Class": r["class_name"],
+                                "Findings": r["count"],
+                                "Percentage": f"{r['percentage']}%",
+                            }
+                            for r in class_breakdown
+                        ],
+                        hide_index=True,
+                        use_container_width=True,
+                    )
+                else:
+                    st.info("No class breakdowns available.")
+
+            with rc_col_b:
+                st.markdown("#### By Outcome")
+                if outcome_breakdown:
+                    st.dataframe(
+                        [
+                            {
+                                "Factor": r["factor"],
+                                "Outcome": OUTCOME_LABELS.get(
+                                    str(r["outcome"]), str(r["outcome"])
+                                ),
+                                "Findings": r["count"],
+                                "Percentage": f"{r['percentage']}%",
+                            }
+                            for r in outcome_breakdown
+                        ],
+                        hide_index=True,
+                        use_container_width=True,
+                    )
+                else:
+                    st.info("No outcome breakdowns available.")
+
+    # ── Tab 6: Failure Groups ────────────────────────────────────────────
+    with tab_failure_groups:
+        st.markdown(
+            '<div class="section-title">Failure Groups</div>',
+            unsafe_allow_html=True,
+        )
+
+        if not {"clusters", "cluster_members"}.issubset(available_tables(database)):
+            st.info("Failure groups have not been generated for this database.")
+        else:
+            integrity_error = check_failure_groups_integrity(database, run_id)
+            if integrity_error:
+                st.error(integrity_error)
+            else:
+                failure_groups = load_failure_groups(database, run_id)
+                if not failure_groups:
+                    st.info(
+                        "No failure groups recorded for this run. Run "
+                        "`python -m app.clustering --run <id>` to generate them."
+                    )
+                else:
+                    fg_rows = [
+                        {"Group": fg["label"], "Failures": fg["size"]}
+                        for fg in failure_groups
+                    ]
+
+                    fig = px.bar(
+                        fg_rows,
+                        x="Group",
+                        y="Failures",
+                        color_discrete_sequence=["#f43f5e"],
+                    )
+                    fig.update_layout(
+                        xaxis_title=None,
+                        yaxis_title="Failures",
+                        margin=dict(l=0, r=0, t=10, b=0),
+                        height=300,
+                        dragmode=False,
+                    )
+                    st.plotly_chart(
+                        fig, use_container_width=True, config={"displayModeBar": False}
+                    )
+                    st.dataframe(fg_rows, hide_index=True, use_container_width=True)
+
+                    st.markdown(
+                        '<div class="section-title" style="font-size: 1.1rem;">'
+                        "Group Breakdowns</div>",
+                        unsafe_allow_html=True,
+                    )
+
+                    fg_class_bd = load_failure_group_classes(database, run_id)
+                    fg_outcome_bd = load_failure_group_outcomes(database, run_id)
+
+                    fg_col_a, fg_col_b = st.columns(2)
+                    with fg_col_a:
+                        st.markdown("#### By Class")
+                        if fg_class_bd:
+                            st.dataframe(
+                                [
+                                    {
+                                        "Group": r["label"],
+                                        "Class": r["class_name"],
+                                        "Failures": r["n"],
+                                    }
+                                    for r in fg_class_bd
+                                ],
+                                hide_index=True,
+                                use_container_width=True,
+                            )
+                        else:
+                            st.info("No class breakdowns available.")
+
+                    with fg_col_b:
+                        st.markdown("#### By Outcome")
+                        if fg_outcome_bd:
+                            st.dataframe(
+                                [
+                                    {
+                                        "Group": r["label"],
+                                        "Outcome": OUTCOME_LABELS.get(
+                                    str(r["outcome"]), str(r["outcome"])
+                                ),
+                                        "Failures": r["n"],
+                                    }
+                                    for r in fg_outcome_bd
+                                ],
+                                hide_index=True,
+                                use_container_width=True,
+                            )
+                        else:
+                            st.info("No outcome breakdowns available.")
 
 
 def main() -> None:
