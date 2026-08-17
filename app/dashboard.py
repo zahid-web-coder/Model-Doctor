@@ -39,7 +39,9 @@ OUTCOME_COLORS: Final = {
 PREDICTION_COLOR: Final = "#fb7185"
 GROUND_TRUTH_COLOR: Final = "#2dd4bf"
 REQUIRED_TABLES: Final = frozenset({"runs", "images", "findings"})
-OPTIONAL_TABLES: Final = frozenset({"heatmaps", "root_causes"})
+OPTIONAL_TABLES: Final = frozenset(
+    {"heatmaps", "root_causes", "clusters", "cluster_members"}
+)
 
 
 class DashboardDataError(RuntimeError):
@@ -591,7 +593,7 @@ def load_root_causes_summary(database: Path, run_id: int) -> list[dict[str, obje
 @st.cache_data(show_spinner=False)
 def load_root_causes_by_class(database: Path, run_id: int) -> list[dict[str, object]]:
     """Count findings per factor broken down by class, with percentage.
-    
+
     Args:
         database: Saved diagnosis database to query.
         run_id: Identifier of the selected run.
@@ -612,7 +614,10 @@ def load_root_causes_by_class(database: Path, run_id: int) -> list[dict[str, obj
         """,
         [run_id],
     )
-    class_totals = {str(row["class_name"]): int(row["total_failures"]) for row in class_totals_rows}
+    class_totals = {
+        str(row["class_name"]): int(row["total_failures"])
+        for row in class_totals_rows
+    }
 
     breakdown_rows = query_rows(
         database,
@@ -646,7 +651,7 @@ def load_root_causes_by_class(database: Path, run_id: int) -> list[dict[str, obj
 @st.cache_data(show_spinner=False)
 def load_root_causes_by_outcome(database: Path, run_id: int) -> list[dict[str, object]]:
     """Count findings per factor broken down by outcome, with percentage.
-    
+
     Args:
         database: Saved diagnosis database to query.
         run_id: Identifier of the selected run.
@@ -667,7 +672,10 @@ def load_root_causes_by_outcome(database: Path, run_id: int) -> list[dict[str, o
         """,
         [run_id],
     )
-    outcome_totals = {str(row["outcome"]): int(row["total_failures"]) for row in outcome_totals_rows}
+    outcome_totals = {
+        str(row["outcome"]): int(row["total_failures"])
+        for row in outcome_totals_rows
+    }
 
     breakdown_rows = query_rows(
         database,
@@ -701,7 +709,7 @@ def load_root_causes_by_outcome(database: Path, run_id: int) -> list[dict[str, o
 @st.cache_data(show_spinner=False)
 def load_failure_groups(database: Path, run_id: int) -> list[dict[str, object]]:
     """Load the list of failure groups for the run.
-    
+
     Args:
         database: Saved diagnosis database to query.
         run_id: Identifier of the selected run.
@@ -733,9 +741,11 @@ def load_failure_groups(database: Path, run_id: int) -> list[dict[str, object]]:
 
 
 @st.cache_data(show_spinner=False)
-def load_failure_group_members(database: Path, cluster_id: int) -> list[dict[str, object]]:
+def load_failure_group_members(
+    database: Path, cluster_id: int
+) -> list[dict[str, object]]:
     """Load the finding members of a failure group.
-    
+
     Args:
         database: Saved diagnosis database to query.
         cluster_id: Identifier of the failure group (cluster).
@@ -763,7 +773,9 @@ def load_failure_group_members(database: Path, cluster_id: int) -> list[dict[str
             "id": int(row["id"]),
             "outcome": str(row["outcome"]),
             "class_name": str(row["class_name"]),
-            "confidence": float(row["confidence"]) if row["confidence"] is not None else None,
+            "confidence": (
+                float(row["confidence"]) if row["confidence"] is not None else None
+            ),
             "iou": float(row["iou"]) if row["iou"] is not None else None,
             "filename": str(row["filename"]),
             "path": str(row["path"]),
@@ -774,8 +786,8 @@ def load_failure_group_members(database: Path, cluster_id: int) -> list[dict[str
 
 @st.cache_data(show_spinner=False)
 def load_failure_group_outcomes(database: Path, run_id: int) -> list[dict[str, object]]:
-    """Count how many distinct findings each failure group contains, broken down by outcome.
-    
+    """Count distinct findings per failure group, broken down by outcome.
+
     Args:
         database: Saved diagnosis database to query.
         run_id: Identifier of the selected run.
@@ -811,8 +823,8 @@ def load_failure_group_outcomes(database: Path, run_id: int) -> list[dict[str, o
 
 @st.cache_data(show_spinner=False)
 def load_failure_group_classes(database: Path, run_id: int) -> list[dict[str, object]]:
-    """Count how many distinct findings each failure group contains, broken down by class.
-    
+    """Count distinct findings per failure group, broken down by class.
+
     Args:
         database: Saved diagnosis database to query.
         run_id: Identifier of the selected run.
@@ -849,7 +861,7 @@ def load_failure_group_classes(database: Path, run_id: int) -> list[dict[str, ob
 @st.cache_data(show_spinner=False)
 def load_finding_failure_group(database: Path, finding_id: int) -> str | None:
     """Find which failure group a given finding belongs to.
-    
+
     Args:
         database: Saved diagnosis database to query.
         finding_id: Identifier of the finding.
@@ -878,7 +890,7 @@ def load_finding_failure_group(database: Path, finding_id: int) -> str | None:
 @st.cache_data(show_spinner=False)
 def check_failure_groups_integrity(database: Path, run_id: int) -> str | None:
     """Check if the grouped failures sum exactly to the total run failures.
-    
+
     Args:
         database: Saved diagnosis database to query.
         run_id: Identifier of the selected run.
@@ -900,16 +912,19 @@ def check_failure_groups_integrity(database: Path, run_id: int) -> str | None:
         """,
         [run_id, run_id],
     )
-    
+
     if not rows:
         return "Failed to evaluate arithmetic integrity check."
-        
+
     grouped = int(rows[0]["grouped"] or 0)
     failures = int(rows[0]["failures"] or 0)
-    
+
     if grouped != failures:
-        return f"Integrity check failed: grouped failures ({grouped}) do not equal total failures ({failures})."
-    
+        return (
+            f"Integrity check failed: grouped failures ({grouped}) do not "
+            f"equal total failures ({failures})."
+        )
+
     return None
 
 
@@ -1605,7 +1620,14 @@ def render_dashboard(database: Path) -> None:
     )
 
     # ── Tabs ─────────────────────────────────────────────────────────────
-    tab_overview, tab_classes, tab_images, tab_compare, tab_root_causes, tab_failure_groups = st.tabs(
+    (
+        tab_overview,
+        tab_classes,
+        tab_images,
+        tab_compare,
+        tab_root_causes,
+        tab_failure_groups,
+    ) = st.tabs(
         [
             "📊 Overview",
             "📋 Per-class",
@@ -1921,13 +1943,14 @@ def render_dashboard(database: Path) -> None:
             st.dataframe(rc_rows, hide_index=True, use_container_width=True)
 
             st.markdown(
-                '<div class="section-title" style="font-size: 1.1rem;">Breakdowns</div>',
+                '<div class="section-title" style="font-size: 1.1rem;">'
+                "Breakdowns</div>",
                 unsafe_allow_html=True,
             )
-            
+
             class_breakdown = load_root_causes_by_class(database, run_id)
             outcome_breakdown = load_root_causes_by_outcome(database, run_id)
-            
+
             rc_col_a, rc_col_b = st.columns(2)
             with rc_col_a:
                 st.markdown("#### By Class")
@@ -1947,7 +1970,7 @@ def render_dashboard(database: Path) -> None:
                     )
                 else:
                     st.info("No class breakdowns available.")
-                    
+
             with rc_col_b:
                 st.markdown("#### By Outcome")
                 if outcome_breakdown:
@@ -1955,7 +1978,9 @@ def render_dashboard(database: Path) -> None:
                         [
                             {
                                 "Factor": r["factor"],
-                                "Outcome": OUTCOME_LABELS.get(str(r["outcome"]), str(r["outcome"])),
+                                "Outcome": OUTCOME_LABELS.get(
+                                    str(r["outcome"]), str(r["outcome"])
+                                ),
                                 "Findings": r["count"],
                                 "Percentage": f"{r['percentage']}%",
                             }
@@ -1973,7 +1998,7 @@ def render_dashboard(database: Path) -> None:
             '<div class="section-title">Failure Groups</div>',
             unsafe_allow_html=True,
         )
-        
+
         if not {"clusters", "cluster_members"}.issubset(available_tables(database)):
             st.info("Failure groups have not been generated for this database.")
         else:
@@ -1992,7 +2017,7 @@ def render_dashboard(database: Path) -> None:
                         {"Group": fg["label"], "Failures": fg["size"]}
                         for fg in failure_groups
                     ]
-                    
+
                     fig = px.bar(
                         fg_rows,
                         x="Group",
@@ -2010,15 +2035,16 @@ def render_dashboard(database: Path) -> None:
                         fig, use_container_width=True, config={"displayModeBar": False}
                     )
                     st.dataframe(fg_rows, hide_index=True, use_container_width=True)
-                    
+
                     st.markdown(
-                        '<div class="section-title" style="font-size: 1.1rem;">Group Breakdowns</div>',
+                        '<div class="section-title" style="font-size: 1.1rem;">'
+                        "Group Breakdowns</div>",
                         unsafe_allow_html=True,
                     )
-                    
+
                     fg_class_bd = load_failure_group_classes(database, run_id)
                     fg_outcome_bd = load_failure_group_outcomes(database, run_id)
-                    
+
                     fg_col_a, fg_col_b = st.columns(2)
                     with fg_col_a:
                         st.markdown("#### By Class")
@@ -2037,7 +2063,7 @@ def render_dashboard(database: Path) -> None:
                             )
                         else:
                             st.info("No class breakdowns available.")
-                            
+
                     with fg_col_b:
                         st.markdown("#### By Outcome")
                         if fg_outcome_bd:
@@ -2045,7 +2071,9 @@ def render_dashboard(database: Path) -> None:
                                 [
                                     {
                                         "Group": r["label"],
-                                        "Outcome": OUTCOME_LABELS.get(str(r["outcome"]), str(r["outcome"])),
+                                        "Outcome": OUTCOME_LABELS.get(
+                                    str(r["outcome"]), str(r["outcome"])
+                                ),
                                         "Failures": r["n"],
                                     }
                                     for r in fg_outcome_bd

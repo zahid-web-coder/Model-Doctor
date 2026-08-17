@@ -12,20 +12,21 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.dashboard import (
     DashboardDataError,
+    available_tables,
+    check_failure_groups_integrity,
     load_class_names,
     load_class_statistics,
     load_class_statistics_filtered,
-    load_image_findings,
-    load_outcome_counts,
-    load_root_causes_summary,
-    load_root_causes_by_class,
-    load_root_causes_by_outcome,
-    load_failure_groups,
+    load_failure_group_classes,
     load_failure_group_members,
     load_failure_group_outcomes,
-    load_failure_group_classes,
+    load_failure_groups,
     load_finding_failure_group,
-    check_failure_groups_integrity,
+    load_image_findings,
+    load_outcome_counts,
+    load_root_causes_by_class,
+    load_root_causes_by_outcome,
+    load_root_causes_summary,
     load_run_comparison,
     load_run_summary,
     load_runs,
@@ -237,12 +238,13 @@ def create_optional_dashboard_database(database: Path) -> None:
         );
         """
     )
-    
+
     # Insert heatmap for Finding 2
     connection.execute(
-        "INSERT INTO heatmaps VALUES (1, 2, 1, '/data/heatmap_2.jpg', 'grad-cam', 'layer4')"
+        "INSERT INTO heatmaps VALUES "
+        "(1, 2, 1, '/data/heatmap_2.jpg', 'grad-cam', 'layer4')"
     )
-    
+
     # Insert multiple root causes for Finding 2
     connection.executemany(
         "INSERT INTO root_causes VALUES (?, ?, 1, ?, ?, ?)",
@@ -268,7 +270,7 @@ def create_optional_dashboard_database(database: Path) -> None:
             (2, 4),
         ]
     )
-    
+
     connection.commit()
     connection.close()
 
@@ -465,12 +467,12 @@ def test_load_image_findings_with_optional_data(
         optional_dashboard_database, image_id=1, outcomes=("correct", "false_positive")
     )
     assert len(findings) == 3
-    
+
     # Finding 1: Case A (correct, no optional data)
     finding_1 = next(f for f in findings if f["finding_id"] == 1)
     assert finding_1["heatmap_path"] is None
     assert finding_1["root_causes_json"] == "[]"
-    
+
     # Finding 2: Case B (heatmap and multiple root causes)
     finding_2 = next(f for f in findings if f["finding_id"] == 2)
     assert finding_2["heatmap_path"] == "/data/heatmap_2.jpg"
@@ -480,7 +482,7 @@ def test_load_image_findings_with_optional_data(
     factors = [rc["factor"] for rc in rc_list]
     assert "blur" in factors
     assert "edge_truncation" in factors
-    
+
     # Finding 3: Case C (no heatmap, no root causes)
     finding_3 = next(f for f in findings if f["finding_id"] == 3)
     assert finding_3["heatmap_path"] is None
@@ -491,22 +493,49 @@ def test_root_causes_breakdowns_with_optional_data(
     optional_dashboard_database: Path,
 ) -> None:
     """Breakdowns calculate percentages correctly and use COUNT(DISTINCT)."""
-    # Total failures: crack (1 false_positive finding #2, 1 false_positive finding #3) -> total 2
+    # Total failures for crack: findings #2 and #3, both false_positive -> 2
     # spall (1 false_negative finding #4) -> total 1
     # Note: Finding 1 is correct (not a failure). Finding 2 has blur & edge_truncation.
-    
+
     class_breakdown = load_root_causes_by_class(optional_dashboard_database, run_id=1)
-    
-    blur_class = next(r for r in class_breakdown if r["factor"] == "blur" and r["class_name"] == "crack")
+
+    blur_class = next(
+        r
+        for r in class_breakdown
+        if r["factor"] == "blur" and r["class_name"] == "crack"
+    )
     assert blur_class["count"] == 1
     # total crack failures = 2 (finding 2 & 3). So 1/2 = 50.0%
     assert blur_class["percentage"] == 50.0
-    
-    outcome_breakdown = load_root_causes_by_outcome(optional_dashboard_database, run_id=1)
-    blur_outcome = next(r for r in outcome_breakdown if r["factor"] == "blur" and r["outcome"] == "false_positive")
+
+    outcome_breakdown = load_root_causes_by_outcome(
+        optional_dashboard_database, run_id=1
+    )
+    blur_outcome = next(
+        r
+        for r in outcome_breakdown
+        if r["factor"] == "blur" and r["outcome"] == "false_positive"
+    )
     assert blur_outcome["count"] == 1
     # total false_positive = 2. So 1/2 = 50.0%
     assert blur_outcome["percentage"] == 50.0
+
+
+def test_available_tables_reports_every_optional_table_it_guards(
+    optional_dashboard_database: Path,
+) -> None:
+    """Every table guarded by ``available_tables`` must be in ``OPTIONAL_TABLES``.
+
+    The loaders guard themselves with
+    ``{"clusters", "cluster_members"}.issubset(available_tables(db))``, but
+    ``available_tables`` returns ``OPTIONAL_TABLES & <tables present>``. A table
+    missing from that constant can therefore never appear in the result, so the
+    guard is permanently false and the feature silently returns nothing on a
+    database that does have the table. This asserts the two stay in step.
+    """
+    reported = available_tables(optional_dashboard_database)
+
+    assert reported == {"heatmaps", "root_causes", "clusters", "cluster_members"}
 
 
 def test_failure_groups_degrade_when_optional_tables_are_absent(
@@ -545,12 +574,20 @@ def test_failure_groups_queries(
     # Outcome breakdown
     outcomes = load_failure_group_outcomes(optional_dashboard_database, 1)
     # unexplained has 1 false_positive (finding 3) and 1 false_negative (finding 4)
-    unexp_fp = next(o for o in outcomes if o["label"] == "unexplained" and o["outcome"] == "false_positive")
+    unexp_fp = next(
+        o
+        for o in outcomes
+        if o["label"] == "unexplained" and o["outcome"] == "false_positive"
+    )
     assert unexp_fp["n"] == 1
 
     # Class breakdown
     classes = load_failure_group_classes(optional_dashboard_database, 1)
-    unexp_crack = next(c for c in classes if c["label"] == "unexplained" and c["class_name"] == "crack")
+    unexp_crack = next(
+        c
+        for c in classes
+        if c["label"] == "unexplained" and c["class_name"] == "crack"
+    )
     assert unexp_crack["n"] == 1
 
     # Finding lookup
