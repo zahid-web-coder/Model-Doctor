@@ -989,3 +989,75 @@ nobody has asked.
 added later under the same `method` seam. Every human-readable surface says
 *failure group*. The mismatch is deliberate and documented here so it does not
 read as an oversight.
+
+---
+
+## D-031 — A factor's count is reported against its base rate, never alone
+
+**Status:** Accepted · Milestone 5.5
+
+**Decision.** Measure every per-finding factor over correct findings as well as
+failures, and store both rates with a lift and a p-value in a new
+`factor_rates` table. A factor count is never presented without its control
+rate.
+
+Correct findings receive **no** `root_causes` rows. That table is documented as
+covering failures, and every query written against it must keep returning what
+it always did. Only the aggregate goes into the new table.
+
+**Reasoning.** `root_cause.py` only ever loaded failures. It could therefore
+report, truthfully, that `edge_truncation` described 90 of 127 failures — 71% —
+while being structurally incapable of noticing that it also described 115 of 151
+correct detections, which is 76%. Measured over the reference run:
+
+| Factor | Failures | Correct | Lift | p |
+| --- | --- | --- | --- | --- |
+| `crowding` | 57% | 45% | 1.28x | **0.041** |
+| `low_light` | 9% | 7% | 1.43x | 0.504 |
+| `edge_truncation` | 71% | 76% | 0.93x | 0.340 |
+| `blur` | 30% | 37% | 0.81x | 0.252 |
+| `small_object` | 2% | 0% | undefined | 0.208 |
+
+The largest failure group in the product was built on a condition that is *no
+more common among failures than among successes*. Objects touch the frame edge
+in this dataset because the photographs are taken close up; the factor was
+describing the room, not the failure. Recommending "reduce edge truncation"
+would have been confident, specific, and unfounded — which is precisely the
+behaviour this project exists to expose in other tools.
+
+To state it correctly: p = 0.34 is not evidence that edge truncation helps. It
+is an absence of evidence that it matters either way. And with five factors
+tested, a Bonferroni-corrected threshold is 0.01, so **`crowding` at 0.041 does
+not survive correction either.** It is a lead, not a finding.
+
+**Rejected.** *Reporting counts alone* — the status quo, and the reason a
+meaningless factor became the headline. *Dropping the weak factors* — they
+still describe conditions accurately, and a factor with no lift on this dataset
+may have lift on another; the fix is to report the denominator, not to hide the
+measurement. *Attributing factors to correct findings in `root_causes`* — that
+would change what every existing query returns, for a number better stored as
+an aggregate.
+
+**Trade-off.** The pass now reads pixels for every finding rather than only
+failures, roughly doubling that work — about one extra second on the 136-image
+run. Accepted without hesitation: the alternative is a faster wrong answer.
+
+Run-level factors (`class_imbalance`, `recurring_misclassification`) get no
+base rate. They are defined in terms of mistakes, so a correct finding has no
+analogous condition and inventing one would fabricate a comparison.
+
+**A second bug this exposed.** Building contexts from failures alone also meant
+a failure's `neighbours` contained only *other failures*. An object sitting
+beside a correctly-detected one appeared to have no neighbours at all, so
+`crowding` was under-reported — 49 attributions where the true figure is 73, a
+third missing. Crowding is a property of what is physically nearby; whether the
+neighbour happened to be detected correctly has no bearing on whether this
+object was occluded. Contexts are now built from every finding, while run-level
+factors still receive failures only, because both derive a denominator from the
+list they are handed and widening it would silently redefine their evidence
+strings.
+
+**Consequence for Milestone 6.** Recommendations cannot be built on raw factor
+counts. Any advice must cite lift and significance, and must be able to say
+"this condition is common but does not distinguish failures" — which, on this
+dataset, is the honest verdict for the two largest factors.

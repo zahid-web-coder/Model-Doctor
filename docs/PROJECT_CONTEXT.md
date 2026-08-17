@@ -3,7 +3,7 @@
 **This document is the project's source of truth.** Where any other document
 disagrees with it, this one wins and the other should be corrected.
 
-Last updated: 2026-08-11 (Week 7 — root-cause analysis)
+Last updated: 2026-08-13 (Milestone 5.5 — factor base rates)
 
 ---
 
@@ -40,6 +40,7 @@ architectural concern but is **not implemented**.
 | Grad-CAM explanation backend | **Completed** — schema version 3 |
 | Root-cause analysis | **Completed** — schema version 4 |
 | Failure grouping (deterministic, by root cause) | **Completed** — schema version 5 |
+| Factor base rates + significance | **Completed** — schema version 6 |
 | Similar-failure retrieval (nearest neighbour) | **Completed** — reads existing embeddings |
 | Developer dashboard | **In Progress** — saved-run explorer, charts, filters, image overlays, heatmaps, root causes |
 | Mask IoU / segmentation analysis | **Planned (deferred)** — see D-022; a known, documented limitation |
@@ -63,6 +64,11 @@ architectural concern but is **not implemented**.
 - K-means over the embeddings was implemented and measured before being
   rejected — silhouette 0.13–0.23 across every *k* tried (D-030). The rejection
   is evidence-based, not assumed.
+- Factor base rates measured on the same run: `edge_truncation` describes 71%
+  of failures and 76% of correct detections (lift 0.93x, p = 0.34), so the
+  largest failure group rests on a factor with no demonstrated association.
+  `crowding` is the only factor with a positive signal, and at p = 0.041 it
+  does not survive correction for testing five factors (D-031).
 
 ### Not yet verified by execution
 
@@ -144,8 +150,8 @@ most often get violated:
 
 - Never hardcode class names, class counts, dataset paths, or model paths.
 - Configurable values belong in `config.py`; reusable logic belongs in `utils/`.
-- Version control is not managed by tooling on this project. Do not initialise
-  a repository, create a remote, commit, or push.
+- Work happens on `feature/<name>` branches, merged to `main` by pull request.
+  Never push directly to `main`.
 - Do not implement beyond the current milestone.
 
 ---
