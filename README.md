@@ -9,15 +9,16 @@ additional architectures can be added later without touching analysis code.
 
 ## Status
 
-Milestone 3 — the diagnosis engine works. Inference, validation, and failure
-diagnosis all run against a real trained model and a real labelled dataset.
+The pipeline runs end to end: inference, diagnosis, Grad-CAM explanation, CLIP
+feature extraction, root-cause attribution with base rates, and failure
+grouping — all against a real trained model and a real labelled dataset, and
+all explorable in the dashboard.
 
-The developer dashboard is now in progress. Its first slice reads saved SQLite
-runs and makes findings, per-class statistics, failure filters, and image
-overlays explorable. Visual explanation data, including Grad-CAM, remains a
-separate planned integration.
+Schema version 6. Recommendations (Milestone 6) are the next module.
 
-Mask IoU and segmentation analysis are **architecture-ready but not built**.
+Mask IoU and segmentation analysis are **architecture-ready but not built**, a
+documented limitation on a segmentation dataset — see
+[DECISIONS.md](docs/DECISIONS.md) D-022.
 
 ## Setup
 
@@ -156,6 +157,7 @@ config.py              Single source of truth for paths and constants
 app/inference.py       Model loading, prediction, metrics, CLI
 app/diagnosis.py       Failure classification and reporting, CLI
 app/clustering.py      Failure grouping by root-cause signature, CLI
+utils/statistics.py    Lift and Fisher's exact test, for base-rate comparison
 app/similarity.py      Nearest-neighbour retrieval over stored embeddings
 utils/annotations.py   Generic annotation model (box + optional polygon)
 utils/geometry.py      Box geometry and IoU

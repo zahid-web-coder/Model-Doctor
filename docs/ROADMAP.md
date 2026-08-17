@@ -188,7 +188,7 @@ re-encoded class and outcome. Factor signatures give 22 named groups over the
 | `unexplained` group for failures no factor accounts for | Completed |
 | Nearest-neighbour retrieval, `app/similarity.py` | Completed |
 | `method` column so another grouping method needs no schema change | Completed |
-| Dashboard failure-group view | Planned — dashboard work |
+| Dashboard failure-group view | Completed |
 
 **Naming.** Every user-facing surface says *failure group*. The tables and
 module keep `cluster` names so a genuinely unsupervised method can be added
@@ -198,9 +198,37 @@ Depends on: Milestones 3, 4.
 
 ---
 
+## Milestone 5.5 — Factor base rates · **Completed**
+
+Report every factor's rate among failures against its rate among correct
+findings, so a count can be read as evidence rather than as a cause.
+
+Added because the root-cause engine had only ever seen failures. It reported
+`edge_truncation` on 71% of them, which reads as the leading cause until the
+control group shows 76% of *correct* detections carry it too. The largest
+failure group in the product rested on a factor with no demonstrated
+association. See [DECISIONS.md](DECISIONS.md) D-031.
+
+| Item | Status |
+| --- | --- |
+| `factor_rates` table, schema version 6 | Completed |
+| `utils/statistics.py` — lift and Fisher's exact test | Completed |
+| `measure_factor_rates()` over both groups in one pass | Completed |
+| Crowding neighbours fix (49 -> 73 attributions) | Completed |
+| Dashboard base-rate column | Planned — dashboard work |
+
+Depends on: Milestone 3, Week 7.
+
+---
+
 ## Milestone 6 — Recommendations · **Planned**
 
 Translate grouped failures into concrete suggested actions.
+
+**Constrained by D-031.** Recommendations may not be built on raw factor
+counts. Any advice must cite lift and significance, and must be capable of
+saying "this condition is common but does not distinguish failures" — which on
+the reference dataset is the honest verdict for the two largest factors.
 
 Depends on: Milestone 5.
 

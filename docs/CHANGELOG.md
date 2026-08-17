@@ -606,3 +606,77 @@ images. The grouping is deterministic, not learned.
 User-facing surfaces say **failure group**, never "cluster" and never
 "unsupervised clustering". The default method is deterministic and the
 documentation says so.
+
+---
+
+## Milestone 5.5 — Factor Base Rates · 2026-08-13
+
+A correction. The root-cause engine reported counts without a control group,
+which made its largest factor look like the leading cause of failure when it
+distinguishes nothing.
+
+### Added
+
+**Statistics**
+- `utils/statistics.py` — `lift()` and `fisher_exact_two_sided()`. Fisher is
+  computed directly rather than imported from SciPy, which is not a declared
+  dependency and arrives only transitively through scikit-learn. Validated
+  against SciPy across 409 tables, agreeing to 6.7e-16.
+
+**Measurement**
+- `measure_factor_rates()` in `app/root_cause.py` — runs every per-finding
+  factor over correct findings as well as failures, in a single pass over the
+  same contexts, and stores both rates with lift and a p-value.
+- `--no-base-rates` to skip it.
+- Run-level factors are excluded: they are defined in terms of mistakes, so a
+  correct finding has no analogous condition.
+
+**Schema — version 6**
+- `factor_rates`, one row per run and factor. `lift` is nullable, holding NULL
+  where no correct finding carried the factor, so an undefined ratio is never
+  rendered as a large number.
+- Correct findings receive no `root_causes` rows. That table still covers
+  failures only and every existing query returns exactly what it did.
+
+### Fixed
+
+- **Crowding was under-reported by a third.** Contexts were built from failures
+  alone, so a failure's `neighbours` contained only other failures and an object
+  beside a correctly-detected one appeared to have none. On the reference run
+  this attributed crowding to 49 failures where the true figure is 73. Contexts
+  are now built from every finding. Run-level factors still receive failures
+  only, because both derive a denominator from the list they are given.
+
+### Measured
+
+On the 136-image reference run, 127 failures against 151 correct findings:
+
+| Factor | Failures | Correct | Lift | p |
+| --- | --- | --- | --- | --- |
+| `crowding` | 57% | 45% | 1.28x | 0.041 |
+| `low_light` | 9% | 7% | 1.43x | 0.504 |
+| `edge_truncation` | 71% | 76% | 0.93x | 0.340 |
+| `blur` | 30% | 37% | 0.81x | 0.252 |
+| `small_object` | 2% | 0% | undefined | 0.208 |
+
+`edge_truncation` was the largest failure group in the product and shows no
+evidence of association with failure. With five factors tested, `crowding` at
+p = 0.041 does not survive Bonferroni correction either — it is a lead, not a
+finding.
+
+After the crowding fix, regrouping the same run moves the largest failure group
+from `edge_truncation` (36) to `crowding + edge_truncation` (29), and
+`unexplained` falls from 12 to 10.
+
+### Decided
+
+- **D-031** — a factor's count is reported against its base rate, never alone.
+  Includes the measurements above, why run-level factors are excluded, and the
+  consequence for Milestone 6: recommendations cannot be built on raw counts.
+
+### Verified
+
+- 247 tests pass; ruff clean.
+- The crowding regression test fails against the previous implementation with an
+  empty attribution list, and passes now.
+

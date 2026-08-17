@@ -48,6 +48,7 @@ from app import storage
 from utils.exceptions import ModelDoctorError
 from utils.geometry import box_iou
 from utils.logging_utils import get_logger
+from utils.statistics import fisher_exact_two_sided, lift
 
 logger = get_logger(__name__)
 
@@ -610,18 +611,24 @@ def analyse_run(
     )
     per_run = list(run_factors) if run_factors is not None else default_run_factors()
 
-    rows = storage.load_findings_for_embedding(connection, run_id, failures_only=True)
-    if not rows:
+    # Every finding is loaded, not just the failures, so that each failure's
+    # `neighbours` include correctly-detected objects. Crowding is a property
+    # of what is physically nearby; a failure beside a correct detection is
+    # just as crowded as one beside another failure. Loading failures alone
+    # made those neighbours invisible and under-reported crowding by a third
+    # on the reference run (D-031).
+    rows = storage.load_findings_for_embedding(connection, run_id, failures_only=False)
+    contexts, unreadable = build_contexts(rows, load_pixels=load_pixels)
+    failure_contexts = [c for c in contexts if c.outcome != "correct"]
+    if not failure_contexts:
         raise RootCauseError(
             f"Run {run_id} has no failures to analyse. Diagnose and save it first."
         )
 
-    contexts, unreadable = build_contexts(rows, load_pixels=load_pixels)
-
     entries: list[tuple[int, str, float, str]] = []
     explained: set[int] = set()
 
-    for context in contexts:
+    for context in failure_contexts:
         for factor in per_finding:
             if factor.needs_pixels and context.region is None:
                 continue
@@ -633,8 +640,12 @@ def analyse_run(
             )
             explained.add(context.finding_id)
 
+    # Run-level factors receive failures only, exactly as before. Both derive a
+    # denominator from the list they are given — "3 of 210 instances", "17% of
+    # its findings" — so widening it would silently redefine what those numbers
+    # mean. That is a separate decision from fixing crowding's neighbours.
     for run_factor in per_run:
-        for finding_id, evidence in run_factor.detect(contexts).items():
+        for finding_id, evidence in run_factor.detect(failure_contexts).items():
             entries.append(
                 (finding_id, evidence.factor, evidence.score, evidence.evidence)
             )
@@ -646,11 +657,184 @@ def analyse_run(
 
     return AnalysisReport(
         run_id=run_id,
-        considered=len(contexts),
+        considered=len(failure_contexts),
         attributed=len(entries),
-        unexplained=len(contexts) - len(explained),
+        unexplained=len(failure_contexts) - len(explained),
         images_unreadable=unreadable,
         counts=counts,
+    )
+
+
+@dataclass(frozen=True)
+class FactorRateReport:
+    """What one base-rate pass measured, ready to print."""
+
+    run_id: int
+    failure_total: int
+    correct_total: int
+    rates: Sequence[Any] = ()
+    images_unreadable: int = 0
+
+    def describe(self) -> str:
+        """Render the comparison, leading with what distinguishes failures."""
+        lines = ["", "Factor base rates", "=" * 78]
+        lines.append(f"  Run                : {self.run_id}")
+        lines.append(f"  Failures           : {self.failure_total}")
+        lines.append(f"  Correct (control)  : {self.correct_total}")
+        if self.images_unreadable:
+            lines.append(f"  Images unreadable  : {self.images_unreadable}")
+        lines.append("")
+        lines.append(
+            f"  {'FACTOR':<26}{'FAILURES':>12}{'CORRECT':>12}{'LIFT':>8}{'p':>8}"
+        )
+        for rate in self.rates:
+            lift_text = "  n/a" if rate.lift is None else f"{rate.lift:.2f}x"
+            lines.append(
+                f"  {rate.factor:<26}"
+                f"{rate.failure_count:>5}/{rate.failure_total:<3}"
+                f"{100 * rate.failure_rate:>4.0f}%"
+                f"{rate.correct_count:>5}/{rate.correct_total:<3}"
+                f"{100 * rate.correct_rate:>4.0f}%"
+                f"{lift_text:>8}{rate.p_value:>8.3f}"
+            )
+        lines.append("")
+        lines.append(
+            "  Lift is how many times more common a factor is among failures."
+        )
+        lines.append(
+            "  1.00x means it describes successes just as often and therefore"
+        )
+        lines.append(
+            "  explains nothing. Treat p >= 0.05 as no evidence of association,"
+        )
+        lines.append(
+            "  and note that testing several factors makes a single p near 0.05"
+        )
+        lines.append("  weaker than it looks.")
+        lines.append("=" * 78)
+        lines.append("")
+        return "\n".join(lines)
+
+
+def measure_factor_rates(
+    connection: Any,
+    run_id: int,
+    finding_factors: Sequence[FindingFactor] | None = None,
+    load_pixels: bool = True,
+) -> FactorRateReport:
+    """Measure each factor's rate among failures against correct findings.
+
+    A factor's count means nothing on its own. ``edge_truncation`` described
+    71% of failures on the reference run, which reads as a cause until the
+    control group shows it described 76% of correct detections. This pass
+    supplies that denominator (D-031).
+
+    Both groups are measured in a single pass over the same contexts, so the
+    two rates cannot drift apart through differing preparation.
+
+    Only per-finding factors are measured. Run-level factors such as
+    ``recurring_misclassification`` are defined in terms of mistakes and have
+    no meaningful analogue among correct findings, so giving them a base rate
+    would invent a comparison rather than report one.
+
+    Correct findings get **no** ``root_causes`` rows — only these aggregates.
+    That table is documented as covering failures, and every query written
+    against it keeps returning exactly what it did before.
+
+    Args:
+        connection: An open database connection.
+        run_id: Run to measure. Its findings must already be saved.
+        finding_factors: Per-finding detectors. Defaults to the standard set.
+        load_pixels: Whether to read images. Disabling it skips the factors
+            that need pixel data, which are then absent from the result rather
+            than reported as never firing.
+
+    Returns:
+        The measured rates, ordered by lift descending.
+
+    Raises:
+        RootCauseError: If the run has no findings at all.
+    """
+    per_finding = (
+        list(finding_factors)
+        if finding_factors is not None
+        else default_finding_factors()
+    )
+
+    rows = storage.load_findings_for_embedding(connection, run_id, failures_only=False)
+    if not rows:
+        raise RootCauseError(
+            f"Run {run_id} has no findings to measure. Diagnose and save it first."
+        )
+
+    contexts, unreadable = build_contexts(rows, load_pixels=load_pixels)
+    failures = [c for c in contexts if c.outcome != "correct"]
+    correct = [c for c in contexts if c.outcome == "correct"]
+
+    if not failures or not correct:
+        logger.warning(
+            "Run %d has %d failure(s) and %d correct finding(s). A base rate "
+            "needs both, so no rates were stored.",
+            run_id,
+            len(failures),
+            len(correct),
+        )
+        return FactorRateReport(
+            run_id=run_id,
+            failure_total=len(failures),
+            correct_total=len(correct),
+            images_unreadable=unreadable,
+        )
+
+    entries: list[tuple[str, int, int, int, int, float | None, float]] = []
+    for factor in per_finding:
+
+        def tally(
+            group: Sequence[Any], detector: FindingFactor = factor
+        ) -> tuple[int, int]:
+            """Count detections, and how many contexts could be evaluated.
+
+            A factor needing pixels cannot fire on a context without a region.
+            Counting those in the denominator would understate its rate, and
+            would do so unevenly between the two groups.
+            """
+            hits = evaluable = 0
+            for context in group:
+                if detector.needs_pixels and context.region is None:
+                    continue
+                evaluable += 1
+                if detector.detect(context) is not None:
+                    hits += 1
+            return hits, evaluable
+
+        failure_hits, failure_total = tally(failures)
+        correct_hits, correct_total = tally(correct)
+        if not failure_total or not correct_total:
+            continue
+
+        entries.append(
+            (
+                factor.name,
+                failure_hits,
+                failure_total,
+                correct_hits,
+                correct_total,
+                lift(failure_hits, failure_total, correct_hits, correct_total),
+                fisher_exact_two_sided(
+                    failure_hits, failure_total, correct_hits, correct_total
+                ),
+            )
+        )
+
+    storage.save_factor_rates(connection, run_id, entries)
+    logger.info("Measured base rates for %d factor(s) in run %d", len(entries), run_id)
+
+    return FactorRateReport(
+        run_id=run_id,
+        failure_total=len(failures),
+        correct_total=len(correct),
+        rates=storage.load_factor_rates(connection, run_id),
+        images_unreadable=unreadable,
     )
 
 
@@ -695,6 +879,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--detail", type=int, default=3, help="Examples to show per factor."
     )
+    parser.add_argument(
+        "--no-base-rates",
+        action="store_true",
+        help=(
+            "Skip measuring how often each factor appears among correct "
+            "findings. Without that control group a factor's count cannot "
+            "support a claim about cause."
+        ),
+    )
     return parser
 
 
@@ -722,6 +915,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             report = analyse_run(
                 connection, run_id, load_pixels=not args.no_pixels
             )
+            rate_report = (
+                None
+                if args.no_base_rates
+                else measure_factor_rates(
+                    connection, run_id, load_pixels=not args.no_pixels
+                )
+            )
         except RootCauseError as exc:
             logger.error("%s", exc)
             return 1
@@ -729,6 +929,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         stored = storage.load_root_causes(connection, run_id)
 
     print(report.describe())
+    if rate_report is not None:
+        print(rate_report.describe())
     if args.detail:
         print(format_factor_detail(stored, limit=args.detail))
     return 0

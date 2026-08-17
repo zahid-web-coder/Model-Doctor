@@ -135,3 +135,7 @@ cython_debug/
 .idea/
 .vscode/
 *.swp
+
+# Local agent/editor tooling — not part of the project
+.agents/
+.claude/

@@ -5,7 +5,7 @@ consumes it.** A dashboard, a report generator, or a notebook should be built
 against this document alone. Reading the Python is not required, and nothing
 here depends on it.
 
-Schema version: **5** · Default location: `db/model_doctor.db` (SQLite)
+Schema version: **6** · Default location: `db/model_doctor.db` (SQLite)
 
 Populated databases are **not** committed — image paths and filenames carry
 dataset-specific identifiers. This schema is committed; the data is not.
@@ -36,6 +36,9 @@ of five outcomes.
         │    ┌────────────┐ 1      n ┌─────────────────┐
         ├────┤  clusters  ├──────────┤ cluster_members ├──▶ findings   (v5)
         │    └────────────┘          └─────────────────┘
+        │
+        ├─▶ factor_rates (v6)   per run, not per finding: each factor's rate
+        │                       among failures against its rate among correct
         │                                            │
         │                                            │  future milestones
         └── reproducibility: model SHA,              └─▶ recommendations
@@ -261,6 +264,69 @@ change to this table.
 not store — by design, so per-class statistics charge a miss to the class that
 was missed. `recurring_misclassification` therefore reports which classes are
 repeatedly misidentified, without the direction. See DECISIONS D-028.
+
+---
+
+### `factor_rates` — added in schema version 6
+
+**How often each factor appears among failures, and among correct findings.**
+
+> **Never show a factor count without its base rate.** `edge_truncation`
+> describes 71% of failures on the reference run — and 76% of correct
+> detections. A count alone made it look like the leading cause of failure when
+> it distinguishes nothing. See DECISIONS D-031.
+
+| Column | Type | Null | Meaning |
+| --- | --- | --- | --- |
+| `id` | INTEGER PK | no | Row identifier |
+| `run_id` | INTEGER FK → `runs.id` | no | Owning run |
+| `factor` | TEXT | no | One of the per-finding factor identifiers |
+| `failure_count` | INTEGER | no | Failures carrying this factor |
+| `failure_total` | INTEGER | no | Failures the factor could be evaluated on |
+| `correct_count` | INTEGER | no | Correct findings carrying it |
+| `correct_total` | INTEGER | no | Correct findings it could be evaluated on |
+| `lift` | REAL | **yes** | Failure rate ÷ correct rate |
+| `p_value` | REAL | no | Two-sided Fisher's exact test |
+
+Unique on `(run_id, factor)`.
+
+#### Reading these numbers
+
+- **`lift` near 1.0 means the factor explains nothing.** It is equally common
+  among successes, so it does not distinguish the failures.
+- **`lift` is NULL when undefined** — no correct finding carried the factor, so
+  the ratio would be infinite rather than large. Render it as "n/a", never as a
+  big number.
+- **`p_value` ≥ 0.05 is no evidence of association**, in either direction. It
+  does not mean the factor helps.
+- **Several factors are tested per run.** A single p just under 0.05 is weaker
+  than it appears; a Bonferroni-corrected threshold across five factors is 0.01.
+
+#### Only per-finding factors appear here
+
+`class_imbalance` and `recurring_misclassification` are run-level and defined in
+terms of mistakes, so no control rate exists for them. They are absent from this
+table by design, not by omission.
+
+**Correct findings have no `root_causes` rows.** That table still covers
+failures only. This one carries the comparison as an aggregate, so every query
+written against `root_causes` returns exactly what it always did.
+
+```sql
+SELECT factor, failure_count, failure_total, correct_count, correct_total,
+       lift, p_value
+FROM factor_rates
+WHERE run_id = ?
+ORDER BY lift IS NULL, lift DESC;
+```
+
+**Factors that actually distinguish failures** — the ones worth acting on
+```sql
+SELECT factor, lift, p_value
+FROM factor_rates
+WHERE run_id = ? AND lift > 1.0 AND p_value < 0.05
+ORDER BY lift DESC;
+```
 
 ---
 
@@ -540,18 +606,20 @@ tables, never columns to these:
 | Grad-CAM explanation | `heatmaps` | `finding_id` | **Exists (v3)** |
 | Root-cause analysis | `root_causes` | `finding_id` | **Exists (v4)** |
 | Failure grouping | `clusters`, `cluster_members` | `run_id`, `finding_id` | **Exists (v5)** |
+| Factor base rates | `factor_rates` | `run_id` | **Exists (v6)** |
 | Recommendations | `recommendations` | `cluster_id` or `finding_id` | Not yet created |
 
 `embeddings` arriving in version 2 is this guarantee working as intended: a new
 table was added and **`runs`, `images` and `findings` did not change**. Every
 query written against version 1 still returns exactly the same rows. Versions
-3, 4 and 5 held the same line.
+3, 4, 5 and 6 held the same line.
 
 Opening an older database upgrades it in place — the new tables are created and
 existing data is untouched.
 
 **Check before querying the optional tables.** `embeddings`, `heatmaps`,
-`root_causes`, `clusters` and `cluster_members` each arrived after version 1,
+`root_causes`, `clusters`, `cluster_members` and `factor_rates` each arrived
+after version 1,
 so a database saved by an earlier version will not have them. Only `runs`,
 `images` and `findings` are guaranteed. A missing table should degrade the one
 surface that needs it, never the whole page:
@@ -567,7 +635,7 @@ change ever becomes unavoidable, `schema_info.version` is incremented and this
 document is updated first.
 
 ```sql
-SELECT version FROM schema_info;   -- currently 5
+SELECT version FROM schema_info;   -- currently 6
 ```
 
 ---
@@ -579,7 +647,7 @@ python -m app.diagnosis --split test --save     # runs, images, findings
 python -m app.diagnosis --list-runs
 python -m app.features --run 1                  # embeddings (downloads CLIP once)
 python -m app.explainability --run 1 --imgsz 672  # heatmaps
-python -m app.root_cause --run 1                  # root_causes
+python -m app.root_cause --run 1                  # root_causes + factor_rates
 python -m app.clustering --run 1                  # clusters, cluster_members
 ```
 

@@ -48,7 +48,7 @@ logger = get_logger(__name__)
 # Bumped when the schema changes in a way that existing readers must know
 # about. Recorded in the database so a consumer can detect a mismatch instead
 # of failing on a missing column.
-SCHEMA_VERSION: int = 5
+SCHEMA_VERSION: int = 6
 
 SCHEMA_STATEMENTS: tuple[str, ...] = (
     """
@@ -184,6 +184,29 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
         PRIMARY KEY (cluster_id, finding_id)
     )
     """,
+    # Added at schema version 6. How often each factor appears among failures
+    # *and* among correct findings, so a count can be read against its base
+    # rate. `root_causes` alone cannot answer this: it is only ever populated
+    # for failures, so a factor describing 71% of them looks damning until the
+    # control group shows it describes 76% of successes (D-031).
+    #
+    # One row per run and factor — a different grain from `root_causes`, which
+    # is per finding. Correct findings deliberately get no `root_causes` rows;
+    # only these aggregates, so every existing query returns what it always did.
+    """
+    CREATE TABLE IF NOT EXISTS factor_rates (
+        id             INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id         INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+        factor         TEXT    NOT NULL,
+        failure_count  INTEGER NOT NULL,
+        failure_total  INTEGER NOT NULL,
+        correct_count  INTEGER NOT NULL,
+        correct_total  INTEGER NOT NULL,
+        lift           REAL,
+        p_value        REAL    NOT NULL,
+        UNIQUE (run_id, factor)
+    )
+    """,
     # Indexes chosen for the queries a dashboard actually issues: filter by
     # run, then by outcome or class. Without them every filter is a full scan.
     "CREATE INDEX IF NOT EXISTS idx_images_run ON images(run_id)",
@@ -195,6 +218,7 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
     "CREATE INDEX IF NOT EXISTS idx_heatmaps_run ON heatmaps(run_id)",
     "CREATE INDEX IF NOT EXISTS idx_root_causes_run ON root_causes(run_id, factor)",
     "CREATE INDEX IF NOT EXISTS idx_clusters_run ON clusters(run_id, method)",
+    "CREATE INDEX IF NOT EXISTS idx_factor_rates_run ON factor_rates(run_id)",
     "CREATE INDEX IF NOT EXISTS idx_cluster_members_finding "
     "ON cluster_members(finding_id)",
 )
@@ -1134,6 +1158,125 @@ def load_factors_by_finding(
     for row in rows:
         factors.setdefault(row["finding_id"], []).append(row["factor"])
     return factors
+
+
+@dataclass(frozen=True)
+class FactorRateRow:
+    """How often one factor appears among failures, against its base rate.
+
+    ``lift`` is ``None`` when it cannot be computed — no correct finding
+    carried the factor, so the ratio is undefined rather than very large.
+    Presenting that as a number would invite it being read as a measurement.
+    """
+
+    run_id: int
+    factor: str
+    failure_count: int
+    failure_total: int
+    correct_count: int
+    correct_total: int
+    lift: float | None
+    p_value: float
+
+    @property
+    def failure_rate(self) -> float:
+        """Share of failures carrying this factor."""
+        return self.failure_count / self.failure_total if self.failure_total else 0.0
+
+    @property
+    def correct_rate(self) -> float:
+        """Share of correct findings carrying this factor."""
+        return self.correct_count / self.correct_total if self.correct_total else 0.0
+
+
+def save_factor_rates(
+    connection: sqlite3.Connection,
+    run_id: int,
+    entries: Iterable[tuple[str, int, int, int, int, float | None, float]],
+) -> int:
+    """Record how often each factor appears in failures and in correct findings.
+
+    Re-running replaces a run's rates for the same factor, matching how the
+    other derived tables behave: recomputing is a correction, not a second
+    observation (D-021).
+
+    Args:
+        connection: An open connection.
+        run_id: Owning run.
+        entries: Tuples of ``(factor, failure_count, failure_total,
+            correct_count, correct_total, lift, p_value)``.
+
+    Returns:
+        Number of rows written.
+    """
+    rows = [
+        (
+            run_id,
+            factor,
+            int(failure_count),
+            int(failure_total),
+            int(correct_count),
+            int(correct_total),
+            None if lift_value is None else float(lift_value),
+            float(p_value),
+        )
+        for factor, failure_count, failure_total, correct_count, correct_total, (
+            lift_value
+        ), p_value in entries
+    ]
+    if rows:
+        connection.executemany(
+            """
+            INSERT INTO factor_rates (
+                run_id, factor, failure_count, failure_total,
+                correct_count, correct_total, lift, p_value
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (run_id, factor) DO UPDATE SET
+                failure_count = excluded.failure_count,
+                failure_total = excluded.failure_total,
+                correct_count = excluded.correct_count,
+                correct_total = excluded.correct_total,
+                lift = excluded.lift,
+                p_value = excluded.p_value
+            """,
+            rows,
+        )
+    return len(rows)
+
+
+def load_factor_rates(
+    connection: sqlite3.Connection, run_id: int
+) -> list[FactorRateRow]:
+    """Return a run's factor rates, most over-represented in failures first.
+
+    Ordered by lift descending so the factors that actually distinguish
+    failures from successes appear before the ones that merely describe the
+    dataset. Rows with an undefined lift sort last, since an unknown ratio is
+    not evidence of a large one.
+    """
+    rows = connection.execute(
+        """
+        SELECT run_id, factor, failure_count, failure_total,
+               correct_count, correct_total, lift, p_value
+        FROM factor_rates
+        WHERE run_id = ?
+        ORDER BY lift IS NULL, lift DESC, factor
+        """,
+        (run_id,),
+    ).fetchall()
+    return [
+        FactorRateRow(
+            run_id=row["run_id"],
+            factor=row["factor"],
+            failure_count=row["failure_count"],
+            failure_total=row["failure_total"],
+            correct_count=row["correct_count"],
+            correct_total=row["correct_total"],
+            lift=row["lift"],
+            p_value=row["p_value"],
+        )
+        for row in rows
+    ]
 
 
 def load_failure_ids(connection: sqlite3.Connection, run_id: int) -> list[int]:

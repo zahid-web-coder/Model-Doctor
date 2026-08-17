@@ -40,6 +40,7 @@ from app.root_cause import (
     SmallObjectFactor,
     analyse_run,
     build_contexts,
+    measure_factor_rates,
 )
 from utils.annotations import ObjectAnnotation
 
@@ -447,3 +448,151 @@ def test_attribution_is_ready_for_cluster_summaries(tmp_path: Path) -> None:
 
     assert summary
     assert {"cluster_id", "factor", "n"} <= set(summary[0].keys())
+
+
+# ---------------------------------------------------------------------------
+# Neighbours include correct detections (D-031)
+# ---------------------------------------------------------------------------
+def _seed_one_correct_one_missed(tmp_path: Path) -> tuple[Path, int]:
+    """Create a run where a missed object overlaps a correctly-detected one.
+
+    The two boxes overlap at IoU 0.82, far above the crowding threshold. The
+    only annotation near the miss is the *correct* detection, so this is the
+    case that silently produced no crowding evidence when contexts were built
+    from failures alone.
+    """
+    image_dir = tmp_path / "images"
+    image_dir.mkdir(exist_ok=True)
+    path = image_dir / "frame.jpg"
+    Image.new("RGB", (400, 400), (200, 200, 200)).save(path)
+
+    diagnosis = diagnose_image(
+        path,
+        [ObjectAnnotation.from_box(0, "door", 0, 0, 200, 200, confidence=0.9)],
+        [
+            ObjectAnnotation.from_box(0, "door", 0, 0, 200, 200),
+            ObjectAnnotation.from_box(1, "door_frame", 10, 10, 210, 210),
+        ],
+        image_width=400,
+        image_height=400,
+    )
+
+    db = tmp_path / "neighbours.db"
+    context = storage.RunContext(
+        model_path="m.pt", model_sha256="a" * 64, dataset_yaml="d.yaml",
+        split="test", confidence_threshold=0.25, match_iou_threshold=0.5,
+        localization_iou_floor=0.1, image_size=640,
+    )
+    with storage.connect(db) as conn:
+        run_id = storage.save_dataset_diagnosis(
+            conn, context, DatasetDiagnosis(diagnoses=[diagnosis])
+        )
+    return db, run_id
+
+
+def test_crowding_sees_correct_detections_as_neighbours(tmp_path: Path) -> None:
+    """A failure beside a correct detection is crowded, and must be recorded.
+
+    Crowding is a property of what is physically nearby. Whether the neighbour
+    happened to be detected correctly is irrelevant to whether this object was
+    occluded, so excluding correct findings under-reported it.
+    """
+    db, run_id = _seed_one_correct_one_missed(tmp_path)
+
+    with storage.connect(db) as conn:
+        analyse_run(conn, run_id)
+        stored = storage.load_root_causes(conn, run_id)
+
+    crowding = [row for row in stored if row.factor == CROWDING]
+    assert crowding, "the missed object overlaps a correct detection at IoU 0.82"
+    assert all(row.outcome != "correct" for row in stored)
+
+
+def test_correct_findings_never_receive_root_cause_rows(tmp_path: Path) -> None:
+    """`root_causes` is documented as covering failures. That must stay true."""
+    db, run_id = _seed_one_correct_one_missed(tmp_path)
+
+    with storage.connect(db) as conn:
+        analyse_run(conn, run_id)
+        measure_factor_rates(conn, run_id, load_pixels=False)
+        outcomes = {row.outcome for row in storage.load_root_causes(conn, run_id)}
+
+    assert "correct" not in outcomes
+
+
+# ---------------------------------------------------------------------------
+# Base rates
+# ---------------------------------------------------------------------------
+def test_base_rates_measure_both_groups_and_store_lift(tmp_path: Path) -> None:
+    """A factor's count is only interpretable against its control rate."""
+    db, run_id = _seed_one_correct_one_missed(tmp_path)
+
+    with storage.connect(db) as conn:
+        report = measure_factor_rates(conn, run_id, load_pixels=False)
+        stored = storage.load_factor_rates(conn, run_id)
+
+    assert report.failure_total >= 1
+    assert report.correct_total >= 1
+    assert stored, "geometric factors run without pixels"
+    for row in stored:
+        assert row.failure_total > 0
+        assert row.correct_total > 0
+        assert 0.0 <= row.p_value <= 1.0
+        assert row.failure_count <= row.failure_total
+        assert row.correct_count <= row.correct_total
+
+
+def test_base_rates_are_replaced_not_accumulated(tmp_path: Path) -> None:
+    """Recomputing corrects a measurement; it does not add a second one."""
+    db, run_id = _seed_one_correct_one_missed(tmp_path)
+
+    with storage.connect(db) as conn:
+        measure_factor_rates(conn, run_id, load_pixels=False)
+        first = storage.load_factor_rates(conn, run_id)
+        measure_factor_rates(conn, run_id, load_pixels=False)
+        second = storage.load_factor_rates(conn, run_id)
+
+    assert len(first) == len(second)
+    assert [row.factor for row in first] == [row.factor for row in second]
+
+
+def test_base_rates_skip_run_level_factors(tmp_path: Path) -> None:
+    """Run factors are defined in terms of mistakes and have no control rate.
+
+    Giving `recurring_misclassification` a base rate would invent a comparison
+    rather than report one, since a correct finding cannot be a repeated
+    misidentification.
+    """
+    db, run_id = _seed_one_correct_one_missed(tmp_path)
+
+    with storage.connect(db) as conn:
+        measure_factor_rates(conn, run_id, load_pixels=False)
+        factors = {row.factor for row in storage.load_factor_rates(conn, run_id)}
+
+    assert RECURRING_MISCLASSIFICATION not in factors
+    assert CLASS_IMBALANCE not in factors
+
+
+def test_base_rates_need_both_groups(tmp_path: Path) -> None:
+    """With no correct findings there is no control, and nothing is stored."""
+    db, run_id = _seed(tmp_path)
+
+    with storage.connect(db) as conn:
+        conn.execute(
+            "DELETE FROM findings WHERE run_id = ? AND outcome = 'correct'", (run_id,)
+        )
+        report = measure_factor_rates(conn, run_id, load_pixels=False)
+
+        assert report.correct_total == 0
+        assert storage.load_factor_rates(conn, run_id) == []
+
+
+def test_factor_rates_cascade_on_run_delete(tmp_path: Path) -> None:
+    """Derived data must not outlive the run it describes."""
+    db, run_id = _seed_one_correct_one_missed(tmp_path)
+
+    with storage.connect(db) as conn:
+        measure_factor_rates(conn, run_id, load_pixels=False)
+        conn.execute("DELETE FROM runs WHERE id = ?", (run_id,))
+
+        assert storage.load_factor_rates(conn, run_id) == []
