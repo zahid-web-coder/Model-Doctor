@@ -230,11 +230,19 @@ do; they are not mutually exclusive.
 | --- | --- | --- |
 | `blur` | Little high-frequency detail in the region | `Laplacian variance 5.1 < 100` |
 | `low_light` | Region underexposed | `mean luminance 23.0/255 < 60` |
-| `small_object` | Object covers very little of the frame | `0.051% of image < 0.12%` |
+| `small_object` | Object is small **relative to this run's own objects** (25th percentile) | `4.2% of image < 23.6%` |
+| `thin_structure` | Long, narrow object — aspect ratio in this run's top quartile | `6.3:1 tall, above 4.1:1` |
 | `edge_truncation` | Object cut off by the frame | `touches left, top, bottom` |
 | `crowding` | Heavy overlap with neighbouring annotations | `1 neighbour(s) overlapping, max IoU 0.85` |
 | `class_imbalance` | Class under-represented in the run | `'handle' has 3 of 210 instances` |
 | `recurring_misclassification` | Class repeatedly named wrongly | `'door_frame' misidentified 11 time(s)` |
+
+**Two factors are calibrated per run, not fixed.** `small_object` and
+`thin_structure` derive their thresholds from the run's own distribution of
+object sizes and shapes, so "small" means small *for this dataset*. Their
+evidence strings state the threshold actually used. A fixed constant does not
+transfer: the previous COCO-derived value fired on 2 of 278 findings here. See
+DECISIONS D-032, and read their `factor_rates` row before drawing conclusions.
 
 **`score` is comparable within a factor, not across factors.** A blur score of
 0.9 and a crowding score of 0.9 do not mean the same thing. Rank within a

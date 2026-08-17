@@ -3,7 +3,7 @@
 **This document is the project's source of truth.** Where any other document
 disagrees with it, this one wins and the other should be corrected.
 
-Last updated: 2026-08-13 (Milestone 5.5 — factor base rates)
+Last updated: 2026-08-13 (Milestone 5.6 — factors that discriminate)
 
 ---
 
@@ -41,6 +41,7 @@ architectural concern but is **not implemented**.
 | Root-cause analysis | **Completed** — schema version 4 |
 | Failure grouping (deterministic, by root cause) | **Completed** — schema version 5 |
 | Factor base rates + significance | **Completed** — schema version 6 |
+| Data-calibrated size and shape factors | **Completed** — replicated on two splits |
 | Similar-failure retrieval (nearest neighbour) | **Completed** — reads existing embeddings |
 | Developer dashboard | **In Progress** — saved-run explorer, charts, filters, image overlays, heatmaps, root causes |
 | Mask IoU / segmentation analysis | **Planned (deferred)** — see D-022; a known, documented limitation |
@@ -68,7 +69,12 @@ architectural concern but is **not implemented**.
   of failures and 76% of correct detections (lift 0.93x, p = 0.34), so the
   largest failure group rests on a factor with no demonstrated association.
   `crowding` is the only factor with a positive signal, and at p = 0.041 it
-  does not survive correction for testing five factors (D-031).
+  does not survive correction for testing five factors (D-031). It then failed
+  to replicate on the val split entirely — 1.12x at p = 0.310.
+- Two calibrated factors do replicate, on 136-image and 258-image splits:
+  `small_object` at 2.77x / 3.45x and `thin_structure` at 2.14x / 2.32x, all
+  p < 0.001. Size shows a monotonic dose-response and holds within a single
+  class, so it is not class in disguise (D-032).
 
 ### Not yet verified by execution
 

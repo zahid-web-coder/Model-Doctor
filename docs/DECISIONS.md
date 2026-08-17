@@ -1061,3 +1061,82 @@ strings.
 counts. Any advice must cite lift and significance, and must be able to say
 "this condition is common but does not distinguish failures" — which, on this
 dataset, is the honest verdict for the two largest factors.
+
+---
+
+## D-032 — Size and shape thresholds are derived from the data, not from constants
+
+**Status:** Accepted · Milestone 5.6
+
+**Decision.** Calibrate `small_object` from the run's own distribution of
+object areas, at the 25th percentile, and add a `thin_structure` factor
+calibrated at the 75th percentile of aspect ratios. Both are computed over
+**every** finding, correct ones included. The absolute factors — blur, light,
+edge proximity, overlap — are unchanged, because they measure physical
+quantities that do not depend on what else is in the dataset.
+
+**Reasoning.** D-031 established that no factor in the set distinguished a
+failure from a success. The follow-up question was whether that is a property
+of the dataset or of the factors. It was the factors.
+
+`SMALL_OBJECT_AREA_FRACTION` was 0.0012 — the COCO convention for "small". On
+a dataset photographed close up, where objects fill the frame, it fired on 2 of
+278 findings on one split and **0 of 496** on another. It was not measuring
+anything. Yet size is the strongest predictor of failure in the data, once
+measured relatively:
+
+| Threshold | test lift | test p | val lift | val p |
+| --- | --- | --- | --- | --- |
+| area below p10 | all failures | <0.001 | 8.62x | <0.001 |
+| area below p25 | 2.21x | <0.001 | 2.67x | <0.001 |
+| area below p50 | 1.66x | <0.001 | 1.81x | <0.001 |
+| area below p75 | 1.25x | 0.006 | 1.29x | <0.001 |
+
+A clean dose-response: the smaller the object, the more likely the failure,
+monotonically across both splits. Thinness behaves the same way, with the
+effect concentrated at the extreme — 1.71x/2.21x above the 75th percentile,
+nothing below the median.
+
+As implemented, measured over the same two splits:
+
+| Factor | test | val |
+| --- | --- | --- |
+| `small_object` (calibrated) | **2.77x**, p < 0.001 | **3.45x**, p < 0.001 |
+| `thin_structure` (new) | **2.14x**, p < 0.001 | **2.32x**, p < 0.001 |
+| `crowding` | 1.28x, p = 0.041 | 1.12x, p = 0.310 |
+| `edge_truncation` | 0.93x, p = 0.340 | 1.04x, p = 0.542 |
+
+Both new factors replicate across splits at effect sizes no previous factor
+approached, and both survive Bonferroni correction with room to spare.
+
+**Why thinness.** `door_frame` mask mAP50-95 is 0.246 against `door` at 0.599 —
+a gap known since training and invisible to box-level analysis. A door frame is
+a thin rectangle. Nothing in the factor set could name that. It is not a proxy
+for size: within `door_frame` alone, small objects still fail at 1.94x on test
+and 1.99x on val (both p < 0.001), so the two conditions are separable.
+
+**Rejected.** *Keeping the COCO constant* — it is a convention for reporting
+object scale, not a threshold for this dataset, and it measured nothing here.
+*Calibrating from failures alone* — the reference distribution would be the
+thing being measured, and the factor would fire on a fixed share of failures by
+construction. *A fixed aspect-ratio threshold* — the same transferability
+problem the size constant had; the configured value survives only as a fallback
+when no distribution is available.
+
+**Trade-off, and it is real.** A calibrated factor fires on a fixed share of
+the run by construction, so "small" is relative and two runs over different
+datasets are not directly comparable on it. `factor_rates` is what makes this
+safe: the share is fixed, but the *lift* is not, and lift is what says whether
+the condition matters.
+
+**Grouping fragmented.** Adding two factors took failure groups from 22 to 35
+on test and 43 on val, with median group size falling to 2. `unexplained` fell
+from 10 to 1, so coverage improved, but 35 groups over 127 failures is close to
+one group per failure and defeats the purpose. D-030 predicted exactly this.
+
+Measured, though not implemented: grouping on only the factors with lift > 1
+and p < 0.05 gives **8 groups with a median size of 11** on test, which is far
+more actionable. It is not adopted here because the qualifying set differs
+between runs — `crowding` qualifies on test but not val — so groups would stop
+being comparable across runs. Milestone 6 should decide this, likely by fixing
+the factor set once from pooled evidence rather than per run.
