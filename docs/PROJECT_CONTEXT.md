@@ -3,7 +3,7 @@
 **This document is the project's source of truth.** Where any other document
 disagrees with it, this one wins and the other should be corrected.
 
-Last updated: 2026-08-13 (Milestone 8.5 — mask-level diagnosis)
+Last updated: 2026-08-18 (Milestone 7 closed — dashboard complete)
 
 ---
 
@@ -47,7 +47,7 @@ architectural concern but is **not implemented**.
 | Read-only HTTP API | **Completed** — no schema change; D-037 |
 | Data-calibrated size and shape factors | **Completed** — replicated on two splits |
 | Similar-failure retrieval (nearest neighbour) | **Completed** — reads existing embeddings |
-| Developer dashboard | **In Progress** — saved-run explorer, charts, filters, image overlays, heatmaps, root causes |
+| Developer dashboard | **Completed** — eight tabs, including recommendations and outline comparison |
 | Mask IoU / segmentation analysis | **Completed** — schema version 8; D-022 closed by D-036 |
 | Everything beyond error analysis | **Planned** — see [ROADMAP.md](ROADMAP.md) |
 
