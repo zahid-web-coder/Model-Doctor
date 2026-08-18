@@ -5,7 +5,7 @@ consumes it.** A dashboard, a report generator, or a notebook should be built
 against this document alone. Reading the Python is not required, and nothing
 here depends on it.
 
-Schema version: **7** · Default location: `db/model_doctor.db` (SQLite)
+Schema version: **8** · Default location: `db/model_doctor.db` (SQLite)
 
 Populated databases are **not** committed — image paths and filenames carry
 dataset-specific identifiers. This schema is committed; the data is not.
@@ -31,7 +31,8 @@ of five outcomes.
         │                                            │
         │                                            ├─▶ embeddings  (v2)
         │                                            ├─▶ heatmaps    (v3)
-        │                                            ├─▶ root_causes (v4)
+        │                                            ├─▶ root_causes  (v4)
+        │                                            ├─▶ mask_findings (v8)
         │                                            │
         │    ┌────────────┐ 1      n ┌─────────────────┐
         ├────┤  clusters  ├──────────┤ cluster_members ├──▶ findings   (v5)
@@ -123,11 +124,9 @@ prediction side in your own UI copy — the predicted class id is not stored
 separately, by design: per-class statistics should charge a miss to the class
 that was missed.
 
-**`truth_polygon` is populated only for segmentation datasets.** Prediction
-outlines are **not stored** — the pipeline does not extract masks from model
-output, so such a column would be permanently null. When mask extraction is
-implemented, it arrives as new columns or a new table, and this document is
-versioned accordingly.
+**`truth_polygon` is populated only for segmentation datasets.** Predicted
+outlines are not stored here — they live in `mask_findings.pred_polygon`, added
+at version 8, so this table kept its shape exactly as D-020 promised.
 
 ### `embeddings` — added in schema version 2
 
@@ -335,6 +334,92 @@ FROM factor_rates
 WHERE run_id = ? AND lift > 1.0 AND p_value < 0.05
 ORDER BY lift DESC;
 ```
+
+---
+
+### `mask_findings` — added in schema version 8
+
+**The same findings, re-measured at outline level.** Box IoU and mask IoU
+disagree sharply on thin structures, and this table is where that disagreement
+becomes visible.
+
+> On the reference model, mean box IoU is 0.878 for `door` and 0.877 for
+> `door_frame` — indistinguishable. Mean mask IoU is 0.797 and 0.629. Box-level
+> diagnosis reports the thin class as healthy; it is not. See DECISIONS D-036.
+
+| Column | Type | Null | Meaning |
+| --- | --- | --- | --- |
+| `id` | INTEGER PK | no | Row identifier |
+| `finding_id` | INTEGER FK → `findings.id` | no | The finding re-measured |
+| `run_id` | INTEGER FK → `runs.id` | no | Owning run |
+| `mask_iou` | REAL | **yes** | Outline overlap, or NULL — see below |
+| `mask_outcome` | TEXT | **yes** | Verdict, or NULL when unmeasured |
+| `pred_polygon` | TEXT | **yes** | Predicted outline, JSON `[[x,y],…]` in pixels |
+
+Unique on `(finding_id)`.
+
+#### NULL means "not measured", never "scored zero"
+
+This distinction is the whole point of the table:
+
+| Situation | `mask_iou` |
+| --- | --- |
+| Outlines compared, share no pixels | `0.0` |
+| False negative — no prediction, so no predicted outline | `NULL` |
+| False positive — no ground truth to compare against | `NULL` |
+| Detection model with no masks at all | `NULL` |
+
+**Never treat NULL as zero.** Averaging it in would drag every score down with
+data that was never measured. On the reference run 100 of 278 findings are
+NULL, all of them unpaired findings — every *paired* finding was measured.
+
+#### Verdicts
+
+| Value | Meaning |
+| --- | --- |
+| `correct` | Outline overlap at or above the run's match IoU threshold |
+| `poor_localization` | Above the localisation floor, below the match threshold |
+| `no_overlap` | Below the localisation floor |
+| `NULL` | Not measured |
+
+The same two thresholds the box pass uses, so `correct` means the same strength
+of agreement in both and the two verdicts are directly comparable.
+
+#### The query that matters — box says correct, outline says otherwise
+
+```sql
+SELECT f.id, f.class_name, f.iou AS box_iou, m.mask_iou, m.mask_outcome
+FROM mask_findings m
+JOIN findings f ON f.id = m.finding_id
+WHERE m.run_id = ?
+  AND f.outcome = 'correct'
+  AND m.mask_outcome IS NOT NULL
+  AND m.mask_outcome != 'correct'
+ORDER BY m.mask_iou;
+```
+
+Those are failures box-level diagnosis cannot see.
+
+#### Box against outline, per class
+
+```sql
+SELECT f.class_name,
+       COUNT(m.mask_iou)   AS pairs,
+       AVG(f.iou)          AS mean_box_iou,
+       AVG(m.mask_iou)     AS mean_mask_iou
+FROM mask_findings m
+JOIN findings f ON f.id = m.finding_id
+WHERE m.run_id = ? AND m.mask_iou IS NOT NULL AND f.iou IS NOT NULL
+GROUP BY f.class_name
+ORDER BY mean_mask_iou;
+```
+
+A class whose outline score falls far below its box score is one that box-level
+diagnosis reports as healthier than it is.
+
+**Optional table.** A run has these rows only if the mask pass was run, and only
+a segmentation model produces them at all. Absence means "not measured", not
+"no problems".
 
 ---
 
@@ -727,18 +812,19 @@ tables, never columns to these:
 | Failure grouping | `clusters`, `cluster_members` | `run_id`, `finding_id` | **Exists (v5)** |
 | Factor base rates | `factor_rates` | `run_id` | **Exists (v6)** |
 | Recommendations | `recommendations` | `cluster_id` | **Exists (v7)** |
+| Mask-level diagnosis | `mask_findings` | `finding_id` | **Exists (v8)** |
 
 `embeddings` arriving in version 2 is this guarantee working as intended: a new
 table was added and **`runs`, `images` and `findings` did not change**. Every
 query written against version 1 still returns exactly the same rows. Versions
-3 through 7 held the same line.
+3 through 8 held the same line.
 
 Opening an older database upgrades it in place — the new tables are created and
 existing data is untouched.
 
 **Check before querying the optional tables.** `embeddings`, `heatmaps`,
 `root_causes`, `clusters`, `cluster_members`, `factor_rates` and
-`recommendations` each arrived after version 1,
+`recommendations` and `mask_findings` each arrived after version 1,
 so a database saved by an earlier version will not have them. Only `runs`,
 `images` and `findings` are guaranteed. A missing table should degrade the one
 surface that needs it, never the whole page:
@@ -752,7 +838,7 @@ change ever becomes unavoidable, `schema_info.version` is incremented and this
 document is updated first.
 
 ```sql
-SELECT version FROM schema_info;   -- currently 7
+SELECT version FROM schema_info;   -- currently 8
 ```
 
 ---
@@ -767,6 +853,7 @@ python -m app.explainability --run 1 --imgsz 672  # heatmaps
 python -m app.root_cause --run 1                  # root_causes + factor_rates
 python -m app.clustering --run 1                  # clusters, cluster_members
 python -m app.recommendations --run 1             # recommendations
+python -m app.mask_diagnosis --run 1              # mask_findings (segmentation only)
 ```
 
 Grouping reads `root_causes`, so run `app.root_cause` first. Running it before

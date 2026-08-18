@@ -323,27 +323,32 @@ schema tables, including when later milestone tables are added.
 
 ---
 
-## Milestone 8.5 — Mask-level diagnosis · **Planned (deferred)**
+## Milestone 8.5 — Mask-level diagnosis · **Completed**
 
 Extend failure diagnosis from bounding boxes to segmentation masks. Deferred
 deliberately, not dropped — see [DECISIONS.md](DECISIONS.md) D-022 for the
 measured gap, the schema options, and the reasoning.
 
-**Why it is needed.** On a segmentation dataset the current engine reports thin
-structures as failing no worse than solid ones, because their bounding boxes
-are fine and only their outlines are poor. That failure mode is invisible to
-box IoU. Any report covering a segmentation dataset should state this
-limitation until the milestone lands.
+**Delivered.** Measured on the reference run, `door` and `door_frame` have mean
+box IoU of 0.878 and 0.877 — indistinguishable — against mean mask IoU of 0.797
+and 0.629. Fourteen findings are correct by box and not by outline. The
+limitation this milestone was written to remove is closed; reports no longer
+need to warn that thin-structure failures are invisible.
 
 Scope:
 
-- Extract prediction outlines from model output — currently
-  `Detection.polygon` is always `None`, and this is the substantive work.
-- A mask IoU function, passed to the existing matcher as its similarity
-  argument.
-- A `mask_findings` table keyed on `finding_id`, plus a schema version bump.
-  `runs`, `images` and `findings` stay untouched, so every query written
-  against the published contract keeps working (D-020).
+| Item | Status |
+| --- | --- |
+| Predicted outlines extracted in `app/inference.py` | Completed |
+| `utils/masks.py` — rasterised outline overlap | Completed |
+| `mask_findings` table, schema version 8 | Completed |
+| CLI (`python -m app.mask_diagnosis`) | Completed |
+| Verified on two splits | Completed |
+| Dashboard outline view | Planned — dashboard work |
+
+Pairs are **not** re-matched on mask IoU: the box pairing is kept and the
+outline measured on it, so "correct by box, not by outline" stays expressible.
+See [DECISIONS.md](DECISIONS.md) D-036.
 
 **Not blocked by architecture.** The matcher already takes the comparison as a
 parameter (D-018), the diagnosis engine forwards it, and ground-truth outlines

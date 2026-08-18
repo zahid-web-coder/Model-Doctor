@@ -16,9 +16,10 @@ labelled dataset, and all explorable in the dashboard.
 
 Schema version 7. The backend is complete through recommendations.
 
-Mask IoU and segmentation analysis are **architecture-ready but not built**, a
-documented limitation on a segmentation dataset — see
-[DECISIONS.md](docs/DECISIONS.md) D-022.
+Mask-level diagnosis is built. On the reference model, `door` and `door_frame`
+have near-identical mean box IoU (0.878, 0.877) and very different mean mask IoU
+(0.797, 0.629) — a failure mode box-level analysis cannot see. See
+[DECISIONS.md](docs/DECISIONS.md) D-036.
 
 ## Setup
 
@@ -170,6 +171,8 @@ app/inference.py       Model loading, prediction, metrics, CLI
 app/diagnosis.py       Failure classification and reporting, CLI
 app/clustering.py      Failure grouping by root-cause signature, CLI
 app/recommendations.py Suggested actions with evidence status, CLI
+app/mask_diagnosis.py  Outline-level re-measurement of findings, CLI
+utils/masks.py         Outline overlap by rasterisation
 utils/statistics.py    Lift and Fisher's exact test, for base-rate comparison
 app/similarity.py      Nearest-neighbour retrieval over stored embeddings
 utils/annotations.py   Generic annotation model (box + optional polygon)

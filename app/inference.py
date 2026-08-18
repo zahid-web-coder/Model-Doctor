@@ -507,14 +507,41 @@ class Detector:
         confidences = boxes.conf.cpu().numpy()
         class_ids = boxes.cls.cpu().numpy().astype(int)
 
+        # A segmentation model also returns outlines. `masks.xy` is already in
+        # original-image pixels, the same space as every box and every
+        # ground-truth polygon (D-006), so no rescaling is needed. A detection
+        # model has no `masks` at all, and each prediction then keeps
+        # `polygon=None` — absent rather than empty, so "this model does not
+        # segment" stays distinguishable from "it predicted nothing" (D-036).
+        masks = getattr(result, "masks", None)
+        outlines: list[list[list[float]] | None] = [None] * len(coords)
+        if masks is not None:
+            polygons = getattr(masks, "xy", None) or []
+            if len(polygons) == len(coords):
+                outlines = [
+                    [[float(x), float(y)] for x, y in polygon]
+                    if polygon is not None and len(polygon) >= 3
+                    else None
+                    for polygon in polygons
+                ]
+            else:
+                # Misaligned outlines cannot be attributed to a box. Dropping
+                # them loses information; guessing corrupts it (D-011).
+                logger.warning(
+                    "Model returned %d outline(s) for %d box(es); outlines "
+                    "skipped for this image rather than guessed",
+                    len(polygons),
+                    len(coords),
+                )
+
         # strict=True enforces the parallel-tensor invariant rather than
         # trusting it. Without it, three tensors of differing length would zip
         # to the shortest and silently discard detections — a data-corruption
         # bug with no error message. If Ultralytics ever violates the
         # alignment, we want a loud ValueError, not quiet wrong output.
         detections: list[Detection] = []
-        for (x1, y1, x2, y2), conf, class_id in zip(
-            coords, confidences, class_ids, strict=True
+        for (x1, y1, x2, y2), conf, class_id, outline in zip(
+            coords, confidences, class_ids, outlines, strict=True
         ):
             detections.append(
                 Detection(
@@ -525,6 +552,7 @@ class Detector:
                     y1=float(y1),
                     x2=float(x2),
                     y2=float(y2),
+                    polygon=outline,
                 )
             )
 

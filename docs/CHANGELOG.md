@@ -847,3 +847,59 @@ engine refuses to act on it.
 - `findings`, `root_causes`, `clusters`, `cluster_members` and `factor_rates`
   all unchanged (D-020).
 
+---
+
+## Milestone 8.5 — Mask-Level Diagnosis · 2026-08-13
+
+Closes the deferral recorded in D-022. Box-level diagnosis could not see the
+dominant failure mode of thin-structure classes; now it can.
+
+### Added
+
+- `utils/masks.py` — outline overlap by rasterisation. Returns `None` when a
+  comparison cannot be made, which is different from `0.0`.
+- `app/mask_diagnosis.py` — re-measures a saved run's findings at outline level
+  and stores the result. CLI: `python -m app.mask_diagnosis --run N`.
+- Predicted outlines are now extracted in `app/inference.py`. `Detection.polygon`
+  was permanently `None`; `masks.xy` arrives already in original-image pixels,
+  the same space as every box and ground-truth polygon (D-006), so no rescaling
+  was needed.
+- Schema version 8: `mask_findings`, keyed on `finding_id` exactly as D-022
+  planned. `findings` untouched.
+
+### Measured
+
+| Class | Mean box IoU | Mean mask IoU |
+| --- | --- | --- |
+| `door` | 0.878 | 0.797 |
+| `door_frame` | 0.877 | **0.629** |
+
+Box IoU reports the two classes as indistinguishable to three decimal places.
+Outlines separate them by 0.168. The validation split agrees — `door` 0.889 to
+0.866, `door_frame` 0.859 to 0.686 — so the thin class's box-to-outline drop is
+roughly three times the solid class's on both.
+
+**14 findings on the test split are correct by box and not by outline.** Those
+were invisible before this milestone.
+
+### Decided
+
+- **D-036** — mask diagnosis re-measures existing pairs and never re-pairs on
+  outlines, because the useful output is the disagreement rather than a second
+  diagnosis. Also records why rasterisation beats analytic polygon
+  intersection, why the pass re-runs inference, and why it refuses to run when
+  configured for a different image size than the run recorded.
+
+### Closed
+
+D-022 asked that any report covering a segmentation dataset state that
+thin-structure failures were invisible to the engine. That warning is no longer
+needed.
+
+### Verified
+
+- 308 tests pass; ruff clean.
+- Run on both the 136-image and 258-image splits.
+- 100 of 278 findings unmeasurable on the test split, all of them unpaired
+  findings — every paired finding was measured.
+
