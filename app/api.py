@@ -259,6 +259,22 @@ def create_app() -> FastAPI:
             resolve_run(connection, run_id)
             return storage.outcome_counts(connection, run_id)
 
+    @application.get("/runs/{run_id}/images")
+    def get_images(run_id: int) -> list[dict[str, Any]]:
+        """Every image the run attempted, including errored and empty ones.
+
+        The only honest source for image totals. A count derived from findings
+        misses images that were processed and genuinely contained nothing, and
+        cannot report images that failed to process at all — ``error`` exists
+        to keep those apart.
+
+        ``path`` is the location as diagnosed, for reference. Fetch the bytes
+        from ``/images/{id}``; the path is not addressable by this service.
+        """
+        with read_only() as connection:
+            resolve_run(connection, run_id)
+            return serialise(storage.load_images(connection, run_id))
+
     # -----------------------------------------------------------------------
     # Findings
     # -----------------------------------------------------------------------

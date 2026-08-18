@@ -874,6 +874,7 @@ cannot open the SQLite file — a browser, most obviously.
 | `GET /runs` | Every run, newest first |
 | `GET /runs/{id}` | One run's provenance |
 | `GET /runs/{id}/outcomes` | Finding counts by outcome |
+| `GET /runs/{id}/images` | Every image attempted, including errored and empty ones |
 | `GET /runs/{id}/findings?limit=&offset=` | Paginated findings with a total |
 | `GET /runs/{id}/groups?method=` | Failure groups, discriminating by default |
 | `GET /groups/{id}/members` | The findings in one group |
@@ -884,6 +885,11 @@ cannot open the SQLite file — a browser, most obviously.
 | `GET /runs/{id}/findings/{id}/neighbours?limit=` | Visually similar failures |
 | `GET /images/{id}` | Source image bytes |
 | `GET /findings/{id}/heatmap?method=` | Grad-CAM overlay bytes |
+
+**Image totals come from `/runs/{id}/images`, never from the findings list.**
+An image processed cleanly with nothing in it has no finding, and an errored
+image is indistinguishable from one that simply found nothing. Deriving counts
+from findings loses both.
 
 **It adds no analysis.** Every endpoint is a query from this document, answered
 by the same readers the CLI uses. Rows are returned as documented — the API does

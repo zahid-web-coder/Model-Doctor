@@ -68,6 +68,21 @@ def populated(tmp_path: Path, roots: Path, monkeypatch: pytest.MonkeyPatch) -> P
                 "prediction_count, truth_count) VALUES (?, ?, ?, 40, 40, 1, 1)",
                 (run_id, str(path), path.name),
             )
+        # The two cases a findings-derived count silently loses: an image that
+        # processed cleanly and contained nothing, and one that never ran.
+        connection.execute(
+            "INSERT INTO images (run_id, path, filename, width, height, "
+            "prediction_count, truth_count) "
+            "VALUES (?, '/x/empty.jpg', 'empty.jpg', 40, 40, 0, 0)",
+            (run_id,),
+        )
+        connection.execute(
+            "INSERT INTO images (run_id, path, filename, width, height, "
+            "prediction_count, truth_count, error) "
+            "VALUES (?, '/x/broken.jpg', 'broken.jpg', NULL, NULL, 0, 0, "
+            "'Unreadable image')",
+            (run_id,),
+        )
         image_id = connection.execute(
             "SELECT id FROM images ORDER BY id LIMIT 1"
         ).fetchone()["id"]
@@ -492,3 +507,78 @@ def test_cors_is_restricted_rather_than_open() -> None:
     """The API serves local file contents; '*' would expose them to any page."""
     assert "*" not in config.CORS_ORIGINS
     assert any("localhost:3000" in origin for origin in config.CORS_ORIGINS)
+
+
+
+# ---------------------------------------------------------------------------
+# Images — the rows a findings-derived count would lose
+# ---------------------------------------------------------------------------
+def test_every_attempted_image_is_returned(client: TestClient) -> None:
+    """Including the ones that produced no findings and the one that failed."""
+    images = client.get(f"/runs/{RUN_ID}/images").json()
+
+    names = [row["filename"] for row in images]
+    assert len(images) == 5
+    assert "empty.jpg" in names, "an image with no findings must still appear"
+    assert "broken.jpg" in names, "an image that never ran must still appear"
+
+
+def test_an_errored_image_keeps_its_error_text(client: TestClient) -> None:
+    """`error` is what separates "found nothing" from "never ran"."""
+    images = client.get(f"/runs/{RUN_ID}/images").json()
+
+    broken = next(row for row in images if row["filename"] == "broken.jpg")
+    empty = next(row for row in images if row["filename"] == "empty.jpg")
+
+    assert broken["error"] == "Unreadable image"
+    assert empty["error"] is None
+    # Both have no findings. Only the error column tells them apart.
+    assert broken["prediction_count"] == empty["prediction_count"] == 0
+
+
+def test_image_rows_carry_what_the_design_needs(client: TestClient) -> None:
+    """Id for the byte endpoint, filename for display, path for reference."""
+    row = client.get(f"/runs/{RUN_ID}/images").json()[0]
+
+    for field in (
+        "id",
+        "run_id",
+        "path",
+        "filename",
+        "width",
+        "height",
+        "prediction_count",
+        "truth_count",
+        "error",
+    ):
+        assert field in row, field
+
+
+def test_image_counts_cannot_be_derived_from_findings(client: TestClient) -> None:
+    """The reason this endpoint exists, asserted rather than argued.
+
+    Four of the five images produce no findings, so a count taken from the
+    findings list sees only one of them — and cannot report the errored one in
+    any case.
+    """
+    images = client.get(f"/runs/{RUN_ID}/images").json()
+    findings = client.get(f"/runs/{RUN_ID}/findings?limit=1000").json()["items"]
+
+    derived = {row["image_id"] for row in findings}
+
+    assert len(images) == 5
+    assert len(derived) == 1
+    assert len(images) - len(derived) == 4
+
+
+def test_images_for_an_unknown_run_are_not_found(client: TestClient) -> None:
+    """404 rather than an empty list, which would read as "no images"."""
+    assert client.get("/runs/999/images").status_code == 404
+
+
+def test_images_work_without_any_optional_table(minimal_client: TestClient) -> None:
+    """Images is one of the three guaranteed tables (D-020)."""
+    response = minimal_client.get("/runs/1/images")
+
+    assert response.status_code == 200
+    assert len(response.json()) == 1
