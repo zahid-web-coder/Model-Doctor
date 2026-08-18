@@ -271,7 +271,7 @@ Depends on: Milestones 5, 5.5, 5.6.
 
 ---
 
-## Milestone 6 — Recommendations · **Planned**
+## Milestone 6 — Recommendations · **Completed**
 
 Translate grouped failures into concrete suggested actions.
 
@@ -280,14 +280,23 @@ counts. Any advice must cite lift and significance, and must be capable of
 saying "this condition is common but does not distinguish failures" — which on
 the reference dataset is the honest verdict for `edge_truncation` and `blur`.
 
-**Two open questions from D-032.** Adding discriminating factors fragmented
-failure groups from 22 to 35. Grouping on only the factors with lift > 1 and
-p < 0.05 gives 8 groups of median size 11, which is far more actionable — but
-the qualifying set differs between runs, so groups would stop being comparable.
-This milestone should settle it, likely by fixing the factor set once from
-pooled evidence rather than per run.
+**Settled in 5.7** — the factor set is fixed once from pooled evidence
+(D-033), so groups stay comparable between runs.
 
-Depends on: Milestone 5.
+| Item | Status |
+| --- | --- |
+| `recommendations` table, schema version 7 | Completed |
+| Five rules over failure groups | Completed |
+| Four evidence statuses, refusals stored not omitted | Completed |
+| Cross-run replication via `model_sha256` | Completed |
+| Traceability: recommendation → group → findings → factor rates | Completed |
+| Dashboard recommendations view | Planned — dashboard work |
+
+On the reference run: two actionable recommendations, one investigation, and one
+explicit refusal to act on a pattern two runs disagree about. See
+[DECISIONS.md](DECISIONS.md) D-034 and D-035.
+
+Depends on: Milestones 5, 5.5, 5.7.
 
 ---
 

@@ -1207,3 +1207,118 @@ prompts someone to look further.
 
 The set also needs a human to revisit it when factors or classes change. That
 is deliberate: see the membership rule above, and re-measure before editing it.
+
+---
+
+## D-034 — Recommendations attach to failure groups, and ordering is a rule, not a score
+
+**Status:** Accepted · Milestone 6
+
+**Decision.** A recommendation belongs to a **cluster** — one row per
+`(cluster_id, rule)` — not to a finding and not to a factor. Generation is
+restricted to the `discriminating-signature` partition. The foreign key
+cascades on delete.
+
+Display order is fixed and documented: **`actionable DESC, priority DESC, id`**.
+`priority` carries the number of failures addressed and nothing else.
+
+**Reasoning.** A recommendation is about a pattern, and the failure group is
+already the unit that means "failures sharing a cause" (D-030). Attaching per
+finding would write 127 near-identical rows and lose exactly the property that
+makes advice worth acting on — that it covers many failures at once. Attaching
+per factor is too coarse in the other direction: `small_object` and
+`small_object + thin_structure` rest on the same factor but behave differently,
+72–80% missed for the first against a different mix for the second, and advice
+keyed on the factor would flatten that.
+
+The cascade is deliberate rather than incidental. `save_clusters` deletes and
+reinserts, so cluster ids are not stable across regrouping. Advice derived from
+a partition that no longer exists is stale, and stale advice is worse than
+none — it looks current.
+
+**On ordering.** An obvious design is a weighted score blending size, lift and
+significance. It was rejected for the same reason `root_causes.score` is
+documented as comparable within a factor but not across: a number nobody can
+decompose is a number nobody can check. Two explicit terms — is it actionable,
+and how many failures does it address — are reproducible and can be explained
+in one sentence.
+
+Ranking by size alone would put `unexplained` first on both reference runs, at
+64 and 94 failures, and it is the one group nothing can be done about.
+Non-actionable rows keep their true `affected` count and sort below actionable
+ones, so they stay visible without heading a to-do list.
+
+`actionable` is derived from `status` and stored anyway, so ordering is a plain
+column sort rather than a `CASE` every consumer has to reproduce correctly. The
+same denormalisation `clusters.size` already uses.
+
+**Rejected.** *Attaching to findings* — loses the pattern. *Attaching to
+factors* — too coarse, and would let a factor's frequency alone drive advice.
+*A composite priority score* — unauditable. *Omitting non-actionable rows from
+the ordering* — see D-035.
+
+**Trade-off.** One recommendation per rule per group means a group can produce
+several rows, and a run with many groups produces a long list. Accepted: the
+alternative is choosing for the reader which of two valid actions to hide.
+Regrouping also discards recommendations and they must be regenerated, which is
+correct but means the two passes have to be run in order.
+
+---
+
+## D-035 — A recommendation states its evidential status, and absence of evidence is stored
+
+**Status:** Accepted · Milestone 6
+
+**Decision.** Every recommendation carries one of four statuses:
+
+| Status | Meaning | Actionable |
+| --- | --- | --- |
+| `replicated` | Factors qualify **and** runs of the same model agree on the outcome mix | yes |
+| `provisional` | Only one run has the evidence | yes, flagged |
+| `conflicting` | Factors qualify but runs disagree about what the group does | **no** |
+| `insufficient_evidence` | Group too small, unexplained, mixed, or its factors do not qualify | **no** |
+
+Groups with nothing to recommend still get a row. Replication is judged only
+against runs sharing the same `model_sha256`, and only those that have measured
+`factor_rates`.
+
+**Reasoning.** This exists because of a mistake made during the milestone. On
+the test split `thin_structure` was 85% false positive, and it was reported —
+in this conversation, confidently — as "thin objects are hallucinated." On the
+validation split the same group is evenly divided, differing at p = 0.011. The
+group replicates; **what it means does not.** Without a status for that, the
+engine would have emitted a precision fix for a pattern that exists on one
+split and not the other.
+
+Membership replicating is not the same as the pattern replicating, and only the
+second justifies an action.
+
+**Why absence is stored rather than omitted.** A missing row is
+indistinguishable from a pass that never ran. `images.error` exists for exactly
+this reason — so "processed and found nothing" stays separable from "never
+processed" — and the same argument applies to advice. "We examined 94 failures
+and no measured condition accounts for them" is a finding. Silence is not.
+
+**Why missing data cannot confirm.** A run analysed before `factor_rates`
+existed has no rates. Counting it as agreement would manufacture replication
+out of a gap: run 1 in the reference database is exactly this case, and it is
+excluded with a logged note rather than silently treated as consenting.
+
+**Why the qualification check is repeated.** The discriminating grouping has
+already filtered to factors with measured lift, so re-checking in the rule
+engine is redundant by construction. It is done anyway because the requirement
+— no recommendation from a factor's raw frequency — should hold even if the
+grouping method changes, and a redundant check that costs one dictionary lookup
+is cheaper than the failure it prevents (D-031).
+
+**Rejected.** *A single confidence percentage* — collapses four genuinely
+different situations into one number, and "60% confident" invites acting anyway.
+*Filtering non-actionable rows* — the refusals are the honest part of the
+output. *Inferring replication from agreement in group size* — that is the
+error this record exists to prevent.
+
+**Trade-off.** On the reference run only 2 of 4 groups yield actionable advice.
+A tool that always has an answer would show four. This one shows two actions,
+one investigation, and one explicit refusal — which is the accurate picture,
+and the minimum group size (`MIN_RECOMMENDATION_GROUP_SIZE`, default 10) is
+configurable so the bar can be examined rather than assumed.
