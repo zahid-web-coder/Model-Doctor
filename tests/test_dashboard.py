@@ -17,13 +17,17 @@ from app.dashboard import (
     load_class_names,
     load_class_statistics,
     load_class_statistics_filtered,
+    load_factor_rates,
     load_failure_group_classes,
     load_failure_group_members,
     load_failure_group_outcomes,
     load_failure_groups,
     load_finding_failure_group,
     load_image_findings,
+    load_mask_class_summary,
+    load_mask_findings,
     load_outcome_counts,
+    load_recommendations,
     load_root_causes_by_class,
     load_root_causes_by_outcome,
     load_root_causes_summary,
@@ -236,7 +240,67 @@ def create_optional_dashboard_database(database: Path) -> None:
             finding_id INTEGER NOT NULL,
             PRIMARY KEY (cluster_id, finding_id)
         );
+        CREATE TABLE factor_rates (
+            id INTEGER PRIMARY KEY,
+            run_id INTEGER NOT NULL,
+            factor TEXT NOT NULL,
+            failure_count INTEGER NOT NULL,
+            failure_total INTEGER NOT NULL,
+            correct_count INTEGER NOT NULL,
+            correct_total INTEGER NOT NULL,
+            lift REAL,
+            p_value REAL NOT NULL
+        );
+        CREATE TABLE recommendations (
+            id INTEGER PRIMARY KEY,
+            run_id INTEGER NOT NULL,
+            cluster_id INTEGER NOT NULL,
+            rule TEXT NOT NULL,
+            action TEXT NOT NULL,
+            rationale TEXT NOT NULL,
+            status TEXT NOT NULL,
+            actionable INTEGER NOT NULL,
+            affected INTEGER NOT NULL,
+            priority REAL NOT NULL
+        );
+        CREATE TABLE mask_findings (
+            id INTEGER PRIMARY KEY,
+            finding_id INTEGER NOT NULL,
+            run_id INTEGER NOT NULL,
+            mask_iou REAL,
+            mask_outcome TEXT,
+            pred_polygon TEXT
+        );
         """
+    )
+
+    # A qualifying factor, and one whose lift is undefined because no correct
+    # finding carried it — the "n/a" path the UI must never render as a number.
+    connection.executemany(
+        "INSERT INTO factor_rates VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?)",
+        [
+            (1, 'small_object', 8, 10, 2, 40, 2.5, 0.001),
+            (2, 'edge_truncation', 7, 10, 30, 40, 0.93, 0.34),
+            (3, 'sparse_factor', 2, 10, 0, 40, None, 0.21),
+        ],
+    )
+    # One action and one refusal. The refusal must survive to the UI.
+    connection.executemany(
+        "INSERT INTO recommendations VALUES (?, 1, 1, ?, ?, ?, ?, ?, ?, ?)",
+        [
+            (1, 'recall_on_factor', 'Improve recall for small_object.',
+             '8 of 10 are misses.', 'replicated', 1, 10, 10.0),
+            (2, 'unexplained_backlog', 'Investigate.',
+             'Nothing accounts for these.', 'insufficient_evidence', 0, 40, 40.0),
+        ],
+    )
+    # A measured outline, and one never measured.
+    connection.executemany(
+        "INSERT INTO mask_findings VALUES (?, ?, 1, ?, ?, ?)",
+        [
+            (1, 1, 0.12, 'poor_localization', '[[0,0],[5,0],[5,5]]'),
+            (2, 4, None, None, None),
+        ],
     )
 
     # Insert heatmap for Finding 2
@@ -256,7 +320,7 @@ def create_optional_dashboard_database(database: Path) -> None:
 
     # Insert clusters and members
     connection.executemany(
-        "INSERT INTO clusters VALUES (?, 1, 'factor-signature', ?, ?)",
+        "INSERT INTO clusters VALUES (?, 1, 'discriminating-signature', ?, ?)",
         [
             (1, 'blur + edge_truncation', 1),
             (2, 'unexplained', 2),
@@ -535,7 +599,15 @@ def test_available_tables_reports_every_optional_table_it_guards(
     """
     reported = available_tables(optional_dashboard_database)
 
-    assert reported == {"heatmaps", "root_causes", "clusters", "cluster_members"}
+    assert reported == {
+        "heatmaps",
+        "root_causes",
+        "clusters",
+        "cluster_members",
+        "factor_rates",
+        "recommendations",
+        "mask_findings",
+    }
 
 
 def test_failure_groups_degrade_when_optional_tables_are_absent(
@@ -600,3 +672,89 @@ def test_failure_groups_queries(
     assert check_failure_groups_integrity(optional_dashboard_database, 1) is None
 
 
+
+
+
+# ---------------------------------------------------------------------------
+# Factor rates, recommendations, outlines
+# ---------------------------------------------------------------------------
+def test_factor_rates_are_ranked_by_lift_not_count(
+    optional_dashboard_database: Path,
+) -> None:
+    """edge_truncation has the larger count and the smaller lift.
+
+    Ranking by count puts the misleading factor first, which is what the tab
+    used to do (D-031).
+    """
+    rates = load_factor_rates(optional_dashboard_database, run_id=1)
+
+    assert [row["factor"] for row in rates][:2] == ["small_object", "edge_truncation"]
+
+
+def test_an_undefined_lift_sorts_last_and_stays_null(
+    optional_dashboard_database: Path,
+) -> None:
+    """NULL means the ratio is undefined, never that it is large."""
+    rates = load_factor_rates(optional_dashboard_database, run_id=1)
+
+    assert rates[-1]["factor"] == "sparse_factor"
+    assert rates[-1]["lift"] is None
+
+
+def test_recommendations_keep_the_documented_order(
+    optional_dashboard_database: Path,
+) -> None:
+    """Actionable first, then by failures addressed."""
+    rows = load_recommendations(optional_dashboard_database, run_id=1)
+
+    assert [bool(row["actionable"]) for row in rows] == [True, False]
+
+
+def test_the_refusal_is_returned_not_filtered(
+    optional_dashboard_database: Path,
+) -> None:
+    """Two of four statuses decline to advise, and are the honest half (D-035)."""
+    rows = load_recommendations(optional_dashboard_database, run_id=1)
+
+    assert any(row["status"] == "insufficient_evidence" for row in rows)
+
+
+def test_recommendations_carry_their_group_label(
+    optional_dashboard_database: Path,
+) -> None:
+    """A consumer should not need a second query to name the group."""
+    rows = load_recommendations(optional_dashboard_database, run_id=1)
+
+    assert all(row["group_label"] for row in rows)
+
+
+def test_mask_findings_preserve_the_unmeasured_null(
+    optional_dashboard_database: Path,
+) -> None:
+    """A false negative has no predicted outline. That is not zero overlap."""
+    rows = load_mask_findings(optional_dashboard_database, run_id=1)
+
+    scores = {row["finding_id"]: row["mask_iou"] for row in rows}
+    assert scores[1] == pytest.approx(0.12)
+    assert scores[4] is None
+
+
+def test_the_mask_class_summary_excludes_unmeasured_findings(
+    optional_dashboard_database: Path,
+) -> None:
+    """Averaging a null as zero would drag the mean down with absent data."""
+    summary = load_mask_class_summary(optional_dashboard_database, run_id=1)
+
+    assert summary
+    assert all(row["pairs"] >= 1 for row in summary)
+    assert all(row["mean_mask_iou"] is not None for row in summary)
+
+
+def test_the_new_surfaces_degrade_when_their_tables_are_absent(
+    dashboard_database: Path,
+) -> None:
+    """A pre-v6 database still renders; these surfaces are simply empty."""
+    assert load_factor_rates(dashboard_database, run_id=1) == []
+    assert load_recommendations(dashboard_database, run_id=1) == []
+    assert load_mask_findings(dashboard_database, run_id=1) == []
+    assert load_mask_class_summary(dashboard_database, run_id=1) == []
