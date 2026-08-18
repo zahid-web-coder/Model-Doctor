@@ -249,6 +249,28 @@ Depends on: Milestone 5.5.
 
 ---
 
+## Milestone 5.7 — Discriminating failure groups · **Completed**
+
+Partition failures twice: `factor-signature` over every attributed factor, and
+`discriminating-signature` over only those that replicate. Consumers show the
+second by default.
+
+Adding two genuinely discriminating factors in 5.6 fragmented the grouping to 35
+and 43 groups of median size 2, because grouping on every factor means grouping
+on factors that carry no information. The restricted set gives the same four
+groups on both splits. See [DECISIONS.md](DECISIONS.md) D-033.
+
+| Item | Status |
+| --- | --- |
+| `config.DISCRIMINATING_FACTORS`, configured not computed | Completed |
+| Second grouping method under the existing `method` seam | Completed |
+| `group_run(allowed_factors=...)` | Completed |
+| Dashboard defaults to the discriminating partition | Planned — dashboard work |
+
+Depends on: Milestones 5, 5.5, 5.6.
+
+---
+
 ## Milestone 6 — Recommendations · **Planned**
 
 Translate grouped failures into concrete suggested actions.

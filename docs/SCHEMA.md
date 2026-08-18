@@ -376,7 +376,17 @@ Primary key `(cluster_id, finding_id)`.
 
 | Method | Meaning |
 | --- | --- |
-| `factor-signature` | Grouped by the exact set of root-cause factors attributed to each failure. The only method implemented. |
+| `discriminating-signature` | Grouped by only those factors shown to occur more often in failures than in correct findings, on more than one split. **Show this one by default.** |
+| `factor-signature` | Grouped by *every* attributed factor. The complete descriptive record. |
+
+**Both are always written**, over the same failures. They are two partitions of
+one set, not two halves of it — each independently accounts for every failure.
+
+Prefer `discriminating-signature` in any interface. On the reference runs the
+full signature produced 35 and 43 groups with a median size of 2, built largely
+from a factor whose lift is 1.00x — comprehensive, and meaningless. The
+discriminating partition produces the same four groups on both splits. See
+DECISIONS D-033.
 
 #### What the label means
 
@@ -385,9 +395,14 @@ with `" + "`. **No lookup is needed to name a group — the label is the name.**
 
 | Example label | Meaning |
 | --- | --- |
-| `edge_truncation` | Only that factor was attributed |
-| `blur + edge_truncation` | Both were attributed to every member |
-| `unexplained` | No factor was attributed |
+| `small_object` | Only that factor was attributed |
+| `small_object + thin_structure` | Both were attributed to every member |
+| `unexplained` | No qualifying factor was attributed |
+
+Under `discriminating-signature`, `unexplained` means *no factor from the
+qualifying set applied* — the finding may still carry other factors in
+`root_causes`. Roughly half of failures land here on the reference runs, and
+that is reported rather than hidden: those failures have no known cause yet.
 
 `unexplained` is a real group, not a null. Do not filter it out by default: it
 is the set of failures no current detector accounts for, which makes it the
@@ -548,9 +563,11 @@ GROUP BY run_id, outcome;
 ```sql
 SELECT id, label, size
 FROM clusters
-WHERE run_id = ? AND method = 'factor-signature'
+WHERE run_id = ? AND method = 'discriminating-signature'
 ORDER BY size DESC, label;
 ```
+
+Swap the method to `'factor-signature'` for the full descriptive partition.
 
 **The failures inside one group**
 ```sql

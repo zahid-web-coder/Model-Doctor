@@ -201,6 +201,33 @@ CROWDING_IOU_THRESHOLD: Final[float] = float(os.getenv("MD_CROWD_IOU", "0.25"))
 # under-represented relative to an even split across classes.
 CLASS_IMBALANCE_RATIO: Final[float] = float(os.getenv("MD_IMBALANCE", "0.5"))
 
+# Factors permitted to form a *discriminating* failure group. Everything else
+# still gets attributed and stored; it simply does not partition failures.
+#
+# This is a decision recorded from evidence, not a value recomputed per run —
+# recomputing it is what makes groups stop being comparable between runs
+# (D-033). Membership rule: a factor joins only if it shows lift > 1 and
+# p < 0.05 on **at least two splits**.
+#
+# As measured on the 136-image test and 258-image validation splits:
+#
+#   small_object     2.77x p<0.001  |  3.45x p<0.001   -> qualifies
+#   thin_structure   2.14x p<0.001  |  2.32x p<0.001   -> qualifies
+#   crowding         1.28x p=0.041  |  1.12x p=0.310   -> failed to replicate
+#   blur             0.81x p=0.252  |  1.17x p=0.305   -> no signal
+#   edge_truncation  0.93x p=0.340  |  1.04x p=0.542   -> no signal, pooled 1.00x
+#   low_light        1.43x p=0.504  |  1.29x p=0.462   -> no signal
+#
+# Re-measure before changing this. Adding classes or a new dataset changes the
+# failure population, so today's members are not permanently qualified.
+DISCRIMINATING_FACTORS: Final[frozenset[str]] = frozenset(
+    factor.strip()
+    for factor in os.getenv(
+        "MD_DISCRIMINATING_FACTORS", "small_object,thin_structure"
+    ).split(",")
+    if factor.strip()
+)
+
 # ---------------------------------------------------------------------------
 # Device selection
 # ---------------------------------------------------------------------------

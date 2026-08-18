@@ -1140,3 +1140,70 @@ more actionable. It is not adopted here because the qualifying set differs
 between runs — `crowding` qualifies on test but not val — so groups would stop
 being comparable across runs. Milestone 6 should decide this, likely by fixing
 the factor set once from pooled evidence rather than per run.
+
+---
+
+## D-033 — Failures are grouped twice: once to describe, once to act on
+
+**Status:** Accepted · Milestone 5.7
+
+**Decision.** Store two partitions of the same failures under
+`clusters.method`:
+
+- `factor-signature` — every attributed factor. The complete descriptive record.
+- `discriminating-signature` — only factors listed in
+  `config.DISCRIMINATING_FACTORS`, currently `small_object` and
+  `thin_structure`. **This is what a consumer should show by default.**
+
+The qualifying set is a **configured decision, not a per-run computation**. A
+factor joins only if it shows lift > 1 and p < 0.05 on at least two splits.
+
+**Reasoning.** Adding two genuinely discriminating factors in D-032 fragmented
+the grouping, because grouping on every factor means grouping on factors that
+carry no information. Measured on the reference runs:
+
+| Grouping | groups (test / val) | median size | singletons | unexplained |
+| --- | --- | --- | --- | --- |
+| every factor | 35 / 43 | 2 / 3 | 11 / 10 | 1% / 2% |
+| per-run significant | 8 / 4 | 10 / 44 | 0 | 9% / 47% |
+| **fixed replicated set** | **4 / 4** | 24 / 44 | 0 | 50% / 47% |
+
+Grouping on every factor explains 99% of failures using groups that mean
+nothing — median size 2, eleven singletons, and labels built largely from
+`edge_truncation`, whose pooled lift is 1.00x at p = 1.000. It is
+comprehensive and it is false comfort.
+
+The fixed set produces the same four groups on both splits, in close
+proportions:
+
+| Group | test | val |
+| --- | --- | --- |
+| `unexplained` | 50.4% | 46.8% |
+| `small_object + thin_structure` | 24.4% | 27.9% |
+| `small_object` | 15.4% | 14.2% |
+| `thin_structure` | 11.0% | 10.0% |
+
+The composition is diagnostic in a way the fragmented version was not. On both
+runs, `small_object + thin_structure` is dominated by false negatives and by
+`door_frame` — 26 of 31 misses on test, 24 of 31 `door_frame`. `thin_structure`
+alone leans the other way, toward false positives. Those are two different
+problems, and the previous grouping split them across dozens of tiny buckets.
+
+**Rejected.** *Per-run significance* — the qualifying set differed between runs
+(`crowding` qualified on test at p = 0.041 and failed on val at p = 0.310), so
+groups stopped being comparable and run comparison, the feature that makes
+regressions visible, silently broke. *Replacing the full signature* — the
+complete attribution is still the honest record of what was measured, and
+discarding it would hide the basis for the restriction. *Recomputing the set
+automatically* — silent changes to what counts as a cause is precisely the
+failure mode D-031 was written about.
+
+**Trade-off.** Half of failures land in `unexplained` — 50.4% and 46.8%. That
+is the honest cost and it is stated rather than softened. Those failures do not
+have a known cause today; under the previous grouping they had a *label*, built
+from a factor that describes correct detections equally well. A named group
+that means nothing is worse than an honest gap, because only one of them
+prompts someone to look further.
+
+The set also needs a human to revisit it when factors or classes change. That
+is deliberate: see the membership rule above, and re-measure before editing it.

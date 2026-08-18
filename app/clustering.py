@@ -33,6 +33,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import config
 from app import storage
 from utils.exceptions import ModelDoctorError
 from utils.logging_utils import get_logger
@@ -43,6 +44,15 @@ logger = get_logger(__name__)
 # implied so a second method can be added later and the two sets of groups stay
 # distinguishable without a schema change.
 FACTOR_SIGNATURE_METHOD: str = "factor-signature"
+
+# The same rule applied to a restricted factor set: only those shown to occur
+# more often in failures than in correct findings, on more than one split
+# (`config.DISCRIMINATING_FACTORS`). Stored alongside the full signature rather
+# than replacing it — `clusters.method` exists so two partitions of the same
+# findings can coexist, and each answers a different question. The full
+# signature is the complete descriptive record; this one is what an engineer
+# should act on (D-033).
+DISCRIMINATING_METHOD: str = "discriminating-signature"
 
 # The group for failures no factor explained. Named rather than omitted: these
 # are the failures the current detectors cannot account for, which makes them
@@ -171,6 +181,7 @@ def group_run(
     connection: Any,
     run_id: int,
     method: str = FACTOR_SIGNATURE_METHOD,
+    allowed_factors: Iterable[str] | None = None,
 ) -> GroupingReport:
     """Group a saved run's failures and store the result.
 
@@ -179,9 +190,12 @@ def group_run(
         run_id: Run to group. Its findings must already be saved, and its
             root causes analysed — grouping reads attribution, it does not
             compute it.
-        method: Value recorded in ``clusters.method``. Only the default is
-            implemented; the parameter exists so a second method stores its
-            groups alongside rather than overwriting these.
+        method: Value recorded in ``clusters.method``. Groups stored under one
+            method never disturb those stored under another, so two partitions
+            of the same findings coexist.
+        allowed_factors: Restrict grouping to these factors. Others are still
+            attributed and stored in ``root_causes``; they simply do not split
+            failures. ``None`` uses every factor.
 
     Returns:
         A description of the grouping produced.
@@ -204,6 +218,13 @@ def group_run(
             UNEXPLAINED_LABEL,
             run_id,
         )
+
+    if allowed_factors is not None:
+        permitted = frozenset(allowed_factors)
+        factors_by_finding = {
+            finding_id: [f for f in factors if f in permitted]
+            for finding_id, factors in factors_by_finding.items()
+        }
 
     groups = group_by_factor_signature(failure_ids, factors_by_finding)
     storage.save_clusters(connection, run_id, method, groups.items())
@@ -298,20 +319,34 @@ def main(argv: Sequence[str] | None = None) -> int:
             logger.info("Using newest run %d", run_id)
 
         try:
-            report = group_run(connection, run_id)
+            # Both partitions are stored. The full signature is the complete
+            # descriptive record; the discriminating one is what to act on.
+            full_report = group_run(connection, run_id)
+            report = group_run(
+                connection,
+                run_id,
+                method=DISCRIMINATING_METHOD,
+                allowed_factors=config.DISCRIMINATING_FACTORS,
+            )
         except FailureGroupingError as exc:
             logger.error("%s", exc)
             return 1
 
         detail = (
             format_group_detail(
-                connection, run_id, FACTOR_SIGNATURE_METHOD, args.detail
+                connection, run_id, DISCRIMINATING_METHOD, args.detail
             )
             if args.detail
             else ""
         )
 
     print(report.describe())
+    print(
+        f"  Also stored under '{FACTOR_SIGNATURE_METHOD}': "
+        f"{full_report.group_count} group(s) from every attributed factor, "
+        f"{full_report.unexplained_count} unexplained.\n"
+        "  That partition describes; this one discriminates. See D-033.\n"
+    )
     if detail:
         print(detail)
     return 0
