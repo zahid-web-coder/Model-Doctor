@@ -48,7 +48,7 @@ logger = get_logger(__name__)
 # Bumped when the schema changes in a way that existing readers must know
 # about. Recorded in the database so a consumer can detect a mismatch instead
 # of failing on a missing column.
-SCHEMA_VERSION: int = 6
+SCHEMA_VERSION: int = 7
 
 SCHEMA_STATEMENTS: tuple[str, ...] = (
     """
@@ -207,6 +207,31 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
         UNIQUE (run_id, factor)
     )
     """,
+    # Added at schema version 7. One row per failure group per rule that fired.
+    # Attached to `clusters`, not to findings or factors: a recommendation is
+    # about a pattern, and the group is the unit that already means "failures
+    # sharing a cause" (D-034). Cluster ids are not stable across regrouping,
+    # so the cascade is deliberate — regrouping invalidates advice derived from
+    # the old partition, and stale advice is worse than none.
+    #
+    # `actionable` is derived from `status` and stored anyway, so ordering is a
+    # plain column sort rather than a CASE every consumer must get right. The
+    # same denormalisation `clusters.size` already uses.
+    """
+    CREATE TABLE IF NOT EXISTS recommendations (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id      INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+        cluster_id  INTEGER NOT NULL REFERENCES clusters(id) ON DELETE CASCADE,
+        rule        TEXT    NOT NULL,
+        action      TEXT    NOT NULL,
+        rationale   TEXT    NOT NULL,
+        status      TEXT    NOT NULL,
+        actionable  INTEGER NOT NULL,
+        affected    INTEGER NOT NULL,
+        priority    REAL    NOT NULL,
+        UNIQUE (cluster_id, rule)
+    )
+    """,
     # Indexes chosen for the queries a dashboard actually issues: filter by
     # run, then by outcome or class. Without them every filter is a full scan.
     "CREATE INDEX IF NOT EXISTS idx_images_run ON images(run_id)",
@@ -219,6 +244,8 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
     "CREATE INDEX IF NOT EXISTS idx_root_causes_run ON root_causes(run_id, factor)",
     "CREATE INDEX IF NOT EXISTS idx_clusters_run ON clusters(run_id, method)",
     "CREATE INDEX IF NOT EXISTS idx_factor_rates_run ON factor_rates(run_id)",
+    "CREATE INDEX IF NOT EXISTS idx_recommendations_run "
+    "ON recommendations(run_id, actionable, priority)",
     "CREATE INDEX IF NOT EXISTS idx_cluster_members_finding "
     "ON cluster_members(finding_id)",
 )
@@ -1289,5 +1316,143 @@ def load_failure_ids(connection: sqlite3.Connection, run_id: int) -> list[int]:
         "SELECT id FROM findings WHERE run_id = ? AND outcome != 'correct' "
         "ORDER BY id",
         (run_id,),
+    ).fetchall()
+    return [int(row["id"]) for row in rows]
+
+
+# ---------------------------------------------------------------------------
+# Recommendations (schema version 7)
+# ---------------------------------------------------------------------------
+@dataclass(frozen=True)
+class RecommendationRow:
+    """One suggested action, with the evidence that produced it.
+
+    ``actionable`` is derived from ``status`` and stored so ordering is a plain
+    column sort. The documented order is
+    ``actionable DESC, priority DESC, id`` — actionable advice first, then by
+    how many failures it addresses, then by id so repeated reads agree.
+    """
+
+    id: int
+    run_id: int
+    cluster_id: int
+    cluster_label: str
+    rule: str
+    action: str
+    rationale: str
+    status: str
+    actionable: bool
+    affected: int
+    priority: float
+
+
+def save_recommendations(
+    connection: sqlite3.Connection,
+    run_id: int,
+    entries: Iterable[tuple[int, str, str, str, str, bool, int, float]],
+) -> int:
+    """Store suggested actions for a run's failure groups.
+
+    Re-running replaces a group's recommendation for the same rule. Advice is
+    derived data: recomputing it against fresh evidence is a correction, not a
+    second opinion (D-021).
+
+    Args:
+        connection: An open connection.
+        run_id: Owning run.
+        entries: Tuples of ``(cluster_id, rule, action, rationale, status,
+            actionable, affected, priority)``.
+
+    Returns:
+        Number of rows written.
+    """
+    rows = [
+        (
+            run_id,
+            int(cluster_id),
+            rule,
+            action,
+            rationale,
+            status,
+            1 if actionable else 0,
+            int(affected),
+            float(priority),
+        )
+        for cluster_id, rule, action, rationale, status, actionable, (
+            affected
+        ), priority in entries
+    ]
+    if rows:
+        connection.executemany(
+            """
+            INSERT INTO recommendations (
+                run_id, cluster_id, rule, action, rationale,
+                status, actionable, affected, priority
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (cluster_id, rule) DO UPDATE SET
+                action = excluded.action,
+                rationale = excluded.rationale,
+                status = excluded.status,
+                actionable = excluded.actionable,
+                affected = excluded.affected,
+                priority = excluded.priority,
+                run_id = excluded.run_id
+            """,
+            rows,
+        )
+    return len(rows)
+
+
+def load_recommendations(
+    connection: sqlite3.Connection, run_id: int
+) -> list[RecommendationRow]:
+    """Return a run's recommendations in the documented display order.
+
+    Actionable advice first, then by how many failures it addresses, then by id.
+    Non-actionable rows — ``conflicting`` and ``insufficient_evidence`` — are
+    returned too, below the rest. They are the honest part of the output and a
+    consumer must not filter them away.
+    """
+    rows = connection.execute(
+        """
+        SELECT r.id, r.run_id, r.cluster_id, c.label AS cluster_label,
+               r.rule, r.action, r.rationale, r.status,
+               r.actionable, r.affected, r.priority
+        FROM recommendations r
+        JOIN clusters c ON c.id = r.cluster_id
+        WHERE r.run_id = ?
+        ORDER BY r.actionable DESC, r.priority DESC, r.id
+        """,
+        (run_id,),
+    ).fetchall()
+    return [
+        RecommendationRow(
+            id=row["id"],
+            run_id=row["run_id"],
+            cluster_id=row["cluster_id"],
+            cluster_label=row["cluster_label"],
+            rule=row["rule"],
+            action=row["action"],
+            rationale=row["rationale"],
+            status=row["status"],
+            actionable=bool(row["actionable"]),
+            affected=row["affected"],
+            priority=row["priority"],
+        )
+        for row in rows
+    ]
+
+
+def load_runs_for_model(
+    connection: sqlite3.Connection, model_sha256: str
+) -> list[int]:
+    """Return ids of every run produced by one set of weights, oldest first.
+
+    Replication is only meaningful between runs of the *same* model. Two runs
+    with different weights that disagree are not a failed replication, they are
+    two different observations.
+    """
+    rows = connection.execute(
+        "SELECT id FROM runs WHERE model_sha256 = ? ORDER BY id", (model_sha256,)
     ).fetchall()
     return [int(row["id"]) for row in rows]

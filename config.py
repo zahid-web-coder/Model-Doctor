@@ -228,6 +228,18 @@ DISCRIMINATING_FACTORS: Final[frozenset[str]] = frozenset(
     if factor.strip()
 )
 
+# Smallest failure group a recommendation may be based on. Below this, an
+# outcome split of three against two is not a pattern — the group's dominant
+# outcome would change with a single reclassified finding. Groups under the
+# threshold are still reported, with status `insufficient_evidence`, so they
+# stay visible rather than silently vanishing (D-035).
+MIN_RECOMMENDATION_GROUP_SIZE: Final[int] = int(os.getenv("MD_MIN_REC_GROUP", "10"))
+
+# Share of a group's failures that must carry one outcome before a
+# recall- or precision-shaped action is proposed. At 0.60 a group has to lean
+# clearly one way; a near-even split describes two problems, not one.
+RECOMMENDATION_OUTCOME_SHARE: Final[float] = float(os.getenv("MD_REC_SHARE", "0.60"))
+
 # ---------------------------------------------------------------------------
 # Device selection
 # ---------------------------------------------------------------------------

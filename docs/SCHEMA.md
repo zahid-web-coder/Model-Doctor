@@ -5,7 +5,7 @@ consumes it.** A dashboard, a report generator, or a notebook should be built
 against this document alone. Reading the Python is not required, and nothing
 here depends on it.
 
-Schema version: **6** · Default location: `db/model_doctor.db` (SQLite)
+Schema version: **7** · Default location: `db/model_doctor.db` (SQLite)
 
 Populated databases are **not** committed — image paths and filenames carry
 dataset-specific identifiers. This schema is committed; the data is not.
@@ -40,9 +40,9 @@ of five outcomes.
         ├─▶ factor_rates (v6)   per run, not per finding: each factor's rate
         │                       among failures against its rate among correct
         │                                            │
-        │                                            │  future milestones
-        └── reproducibility: model SHA,              └─▶ recommendations
-            thresholds, split, image size                (not yet created)
+        │
+        └── reproducibility: model SHA,   clusters ──▶ recommendations (v7)
+            thresholds, split, image size              one per group, per rule
 ```
 
 `findings` also carries `run_id` directly, so run-scoped queries need no join
@@ -425,6 +425,100 @@ most interesting group on the page, not the least.
 
 ---
 
+### `recommendations` — added in schema version 7
+
+**Suggested actions, each traceable to the evidence that produced it.**
+
+> **Show every row, including the ones that recommend nothing.** Two of the four
+> statuses are deliberate refusals. A tool that only displays its confident
+> answers is the tool this project was built to replace. See DECISIONS D-035.
+
+| Column | Type | Null | Meaning |
+| --- | --- | --- | --- |
+| `id` | INTEGER PK | no | Recommendation identifier |
+| `run_id` | INTEGER FK → `runs.id` | no | Owning run |
+| `cluster_id` | INTEGER FK → `clusters.id` | no | The failure group this concerns |
+| `rule` | TEXT | no | Which rule produced it — see below |
+| `action` | TEXT | no | What to do, one sentence, display as-is |
+| `rationale` | TEXT | no | The evidence, display as-is |
+| `status` | TEXT | no | One of the four below |
+| `actionable` | INTEGER | no | `1` or `0`. Derived from `status`, stored for ordering |
+| `affected` | INTEGER | no | Failures this concerns |
+| `priority` | REAL | no | Ordering term — the failure count, nothing more |
+
+Unique on `(cluster_id, rule)`. Re-running replaces rather than appends.
+
+#### Status values
+
+| Status | Meaning | `actionable` |
+| --- | --- | --- |
+| `replicated` | Holds across runs of the same model | 1 |
+| `provisional` | Seen once; act with care | 1 |
+| `conflicting` | Runs disagree about this pattern — **do not act** | 0 |
+| `insufficient_evidence` | Nothing can be concluded, and why is in `rationale` | 0 |
+
+#### Rule identifiers
+
+| Rule | Produces |
+| --- | --- |
+| `recall_on_factor` | The model misses objects under this condition |
+| `precision_on_factor` | The model invents objects under this condition |
+| `unexplained_backlog` | No measured condition accounts for these failures |
+| `unstable_pattern` | Runs disagree; collect another run |
+| `group_too_small` | Too few failures, or no qualifying factor, or a mixed group |
+
+#### Display order — fixed, do not re-sort
+
+```
+ORDER BY actionable DESC, priority DESC, id
+```
+
+Actionable advice first, then by how many failures it addresses, then by id so
+repeated reads agree. `priority` is deliberately **not** a composite score; it
+carries the failure count and nothing else, so any ordering you see can be
+explained.
+
+#### Tracing a recommendation back to its evidence
+
+Nothing is asserted without a path back to the measurement:
+
+```
+recommendation → cluster → cluster_members → findings
+                    └─ label names the factors → factor_rates (lift, p)
+```
+
+```sql
+-- The group, its members, and the measured rates behind one recommendation
+SELECT r.action, r.status, r.rationale, c.label, c.size
+FROM recommendations r
+JOIN clusters c ON c.id = r.cluster_id
+WHERE r.id = ?;
+
+SELECT f.id, f.outcome, f.class_name, i.filename
+FROM recommendations r
+JOIN cluster_members cm ON cm.cluster_id = r.cluster_id
+JOIN findings f ON f.id = cm.finding_id
+JOIN images i ON i.id = f.image_id
+WHERE r.id = ?;
+```
+
+#### The list, ready to render
+
+```sql
+SELECT r.id, r.action, r.rationale, r.status, r.actionable,
+       r.affected, r.priority, c.label AS group_label
+FROM recommendations r
+JOIN clusters c ON c.id = r.cluster_id
+WHERE r.run_id = ?
+ORDER BY r.actionable DESC, r.priority DESC, r.id;
+```
+
+**A run may have no recommendations at all** — the pass is optional. That means
+"not generated yet", not "no problems". Offer the command:
+`python -m app.recommendations --run <id>`.
+
+---
+
 ## 3. Outcome values
 
 `findings.outcome` is one of exactly five strings.
@@ -632,19 +726,19 @@ tables, never columns to these:
 | Root-cause analysis | `root_causes` | `finding_id` | **Exists (v4)** |
 | Failure grouping | `clusters`, `cluster_members` | `run_id`, `finding_id` | **Exists (v5)** |
 | Factor base rates | `factor_rates` | `run_id` | **Exists (v6)** |
-| Recommendations | `recommendations` | `cluster_id` or `finding_id` | Not yet created |
+| Recommendations | `recommendations` | `cluster_id` | **Exists (v7)** |
 
 `embeddings` arriving in version 2 is this guarantee working as intended: a new
 table was added and **`runs`, `images` and `findings` did not change**. Every
 query written against version 1 still returns exactly the same rows. Versions
-3, 4, 5 and 6 held the same line.
+3 through 7 held the same line.
 
 Opening an older database upgrades it in place — the new tables are created and
 existing data is untouched.
 
 **Check before querying the optional tables.** `embeddings`, `heatmaps`,
-`root_causes`, `clusters`, `cluster_members` and `factor_rates` each arrived
-after version 1,
+`root_causes`, `clusters`, `cluster_members`, `factor_rates` and
+`recommendations` each arrived after version 1,
 so a database saved by an earlier version will not have them. Only `runs`,
 `images` and `findings` are guaranteed. A missing table should degrade the one
 surface that needs it, never the whole page:
@@ -653,14 +747,12 @@ surface that needs it, never the whole page:
 SELECT name FROM sqlite_master WHERE type = 'table';
 ```
 
-**`recommendations` does not exist.** Do not write queries against it.
-
 A query written against this document today will keep working. If a breaking
 change ever becomes unavoidable, `schema_info.version` is incremented and this
 document is updated first.
 
 ```sql
-SELECT version FROM schema_info;   -- currently 6
+SELECT version FROM schema_info;   -- currently 7
 ```
 
 ---
@@ -674,6 +766,7 @@ python -m app.features --run 1                  # embeddings (downloads CLIP onc
 python -m app.explainability --run 1 --imgsz 672  # heatmaps
 python -m app.root_cause --run 1                  # root_causes + factor_rates
 python -m app.clustering --run 1                  # clusters, cluster_members
+python -m app.recommendations --run 1             # recommendations
 ```
 
 Grouping reads `root_causes`, so run `app.root_cause` first. Running it before

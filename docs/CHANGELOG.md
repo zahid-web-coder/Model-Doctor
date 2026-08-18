@@ -791,3 +791,59 @@ the previous grouping split across dozens of buckets of median size 2.
 - 269 tests pass; ruff clean.
 - Both partitions written and read back on the 136-image and 258-image runs.
 
+---
+
+## Milestone 6 — Recommendations · 2026-08-13
+
+Failure groups become suggested actions — or an explicit statement that there is
+nothing to suggest.
+
+### Added
+
+- `app/recommendations.py` — five rules over failure groups, each reading one
+  shared `GroupEvidence` record so two rules cannot disagree about the same
+  group. The decision logic is pure and tested without a database.
+- Schema version 7: `recommendations`, one row per `(cluster_id, rule)`.
+- `storage.load_runs_for_model()` — runs sharing a `model_sha256`, which is what
+  makes replication checkable.
+- CLI: `python -m app.recommendations --run N`.
+- Two config values: `MIN_RECOMMENDATION_GROUP_SIZE` (10) and
+  `RECOMMENDATION_OUTCOME_SHARE` (0.60).
+
+### The four statuses
+
+`replicated`, `provisional`, `conflicting`, `insufficient_evidence`. The last
+two are not actionable and are **stored rather than omitted** — a missing row is
+indistinguishable from a pass that never ran, the same reason `images.error`
+exists.
+
+### Verified on the reference run
+
+| | affected | status |
+| --- | --- | --- |
+| Improve recall for small_object and thin_structure | 31 | `replicated` |
+| Improve recall for small_object | 18 | `replicated` |
+| Investigate — no measured condition accounts for these | 64 | `insufficient_evidence` |
+| Do not act yet — runs disagree | 14 | `conflicting` |
+
+The last row is the milestone working. `thin_structure` is 85% false positive on
+test and evenly divided on val, differing at p = 0.011 — a pattern reported
+during development as "thin objects are hallucinated", which it is not. The
+engine refuses to act on it.
+
+### Decided
+
+- **D-034** — recommendations attach to failure groups; ordering is
+  `actionable DESC, priority DESC, id`, with `priority` carrying the failure
+  count and nothing else. A composite score was rejected as unauditable.
+- **D-035** — every recommendation states its evidential status, missing data
+  never counts as agreement, and groups with nothing to say still get a row.
+
+### Verified
+
+- 291 tests pass; ruff clean.
+- Documented queries executed against runs 2 and 3; the traceability chain
+  recommendation → group → findings → factor rates resolves end to end.
+- `findings`, `root_causes`, `clusters`, `cluster_members` and `factor_rates`
+  all unchanged (D-020).
+

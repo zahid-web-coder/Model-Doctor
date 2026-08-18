@@ -3,7 +3,7 @@
 **This document is the project's source of truth.** Where any other document
 disagrees with it, this one wins and the other should be corrected.
 
-Last updated: 2026-08-13 (Milestone 5.7 — discriminating failure groups)
+Last updated: 2026-08-13 (Milestone 6 — recommendations)
 
 ---
 
@@ -42,6 +42,7 @@ architectural concern but is **not implemented**.
 | Failure grouping (deterministic, by root cause) | **Completed** — schema version 5 |
 | Factor base rates + significance | **Completed** — schema version 6 |
 | Discriminating failure groups (two partitions) | **Completed** — no schema change |
+| Recommendations with evidence status | **Completed** — schema version 7 |
 | Data-calibrated size and shape factors | **Completed** — replicated on two splits |
 | Similar-failure retrieval (nearest neighbour) | **Completed** — reads existing embeddings |
 | Developer dashboard | **In Progress** — saved-run explorer, charts, filters, image overlays, heatmaps, root causes |

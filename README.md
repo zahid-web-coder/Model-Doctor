@@ -11,10 +11,10 @@ additional architectures can be added later without touching analysis code.
 
 The pipeline runs end to end: inference, diagnosis, Grad-CAM explanation, CLIP
 feature extraction, root-cause attribution with base rates, and failure
-grouping — all against a real trained model and a real labelled dataset, and
-all explorable in the dashboard.
+grouping, and recommendations — all against a real trained model and a real
+labelled dataset, and all explorable in the dashboard.
 
-Schema version 6. Recommendations (Milestone 6) are the next module.
+Schema version 7. The backend is complete through recommendations.
 
 Mask IoU and segmentation analysis are **architecture-ready but not built**, a
 documented limitation on a segmentation dataset — see
@@ -117,6 +117,18 @@ ones worth opening first.
 the CLIP embeddings was implemented and measured first, and rejected on the
 numbers — see [DECISIONS.md](docs/DECISIONS.md) D-030.
 
+## Get suggested actions
+
+```bash
+./.venv/bin/python -m app.recommendations --run 1
+```
+
+Each group becomes an action, or an explicit statement that there is nothing to
+suggest. Every recommendation carries its evidence and one of four statuses —
+`replicated`, `provisional`, `conflicting`, `insufficient_evidence`. The last
+two are refusals, and they are shown rather than hidden: a pattern two runs
+disagree about gets "do not act yet", not a confident fix. See D-034 and D-035.
+
 ## Explore saved runs
 
 Save a diagnosis run, then launch the read-only Streamlit explorer:
@@ -157,6 +169,7 @@ config.py              Single source of truth for paths and constants
 app/inference.py       Model loading, prediction, metrics, CLI
 app/diagnosis.py       Failure classification and reporting, CLI
 app/clustering.py      Failure grouping by root-cause signature, CLI
+app/recommendations.py Suggested actions with evidence status, CLI
 utils/statistics.py    Lift and Fisher's exact test, for base-rate comparison
 app/similarity.py      Nearest-neighbour retrieval over stored embeddings
 utils/annotations.py   Generic annotation model (box + optional polygon)
