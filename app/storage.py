@@ -48,7 +48,7 @@ logger = get_logger(__name__)
 # Bumped when the schema changes in a way that existing readers must know
 # about. Recorded in the database so a consumer can detect a mismatch instead
 # of failing on a missing column.
-SCHEMA_VERSION: int = 7
+SCHEMA_VERSION: int = 8
 
 SCHEMA_STATEMENTS: tuple[str, ...] = (
     """
@@ -232,6 +232,25 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
         UNIQUE (cluster_id, rule)
     )
     """,
+    # Added at schema version 8. Mask-level diagnosis, keyed on the finding it
+    # re-examines, exactly as D-022 planned when this was deferred. `findings`
+    # keeps its shape, so every box-level query returns what it always did.
+    #
+    # `mask_iou` and `mask_outcome` are nullable on purpose: an outline that
+    # was never produced is not an outline that failed. A detection model has
+    # no masks at all, and a false positive has no ground-truth outline to
+    # compare against — both are "not measured", not "measured as zero".
+    """
+    CREATE TABLE IF NOT EXISTS mask_findings (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        finding_id    INTEGER NOT NULL REFERENCES findings(id) ON DELETE CASCADE,
+        run_id        INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+        mask_iou      REAL,
+        mask_outcome  TEXT,
+        pred_polygon  TEXT,
+        UNIQUE (finding_id)
+    )
+    """,
     # Indexes chosen for the queries a dashboard actually issues: filter by
     # run, then by outcome or class. Without them every filter is a full scan.
     "CREATE INDEX IF NOT EXISTS idx_images_run ON images(run_id)",
@@ -246,6 +265,7 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
     "CREATE INDEX IF NOT EXISTS idx_factor_rates_run ON factor_rates(run_id)",
     "CREATE INDEX IF NOT EXISTS idx_recommendations_run "
     "ON recommendations(run_id, actionable, priority)",
+    "CREATE INDEX IF NOT EXISTS idx_mask_findings_run ON mask_findings(run_id)",
     "CREATE INDEX IF NOT EXISTS idx_cluster_members_finding "
     "ON cluster_members(finding_id)",
 )
@@ -1456,3 +1476,115 @@ def load_runs_for_model(
         "SELECT id FROM runs WHERE model_sha256 = ? ORDER BY id", (model_sha256,)
     ).fetchall()
     return [int(row["id"]) for row in rows]
+
+
+# ---------------------------------------------------------------------------
+# Mask findings (schema version 8)
+# ---------------------------------------------------------------------------
+@dataclass(frozen=True)
+class MaskFindingRow:
+    """One finding re-examined at outline level, joined to its box result.
+
+    ``mask_iou`` is ``None`` when the comparison could not be made — no
+    predicted outline, or no ground-truth outline to compare against. That is
+    distinct from an outline that overlapped nothing, which is ``0.0``.
+    """
+
+    finding_id: int
+    run_id: int
+    outcome: str
+    class_name: str
+    box_iou: float | None
+    mask_iou: float | None
+    mask_outcome: str | None
+    pred_polygon: list[list[float]] | None
+
+
+def save_mask_findings(
+    connection: sqlite3.Connection,
+    run_id: int,
+    entries: Iterable[tuple[int, float | None, str | None, object]],
+) -> int:
+    """Store outline-level results for a run's findings.
+
+    Re-running replaces a finding's mask result. Like every derived table here,
+    recomputing is a correction rather than a second observation (D-021).
+
+    Args:
+        connection: An open connection.
+        run_id: Owning run.
+        entries: Tuples of ``(finding_id, mask_iou, mask_outcome, polygon)``
+            where ``polygon`` is a sequence of points or ``None``.
+
+    Returns:
+        Number of rows written.
+    """
+    rows = [
+        (
+            finding_id,
+            run_id,
+            None if mask_iou is None else float(mask_iou),
+            mask_outcome,
+            None if polygon is None else json.dumps([list(p) for p in polygon]),
+        )
+        for finding_id, mask_iou, mask_outcome, polygon in entries
+    ]
+    if rows:
+        connection.executemany(
+            """
+            INSERT INTO mask_findings (
+                finding_id, run_id, mask_iou, mask_outcome, pred_polygon
+            ) VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT (finding_id) DO UPDATE SET
+                mask_iou = excluded.mask_iou,
+                mask_outcome = excluded.mask_outcome,
+                pred_polygon = excluded.pred_polygon,
+                run_id = excluded.run_id
+            """,
+            rows,
+        )
+    return len(rows)
+
+
+def load_mask_findings(
+    connection: sqlite3.Connection, run_id: int, disagreements_only: bool = False
+) -> list[MaskFindingRow]:
+    """Return a run's outline-level results beside their box-level verdict.
+
+    Args:
+        connection: An open connection.
+        run_id: Which run to read.
+        disagreements_only: Return only findings the box called correct and the
+            outline did not. That set is the reason this milestone exists.
+
+    Returns:
+        Rows ordered by ascending mask IoU, worst outlines first.
+    """
+    sql = """
+        SELECT m.finding_id, m.run_id, m.mask_iou, m.mask_outcome, m.pred_polygon,
+               f.outcome, f.class_name, f.iou AS box_iou
+        FROM mask_findings m JOIN findings f ON f.id = m.finding_id
+        WHERE m.run_id = ?
+    """
+    if disagreements_only:
+        sql += (
+            " AND f.outcome = 'correct' AND m.mask_outcome IS NOT NULL"
+            " AND m.mask_outcome != 'correct'"
+        )
+    sql += " ORDER BY m.mask_iou IS NULL, m.mask_iou, m.finding_id"
+
+    return [
+        MaskFindingRow(
+            finding_id=row["finding_id"],
+            run_id=row["run_id"],
+            outcome=row["outcome"],
+            class_name=row["class_name"],
+            box_iou=row["box_iou"],
+            mask_iou=row["mask_iou"],
+            mask_outcome=row["mask_outcome"],
+            pred_polygon=(
+                json.loads(row["pred_polygon"]) if row["pred_polygon"] else None
+            ),
+        )
+        for row in connection.execute(sql, (run_id,)).fetchall()
+    ]

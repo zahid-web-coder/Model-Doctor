@@ -1322,3 +1322,80 @@ A tool that always has an answer would show four. This one shows two actions,
 one investigation, and one explicit refusal — which is the accurate picture,
 and the minimum group size (`MIN_RECOMMENDATION_GROUP_SIZE`, default 10) is
 configurable so the bar can be examined rather than assumed.
+
+---
+
+## D-036 — Mask diagnosis re-measures existing pairs, and never re-pairs on outlines
+
+**Status:** Accepted · Milestone 8.5. Closes the deferral recorded in D-022.
+
+**Decision.** Outline-level diagnosis takes the pairing the box pass already
+made and measures how well the two outlines agree. It does **not** re-run
+matching with mask IoU as the similarity function. Results land in
+`mask_findings`, keyed on `finding_id`, exactly as D-022 planned.
+
+`mask_iou` and `mask_outcome` are nullable. An outline that was never produced
+is not an outline that scored zero.
+
+**Reasoning.** Re-matching on mask IoU would produce a second, different set of
+findings — different pairs, different counts, a different story. The useful
+output is not "here is another diagnosis" but "*this* finding, which the box
+pass called correct, has an outline that is not". Keeping the pair fixed is
+what makes that sentence expressible.
+
+Measured on the reference run, this is not a hypothetical:
+
+| Class | Mean box IoU | Mean mask IoU |
+| --- | --- | --- |
+| `door` | 0.878 | 0.797 |
+| `door_frame` | 0.877 | **0.629** |
+
+Box IoU reports the two classes as indistinguishable, to three decimal places.
+Outlines separate them by 0.168. On the validation split the same gap appears —
+`door` 0.889 against 0.866, `door_frame` 0.859 against 0.686 — so `door_frame`'s
+box-to-outline drop is roughly three times `door`'s on both. **14 findings on
+the test split are correct by box and not by outline**, and box-level diagnosis
+cannot see any of them.
+
+**Why rasterise rather than intersect polygons analytically.** An outline traced
+from a predicted mask follows pixel boundaries, doubles back on itself, and
+sometimes encloses no area. Analytic intersection is undefined on such input;
+the libraries that offer it either raise or silently repair the shape into
+something the model did not predict. Rasterising asks which pixels are inside,
+which is well defined for any vertex list and is what the model's own mask
+metric is computed from. OpenCV is already a dependency; Shapely is not.
+
+Rasterisation happens inside the two outlines' shared bounding box rather than
+the full image — identical answer, a canvas of hundreds of pixels rather than
+millions.
+
+**Why this pass re-runs inference.** Every other analysis module is a pure pass
+over saved data. This one cannot be: `findings` stores ground-truth outlines
+but not predicted ones, and `findings` is frozen (D-020). Rather than alter it,
+the model is run again and its outlines are matched back to stored findings by
+box identity at IoU ≥ 0.98. Inference is deterministic given the same weights,
+size and threshold — all recorded on the run — so a true match scores far above
+that bar. A process configured for a different image size than the run recorded
+**refuses to run** rather than measuring predictions the run never made.
+
+**Rejected.** *A `mask_iou` column on `findings`* — alters the frozen table
+(D-022 already rejected this). *Re-matching on mask IoU* — loses the
+disagreement, which is the finding. *Analytic polygon intersection* — wrong on
+self-intersecting outlines. *Storing zero for an unmeasurable pair* — would
+turn every false positive and false negative into a total outline failure and
+drag every average down with fabricated data.
+
+**Trade-off.** The pass is slower than the others because it runs the model
+again — a few seconds on 136 images, and it needs the images and weights
+present, unlike the pure database passes. Accepted: the alternative is changing
+a published table.
+
+100 of 278 findings on the reference run are unmeasurable, and that is correct
+rather than a gap: false negatives have no prediction and false positives have
+no ground truth, so there is only one outline in each case. Every *paired*
+finding was measured.
+
+**The limitation D-022 asked to be stated is now closed.** Reports covering a
+segmentation dataset no longer need to warn that thin-structure failures are
+invisible — they are measured, and the class comparison prints both numbers
+side by side.

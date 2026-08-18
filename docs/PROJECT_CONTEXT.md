@@ -3,7 +3,7 @@
 **This document is the project's source of truth.** Where any other document
 disagrees with it, this one wins and the other should be corrected.
 
-Last updated: 2026-08-13 (Milestone 6 — recommendations)
+Last updated: 2026-08-13 (Milestone 8.5 — mask-level diagnosis)
 
 ---
 
@@ -43,10 +43,11 @@ architectural concern but is **not implemented**.
 | Factor base rates + significance | **Completed** — schema version 6 |
 | Discriminating failure groups (two partitions) | **Completed** — no schema change |
 | Recommendations with evidence status | **Completed** — schema version 7 |
+| Mask-level diagnosis | **Completed** — schema version 8 |
 | Data-calibrated size and shape factors | **Completed** — replicated on two splits |
 | Similar-failure retrieval (nearest neighbour) | **Completed** — reads existing embeddings |
 | Developer dashboard | **In Progress** — saved-run explorer, charts, filters, image overlays, heatmaps, root causes |
-| Mask IoU / segmentation analysis | **Planned (deferred)** — see D-022; a known, documented limitation |
+| Mask IoU / segmentation analysis | **Completed** — schema version 8; D-022 closed by D-036 |
 | Everything beyond error analysis | **Planned** — see [ROADMAP.md](ROADMAP.md) |
 
 ### Verified by execution
