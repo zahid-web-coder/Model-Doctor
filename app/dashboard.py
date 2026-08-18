@@ -39,9 +39,45 @@ OUTCOME_COLORS: Final = {
 PREDICTION_COLOR: Final = "#fb7185"
 GROUND_TRUTH_COLOR: Final = "#2dd4bf"
 REQUIRED_TABLES: Final = frozenset({"runs", "images", "findings"})
+
+# Failure groups are stored under two methods. The discriminating partition is
+# built only from factors shown to occur more often in failures than in correct
+# findings, and SCHEMA.md instructs consumers to show it: the full signature
+# gives 35-43 groups of median size 2, many of them named after conditions that
+# explain nothing (D-033).
+GROUPING_METHOD: Final = "discriminating-signature"
 OPTIONAL_TABLES: Final = frozenset(
-    {"heatmaps", "root_causes", "clusters", "cluster_members"}
+    {
+        "heatmaps",
+        "root_causes",
+        "clusters",
+        "cluster_members",
+        "factor_rates",
+        "recommendations",
+        "mask_findings",
+    }
 )
+
+# How each recommendation status should read. Two of the four are refusals to
+# advise, and SCHEMA.md is explicit that a consumer must not hide them: a tool
+# showing only its confident answers is the tool this project replaces (D-035).
+RECOMMENDATION_STATUS_LABELS: Final = {
+    "replicated": "Replicated",
+    "provisional": "Provisional",
+    "conflicting": "Conflicting — do not act",
+    "insufficient_evidence": "Insufficient evidence",
+}
+RECOMMENDATION_STATUS_COLORS: Final = {
+    "replicated": "#2dd4bf",
+    "provisional": "#38bdf8",
+    "conflicting": "#f59e0b",
+    "insufficient_evidence": "#94a3b8",
+}
+
+# A factor whose lift sits this close to 1.0 is no more common among failures
+# than among correct detections, so it explains nothing. Rows within this band
+# are de-emphasised rather than hidden — the number is real, its meaning is not.
+UNINFORMATIVE_LIFT_BAND: Final = 0.15
 
 
 class DashboardDataError(RuntimeError):
@@ -725,7 +761,7 @@ def load_failure_groups(database: Path, run_id: int) -> list[dict[str, object]]:
         """
         SELECT id, label, size
         FROM clusters
-        WHERE run_id = ? AND method = 'factor-signature'
+        WHERE run_id = ? AND method = 'discriminating-signature'
         ORDER BY size DESC, label;
         """,
         [run_id],
@@ -805,7 +841,7 @@ def load_failure_group_outcomes(database: Path, run_id: int) -> list[dict[str, o
         FROM clusters c
         JOIN cluster_members cm ON cm.cluster_id = c.id
         JOIN findings f ON f.id = cm.finding_id
-        WHERE c.run_id = ? AND c.method = 'factor-signature'
+        WHERE c.run_id = ? AND c.method = 'discriminating-signature'
         GROUP BY c.label, f.outcome
         ORDER BY c.label, n DESC;
         """,
@@ -842,7 +878,7 @@ def load_failure_group_classes(database: Path, run_id: int) -> list[dict[str, ob
         FROM clusters c
         JOIN cluster_members cm ON cm.cluster_id = c.id
         JOIN findings f ON f.id = cm.finding_id
-        WHERE c.run_id = ? AND c.method = 'factor-signature'
+        WHERE c.run_id = ? AND c.method = 'discriminating-signature'
         GROUP BY c.label, f.class_name
         ORDER BY n DESC;
         """,
@@ -878,7 +914,7 @@ def load_finding_failure_group(database: Path, finding_id: int) -> str | None:
         SELECT c.label
         FROM cluster_members cm
         JOIN clusters c ON c.id = cm.cluster_id
-        WHERE cm.finding_id = ? AND c.method = 'factor-signature';
+        WHERE cm.finding_id = ? AND c.method = 'discriminating-signature';
         """,
         [finding_id],
     )
@@ -906,7 +942,8 @@ def check_failure_groups_integrity(database: Path, run_id: int) -> str | None:
         """
         SELECT
           (SELECT COALESCE(SUM(size), 0) FROM clusters
-            WHERE run_id = ? AND method = 'factor-signature')          AS grouped,
+            WHERE run_id = ? AND method = 'discriminating-signature')
+              AS grouped,
           (SELECT COUNT(*) FROM findings
             WHERE run_id = ? AND outcome != 'correct')                 AS failures;
         """,
@@ -926,6 +963,132 @@ def check_failure_groups_integrity(database: Path, run_id: int) -> str | None:
         )
 
     return None
+
+
+@st.cache_data(show_spinner=False)
+def load_factor_rates(database: Path, run_id: int) -> list[dict[str, object]]:
+    """Load each factor's rate among failures against its rate among successes.
+
+    This is what makes a factor count interpretable. ``edge_truncation``
+    appears in 71% of failures on the reference run — and 76% of correct
+    detections, so it distinguishes nothing. Ranking by count puts it first;
+    ranking by lift puts the factor that actually predicts failure first
+    (D-031).
+
+    Args:
+        database: Saved diagnosis database to query.
+        run_id: Identifier of the selected run.
+
+    Returns:
+        Rows ordered by lift descending, undefined lift last. Empty when the
+        table is absent, which means the pass was never run.
+    """
+    if "factor_rates" not in available_tables(database):
+        return []
+
+    return query_rows(
+        database,
+        """
+        SELECT factor, failure_count, failure_total, correct_count,
+               correct_total, lift, p_value
+        FROM factor_rates
+        WHERE run_id = ?
+        ORDER BY lift IS NULL, lift DESC, factor
+        """,
+        [run_id],
+    )
+
+
+@st.cache_data(show_spinner=False)
+def load_recommendations(database: Path, run_id: int) -> list[dict[str, object]]:
+    """Load suggested actions in the order SCHEMA.md fixes.
+
+    Actionable first, then by failures addressed, then by id. Rows whose status
+    is ``conflicting`` or ``insufficient_evidence`` are refusals to advise and
+    are returned deliberately — filtering them would hide the honest half of
+    the output (D-035).
+
+    Args:
+        database: Saved diagnosis database to query.
+        run_id: Identifier of the selected run.
+
+    Returns:
+        Recommendations with their group label. Empty when the table is absent.
+    """
+    if "recommendations" not in available_tables(database):
+        return []
+
+    return query_rows(
+        database,
+        """
+        SELECT r.id, r.rule, r.action, r.rationale, r.status,
+               r.actionable, r.affected, r.priority, c.label AS group_label
+        FROM recommendations r
+        JOIN clusters c ON c.id = r.cluster_id
+        WHERE r.run_id = ?
+        ORDER BY r.actionable DESC, r.priority DESC, r.id
+        """,
+        [run_id],
+    )
+
+
+@st.cache_data(show_spinner=False)
+def load_mask_findings(database: Path, run_id: int) -> list[dict[str, object]]:
+    """Load outline-level results beside the box-level verdict for each finding.
+
+    ``mask_iou`` is null when the outline was never measured — a false negative
+    has no prediction, a false positive no ground truth. That is not zero
+    overlap, and must never be averaged or rendered as ``0.00`` (D-036).
+
+    Args:
+        database: Saved diagnosis database to query.
+        run_id: Identifier of the selected run.
+
+    Returns:
+        Rows keyed by finding, worst measured outline first.
+    """
+    if "mask_findings" not in available_tables(database):
+        return []
+
+    return query_rows(
+        database,
+        """
+        SELECT m.finding_id, m.mask_iou, m.mask_outcome, m.pred_polygon,
+               f.outcome, f.class_name, f.iou AS box_iou
+        FROM mask_findings m
+        JOIN findings f ON f.id = m.finding_id
+        WHERE m.run_id = ?
+        ORDER BY m.mask_iou IS NULL, m.mask_iou, m.finding_id
+        """,
+        [run_id],
+    )
+
+
+@st.cache_data(show_spinner=False)
+def load_mask_class_summary(database: Path, run_id: int) -> list[dict[str, object]]:
+    """Contrast box agreement with outline agreement, per class.
+
+    A class whose outline score falls far below its box score is one that
+    box-level diagnosis reports as healthier than it is.
+    """
+    if "mask_findings" not in available_tables(database):
+        return []
+
+    return query_rows(
+        database,
+        """
+        SELECT f.class_name,
+               COUNT(m.mask_iou) AS pairs,
+               ROUND(AVG(f.iou), 3) AS mean_box_iou,
+               ROUND(AVG(m.mask_iou), 3) AS mean_mask_iou
+        FROM mask_findings m
+        JOIN findings f ON f.id = m.finding_id
+        WHERE m.run_id = ? AND m.mask_iou IS NOT NULL AND f.iou IS NOT NULL
+        GROUP BY f.class_name
+        ORDER BY mean_mask_iou
+        """,
+        [run_id],
+    )
 
 
 @st.cache_data(show_spinner=False)
@@ -1261,6 +1424,31 @@ def inject_theme() -> None:
             padding: 2px 8px; border-radius: 6px;
           }
 
+          /* ── Outcome filter chips ──────────────────────────── */
+          /* Streamlit renders every chip in one red, so a "Correct"
+             filter read as an error at a glance. The outcome name is on
+             the chip's aria-label, so each takes its own colour. */
+          span[data-tag][aria-label="Correct"] {
+            background: #2dd4bf !important;
+            color: #0b1020 !important;
+          }
+          span[data-tag][aria-label="Wrong class"] {
+            background: #f59e0b !important;
+            color: #0b1020 !important;
+          }
+          span[data-tag][aria-label="Poor localization"] {
+            background: #a78bfa !important;
+            color: #0b1020 !important;
+          }
+          span[data-tag][aria-label="False positive"] {
+            background: #fb7185 !important;
+            color: #0b1020 !important;
+          }
+          span[data-tag][aria-label="False negative"] {
+            background: #f97316 !important;
+            color: #0b1020 !important;
+          }
+
           /* ── Comparison delta badges ───────────────────────── */
           .delta-up { color: #2dd4bf; font-weight: 700; }
           .delta-down { color: #fb7185; font-weight: 700; }
@@ -1311,8 +1499,12 @@ def render_outcome_chart(counts: Sequence[dict[str, object]]) -> None:
         ),
     )
     figure.update_traces(
+        # Labels outside the ring with leader lines: at 2% a slice is thinner
+        # than its own caption, and inside placement collided with the legend.
         textinfo="percent+label",
-        textfont=dict(color="#e2e8f0"),
+        textposition="outside",
+        automargin=True,
+        textfont=dict(color="#e2e8f0", size=12),
         hovertemplate="%{label}: %{value}<extra></extra>",
     )
     st.plotly_chart(figure, use_container_width=True, config={"displayModeBar": False})
@@ -1506,6 +1698,227 @@ def render_comparison_chart(
 # ---------------------------------------------------------------------------
 
 
+def _shorten(label: str, limit: int = 34) -> str:
+    """Trim a group label for an axis, keeping the full text for the tooltip.
+
+    Labels reach 77 characters. The label is the explanation and must never be
+    reformatted or split — only visually truncated, with the whole string still
+    reachable on hover.
+    """
+    return label if len(label) <= limit else label[: limit - 1] + "…"
+
+
+def render_factor_rates(rates: Sequence[dict[str, object]]) -> None:
+    """Show each factor's lift over its base rate, strongest first.
+
+    The table a reader should consult before any count. A factor present in
+    most failures looks like a cause until the control group shows it is
+    equally present when the model succeeds (D-031). Rows whose lift sits near
+    1.0 are de-emphasised rather than removed — the measurement is real, its
+    explanatory value is not.
+    """
+    if not rates:
+        st.info(
+            "No factor base rates for this run. Run "
+            "`python -m app.root_cause --run <id>` to measure them."
+        )
+        return
+
+    rows = []
+    for rate in rates:
+        lift = rate["lift"]
+        p_value = float(rate["p_value"])
+        failure_share = (
+            100 * int(rate["failure_count"]) / int(rate["failure_total"])
+            if rate["failure_total"]
+            else 0.0
+        )
+        correct_share = (
+            100 * int(rate["correct_count"]) / int(rate["correct_total"])
+            if rate["correct_total"]
+            else 0.0
+        )
+        if lift is None:
+            verdict = "Not measurable"
+        elif p_value >= 0.05:
+            verdict = "No evidence either way"
+        elif float(lift) > 1.0:
+            verdict = "More common in failures"
+        else:
+            verdict = "More common when correct"
+
+        rows.append(
+            {
+                "Factor": rate["factor"],
+                "In failures": f"{failure_share:.0f}%",
+                "In correct": f"{correct_share:.0f}%",
+                # NULL means the ratio is undefined, not that it is large.
+                "Lift": "n/a" if lift is None else f"{float(lift):.2f}x",
+                "p": f"{p_value:.3f}",
+                "Reading": verdict,
+            }
+        )
+
+    st.dataframe(rows, hide_index=True, use_container_width=True)
+
+    uninformative = [
+        str(rate["factor"])
+        for rate in rates
+        if rate["lift"] is not None
+        and abs(float(rate["lift"]) - 1.0) <= UNINFORMATIVE_LIFT_BAND
+    ]
+    if uninformative:
+        st.warning(
+            "Explains nothing on this run: "
+            + ", ".join(uninformative)
+            + ". These conditions are about as common when the model succeeds "
+            "as when it fails, so their counts below are descriptive rather "
+            "than causal."
+        )
+    st.caption(
+        "Lift is how many times more common a factor is among failures. 1.00x "
+        "means it describes successes just as often. Treat p ≥ 0.05 as no "
+        "evidence of association, in either direction — and note that testing "
+        "several factors makes a single p near 0.05 weaker than it looks."
+    )
+
+
+def render_recommendations(rows: Sequence[dict[str, object]]) -> None:
+    """Show suggested actions, including the ones that refuse to suggest.
+
+    The order is fixed by the contract and is not re-sorted here. Rows with a
+    non-actionable status are shown with reduced emphasis but are never
+    filtered: two of the four statuses exist to say the evidence does not
+    support an action, and hiding them would leave only the confident answers
+    (D-035).
+    """
+    if not rows:
+        st.info(
+            "No recommendations for this run. Run "
+            "`python -m app.recommendations --run <id>` to generate them."
+        )
+        return
+
+    actionable = sum(1 for row in rows if row["actionable"])
+    st.caption(
+        f"{actionable} actionable of {len(rows)}. Rows below the divider are "
+        "not actionable — the evidence does not support an action yet, and "
+        "saying so is part of the answer."
+    )
+
+    for row in rows:
+        status = str(row["status"])
+        colour = RECOMMENDATION_STATUS_COLORS.get(status, "#94a3b8")
+        label = RECOMMENDATION_STATUS_LABELS.get(status, status)
+        is_actionable = bool(row["actionable"])
+        opacity = "1.0" if is_actionable else "0.72"
+
+        st.markdown(
+            f'<div class="glass-panel" style="opacity:{opacity};'
+            f'border-left:3px solid {colour};">'
+            f'<div style="display:flex;justify-content:space-between;'
+            f'align-items:center;margin-bottom:.5rem;">'
+            f'<span style="font-size:1.05rem;font-weight:700;color:#f1f5f9;">'
+            f"{row['action']}</span>"
+            f'<span style="background:{colour}22;color:{colour};padding:2px '
+            f'10px;border-radius:20px;font-size:.78rem;font-weight:600;'
+            f'border:1px solid {colour}44;white-space:nowrap;">{label}</span>'
+            f"</div>"
+            f'<div style="color:#94a3b8;font-size:.86rem;margin-bottom:.4rem;">'
+            f"Group <code>{row['group_label']}</code> · "
+            f"{row['affected']} failures · rule <code>{row['rule']}</code>"
+            f"</div>"
+            f'<div style="color:#cbd5e1;font-size:.9rem;line-height:1.55;">'
+            f"{row['rationale']}</div>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+
+
+def render_outlines(
+    summary: Sequence[dict[str, object]], findings: Sequence[dict[str, object]]
+) -> None:
+    """Contrast box agreement with outline agreement.
+
+    A thin structure can have an almost perfect bounding box around an almost
+    entirely wrong shape. Box-level diagnosis reports that as a success, which
+    is the gap this view exists to show (D-036).
+    """
+    if not summary and not findings:
+        st.info(
+            "No outline measurements for this run. Run "
+            "`python -m app.mask_diagnosis --run <id>`. Segmentation models "
+            "only — a detection model produces no outlines to measure."
+        )
+        return
+
+    if summary:
+        st.markdown(
+            '<div class="section-title">Box against outline, per class</div>',
+            unsafe_allow_html=True,
+        )
+        st.dataframe(
+            [
+                {
+                    "Class": row["class_name"],
+                    "Pairs": row["pairs"],
+                    "Mean box IoU": row["mean_box_iou"],
+                    "Mean mask IoU": row["mean_mask_iou"],
+                    "Gap": round(
+                        float(row["mean_box_iou"]) - float(row["mean_mask_iou"]), 3
+                    ),
+                }
+                for row in summary
+            ],
+            hide_index=True,
+            use_container_width=True,
+        )
+        st.caption(
+            "A class whose outline score falls far below its box score is one "
+            "that box-level diagnosis reports as healthier than it is."
+        )
+
+    disagreements = [
+        row
+        for row in findings
+        if row["outcome"] == "correct"
+        and row["mask_outcome"] is not None
+        and row["mask_outcome"] != "correct"
+    ]
+    st.markdown(
+        '<div class="section-title">Correct by box, not by outline</div>',
+        unsafe_allow_html=True,
+    )
+    if not disagreements:
+        st.info("Every correctly-boxed finding also agrees at outline level.")
+        return
+
+    st.caption(
+        f"{len(disagreements)} finding(s) box-level diagnosis reports as "
+        "correct and outline-level diagnosis does not. These are invisible "
+        "without mask measurement."
+    )
+    st.dataframe(
+        [
+            {
+                "Finding": row["finding_id"],
+                "Class": row["class_name"],
+                "Box IoU": round(float(row["box_iou"]), 3)
+                if row["box_iou"] is not None
+                else None,
+                # Never rendered as 0.00: null means never measured.
+                "Mask IoU": round(float(row["mask_iou"]), 3)
+                if row["mask_iou"] is not None
+                else "not measured",
+                "Outline verdict": row["mask_outcome"] or "not measured",
+            }
+            for row in disagreements
+        ],
+        hide_index=True,
+        use_container_width=True,
+    )
+
+
 def render_onboarding() -> None:
     """Show a premium empty state when no database or no runs exist."""
     st.markdown(
@@ -1622,19 +2035,23 @@ def render_dashboard(database: Path) -> None:
     # ── Tabs ─────────────────────────────────────────────────────────────
     (
         tab_overview,
+        tab_recommendations,
         tab_classes,
         tab_images,
         tab_compare,
         tab_root_causes,
         tab_failure_groups,
+        tab_outlines,
     ) = st.tabs(
         [
             "📊 Overview",
+            "✅ Recommendations",
             "📋 Per-class",
             "🔍 Image explorer",
             "⚖️ Run comparison",
             "🌱 Root causes",
             "🧩 Failure Groups",
+            "✏️ Outlines",
         ]
     )
 
@@ -1900,8 +2317,19 @@ def render_dashboard(database: Path) -> None:
     # ── Tab 5: Root causes ───────────────────────────────────────────────
     with tab_root_causes:
         st.markdown(
-            '<div class="section-title">Root causes</div>',
+            '<div class="section-title">Does this factor distinguish failures?</div>',
             unsafe_allow_html=True,
+        )
+        render_factor_rates(load_factor_rates(database, run_id))
+
+        st.markdown(
+            '<div class="section-title">How often each factor was attributed</div>',
+            unsafe_allow_html=True,
+        )
+        st.caption(
+            "Counts alone rank the most common condition first, which is not "
+            "the same as the most explanatory one. Read them against the lift "
+            "table above."
         )
         rc_summary = load_root_causes_summary(database, run_id)
         if not rc_summary:
@@ -2013,28 +2441,100 @@ def render_dashboard(database: Path) -> None:
                         "`python -m app.clustering --run <id>` to generate them."
                     )
                 else:
-                    fg_rows = [
-                        {"Group": fg["label"], "Failures": fg["size"]}
+                    search = st.text_input(
+                        "Filter groups", "", key="group_filter"
+                    ).strip().lower()
+                    matching = [
+                        fg
                         for fg in failure_groups
+                        if not search or search in str(fg["label"]).lower()
                     ]
+                    show_all = st.checkbox(
+                        f"Show all {len(matching)} groups", value=len(matching) <= 10
+                    )
+                    shown = matching if show_all else matching[:10]
 
-                    fig = px.bar(
-                        fg_rows,
-                        x="Group",
-                        y="Failures",
-                        color_discrete_sequence=["#f43f5e"],
-                    )
-                    fig.update_layout(
-                        xaxis_title=None,
-                        yaxis_title="Failures",
-                        margin=dict(l=0, r=0, t=10, b=0),
-                        height=300,
-                        dragmode=False,
-                    )
-                    st.plotly_chart(
-                        fig, use_container_width=True, config={"displayModeBar": False}
-                    )
-                    st.dataframe(fg_rows, hide_index=True, use_container_width=True)
+                    fg_rows = [
+                        {"Group": fg["label"], "Failures": fg["size"]} for fg in shown
+                    ]
+                    if not fg_rows:
+                        st.info("No group matches that filter.")
+                    else:
+                        # Horizontal: labels reach 77 characters and there are
+                        # up to 43 groups, so rotated axis text is unreadable.
+                        chart_rows = [
+                            {
+                                "Group": _shorten(str(row["Group"])),
+                                "Failures": row["Failures"],
+                                "Full": row["Group"],
+                            }
+                            for row in reversed(fg_rows)
+                        ]
+                        fig = px.bar(
+                            chart_rows,
+                            x="Failures",
+                            y="Group",
+                            orientation="h",
+                            hover_data={"Full": True, "Group": False},
+                            color_discrete_sequence=["#f43f5e"],
+                        )
+                        fig.update_layout(
+                            xaxis_title="Failures",
+                            yaxis_title=None,
+                            margin=dict(l=0, r=0, t=10, b=0),
+                            height=max(280, 26 * len(chart_rows)),
+                            dragmode=False,
+                            paper_bgcolor="rgba(0,0,0,0)",
+                            plot_bgcolor="rgba(0,0,0,0)",
+                            font=dict(family="Inter", color="#e2e8f0"),
+                        )
+                        st.plotly_chart(
+                            fig,
+                            use_container_width=True,
+                            config={"displayModeBar": False},
+                        )
+                        st.dataframe(
+                            fg_rows, hide_index=True, use_container_width=True
+                        )
+
+                        # The tab could previously only be read. Selecting a
+                        # group now opens the failures inside it.
+                        st.markdown(
+                            '<div class="section-title" style="font-size:1.1rem;">'
+                            "Failures in a group</div>",
+                            unsafe_allow_html=True,
+                        )
+                        chosen = st.selectbox(
+                            "Group",
+                            shown,
+                            format_func=lambda fg: (
+                                f"{fg['label']} · {fg['size']} failures"
+                            ),
+                            key="group_members",
+                        )
+                        members = load_failure_group_members(
+                            database, int(chosen["id"])
+                        )
+                        if not members:
+                            st.info("This group has no stored members.")
+                        else:
+                            st.dataframe(
+                                [
+                                    {
+                                        "Finding": m["id"],
+                                        "Outcome": OUTCOME_LABELS.get(
+                                            str(m["outcome"]), str(m["outcome"])
+                                        ),
+                                        "Class": m["class_name"],
+                                        "Confidence": m["confidence"],
+                                        "IoU": m["iou"],
+                                        "Image": m["filename"],
+                                    }
+                                    for m in members
+                                ],
+                                hide_index=True,
+                                use_container_width=True,
+                            )
 
                     st.markdown(
                         '<div class="section-title" style="font-size: 1.1rem;">'
@@ -2045,7 +2545,9 @@ def render_dashboard(database: Path) -> None:
                     fg_class_bd = load_failure_group_classes(database, run_id)
                     fg_outcome_bd = load_failure_group_outcomes(database, run_id)
 
-                    fg_col_a, fg_col_b = st.columns(2)
+                    # Equal columns clipped the right-hand count column; the
+                    # outcome table needs more width than the class table.
+                    fg_col_a, fg_col_b = st.columns((1.0, 1.25), gap="medium")
                     with fg_col_a:
                         st.markdown("#### By Class")
                         if fg_class_bd:
@@ -2083,6 +2585,25 @@ def render_dashboard(database: Path) -> None:
                             )
                         else:
                             st.info("No outcome breakdowns available.")
+
+    # ── Recommendations ──────────────────────────────────────────────────
+    with tab_recommendations:
+        st.markdown(
+            '<div class="section-title">Suggested actions</div>',
+            unsafe_allow_html=True,
+        )
+        render_recommendations(load_recommendations(database, run_id))
+
+    # ── Outlines ─────────────────────────────────────────────────────────
+    with tab_outlines:
+        st.markdown(
+            '<div class="section-title">Outline-level diagnosis</div>',
+            unsafe_allow_html=True,
+        )
+        render_outlines(
+            load_mask_class_summary(database, run_id),
+            load_mask_findings(database, run_id),
+        )
 
 
 def main() -> None:
