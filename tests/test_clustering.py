@@ -12,8 +12,10 @@ from pathlib import Path
 
 import pytest
 
+import config
 from app import storage
 from app.clustering import (
+    DISCRIMINATING_METHOD,
     FACTOR_SIGNATURE_METHOD,
     UNEXPLAINED_LABEL,
     FailureGroupingError,
@@ -467,3 +469,101 @@ def test_foreign_keys_are_enforced_for_group_members(tmp_path: Path) -> None:
                 "INSERT INTO cluster_members (cluster_id, finding_id) VALUES (?, ?)",
                 (int(cursor.lastrowid), 9999),
             )
+
+
+# ---------------------------------------------------------------------------
+# Discriminating groups (D-033)
+# ---------------------------------------------------------------------------
+def test_allowed_factors_restricts_which_factors_split_failures(
+    tmp_path: Path,
+) -> None:
+    """Findings 1 and 2 carry blur + crowding; allowing only blur merges them."""
+    database = tmp_path / "restricted.db"
+    run_id = _saved_run(database)
+
+    with storage.connect(database) as connection:
+        group_run(
+            connection,
+            run_id,
+            method=DISCRIMINATING_METHOD,
+            allowed_factors={"blur"},
+        )
+        labels = {
+            group.label: group.size
+            for group in storage.load_clusters(
+                connection, run_id, DISCRIMINATING_METHOD
+            )
+        }
+
+    assert labels == {"blur": 2, UNEXPLAINED_LABEL: 1}
+
+
+def test_a_disallowed_factor_does_not_drop_its_finding(tmp_path: Path) -> None:
+    """A failure whose only factors are excluded is unexplained, not missing.
+
+    Dropping it would make group sizes stop summing to the failure count, which
+    is the arithmetic every report depends on.
+    """
+    database = tmp_path / "excluded.db"
+    run_id = _saved_run(database)
+
+    with storage.connect(database) as connection:
+        report = group_run(
+            connection,
+            run_id,
+            method=DISCRIMINATING_METHOD,
+            allowed_factors={"nothing_matches_this"},
+        )
+
+    assert report.grouped_count == report.failure_count
+    assert report.unexplained_count == report.failure_count
+
+
+def test_both_partitions_coexist_over_the_same_findings(tmp_path: Path) -> None:
+    """The full signature describes; the restricted one discriminates.
+
+    Both are stored, and neither disturbs the other — that is what
+    `clusters.method` is for.
+    """
+    database = tmp_path / "both.db"
+    run_id = _saved_run(database)
+
+    with storage.connect(database) as connection:
+        full = group_run(connection, run_id)
+        restricted = group_run(
+            connection,
+            run_id,
+            method=DISCRIMINATING_METHOD,
+            allowed_factors={"blur"},
+        )
+
+        assert storage.load_clusters(connection, run_id, FACTOR_SIGNATURE_METHOD)
+        assert storage.load_clusters(connection, run_id, DISCRIMINATING_METHOD)
+        # Every failure is accounted for under each method independently.
+        assert full.grouped_count == full.failure_count
+        assert restricted.grouped_count == restricted.failure_count
+
+
+def test_restricting_factors_cannot_increase_the_group_count(
+    tmp_path: Path,
+) -> None:
+    """Fewer factors can only merge groups, never split them further."""
+    database = tmp_path / "monotonic.db"
+    run_id = _saved_run(database)
+
+    with storage.connect(database) as connection:
+        full = group_run(connection, run_id)
+        restricted = group_run(
+            connection,
+            run_id,
+            method=DISCRIMINATING_METHOD,
+            allowed_factors={"blur"},
+        )
+
+    assert restricted.group_count <= full.group_count
+
+
+def test_the_discriminating_set_is_configured_not_computed() -> None:
+    """Recomputing membership per run is what makes runs incomparable (D-033)."""
+    assert isinstance(config.DISCRIMINATING_FACTORS, frozenset)
+    assert {"small_object", "thin_structure"} == config.DISCRIMINATING_FACTORS

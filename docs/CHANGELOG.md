@@ -740,3 +740,54 @@ in D-032.
 - 264 tests pass; ruff clean.
 - Both new factors measured on two splits, 136 and 258 images.
 
+---
+
+## Milestone 5.7 — Discriminating Failure Groups · 2026-08-13
+
+Grouping on every factor meant grouping on factors that carry no information.
+Failures are now partitioned twice: once to describe, once to act on.
+
+### Added
+
+- `config.DISCRIMINATING_FACTORS` — the factors permitted to form an actionable
+  group, currently `small_object` and `thin_structure`. A configured decision
+  with the evidence in a comment, not a per-run computation. Membership rule:
+  lift > 1 and p < 0.05 on at least two splits.
+- `DISCRIMINATING_METHOD` grouping, stored alongside the full signature under
+  the existing `clusters.method` seam. No schema change.
+- `group_run(allowed_factors=...)` — restricts which factors split failures.
+  Excluded factors are still attributed and stored; they simply do not
+  partition.
+- The CLI writes both partitions and reports the discriminating one.
+
+### Measured
+
+| Grouping | groups (test / val) | median size | singletons | unexplained |
+| --- | --- | --- | --- | --- |
+| every factor | 35 / 43 | 2 / 3 | 11 / 10 | 1% / 2% |
+| **replicated set** | **4 / 4** | 24 / 44 | 0 | 50% / 47% |
+
+The same four groups appear on both splits in close proportions —
+`small_object + thin_structure` at 24.4% and 27.9%, `small_object` at 15.4% and
+14.2%, `thin_structure` at 11.0% and 10.0%.
+
+The composition is diagnostic where the fragmented version was not:
+`small_object + thin_structure` is dominated by false negatives and by
+`door_frame` (26 of 31 misses on test, 24 of 31 `door_frame`), while
+`thin_structure` alone leans toward false positives. Two different problems that
+the previous grouping split across dozens of buckets of median size 2.
+
+### Decided
+
+- **D-033** — failures are grouped twice, once to describe and once to act on.
+  Records the three options measured, why per-run significance was rejected
+  (`crowding` qualified on one split and failed on the other, breaking run
+  comparison), and the cost accepted: half of failures now land in
+  `unexplained` rather than carrying a label built from a factor with lift
+  1.00x.
+
+### Verified
+
+- 269 tests pass; ruff clean.
+- Both partitions written and read back on the 136-image and 258-image runs.
+
