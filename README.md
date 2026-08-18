@@ -10,11 +10,11 @@ additional architectures can be added later without touching analysis code.
 ## Status
 
 The pipeline runs end to end: inference, diagnosis, Grad-CAM explanation, CLIP
-feature extraction, root-cause attribution with base rates, and failure
-grouping, and recommendations — all against a real trained model and a real
-labelled dataset, and all explorable in the dashboard.
+feature extraction, root-cause attribution with base rates, failure grouping,
+recommendations, and mask-level diagnosis — all against a real trained model and
+a real labelled dataset, explorable in the dashboard and served over HTTP.
 
-Schema version 7. The backend is complete through recommendations.
+Schema version 8. The backend is complete.
 
 Mask-level diagnosis is built. On the reference model, `door` and `door_frame`
 have near-identical mean box IoU (0.878, 0.877) and very different mean mask IoU
@@ -145,6 +145,20 @@ in the sidebar when needed. It renders only the tables published in
 image paths are unavailable on the current machine, the finding details remain
 visible and the UI reports the missing image rather than failing.
 
+## Serve the schema over HTTP
+
+For consumers that cannot open the SQLite file — a browser, most obviously:
+
+```bash
+./.venv/bin/uvicorn app.api:app --reload
+```
+
+Interactive documentation at `http://localhost:8000/docs`. The API is strictly
+read-only and adds no analysis: every endpoint is a documented query answered by
+the same readers the CLI uses. Files are addressed by id, never by path. See
+[SCHEMA.md](docs/SCHEMA.md) section 7 and [DECISIONS.md](docs/DECISIONS.md)
+D-037.
+
 ## Configuration
 
 Every path and threshold lives in `config.py` and is overridable by environment
@@ -162,6 +176,8 @@ variable — no code edits needed to point at different data:
 | `MD_LOC_IOU` | Floor below which a pair is not a near miss (`0.10`) |
 | `MD_DEVICE` | Force `cpu`, `mps`, or `cuda` |
 | `MD_LOG_LEVEL` | `DEBUG` to see library internals |
+| `MD_CORS_ORIGINS` | Browser origins the API accepts (default `localhost:3000`) |
+| `MD_API_FILE_ROOTS` | Extra directories the API may read images from |
 
 ## Layout
 
@@ -172,6 +188,7 @@ app/diagnosis.py       Failure classification and reporting, CLI
 app/clustering.py      Failure grouping by root-cause signature, CLI
 app/recommendations.py Suggested actions with evidence status, CLI
 app/mask_diagnosis.py  Outline-level re-measurement of findings, CLI
+app/api.py             Read-only HTTP projection of the schema
 utils/masks.py         Outline overlap by rasterisation
 utils/statistics.py    Lift and Fisher's exact test, for base-rate comparison
 app/similarity.py      Nearest-neighbour retrieval over stored embeddings

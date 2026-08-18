@@ -40,7 +40,6 @@ of five outcomes.
         │
         ├─▶ factor_rates (v6)   per run, not per finding: each factor's rate
         │                       among failures against its rate among correct
-        │                                            │
         │
         └── reproducibility: model SHA,   clusters ──▶ recommendations (v7)
             thresholds, split, image size              one per group, per rule
@@ -843,7 +842,54 @@ SELECT version FROM schema_info;   -- currently 8
 
 ---
 
-## 7. Producing data
+## 7. Reading the schema over HTTP
+
+A read-only API serves every table in this document as JSON, for consumers that
+cannot open the SQLite file — a browser, most obviously.
+
+```bash
+./.venv/bin/uvicorn app.api:app --reload
+# interactive docs at http://localhost:8000/docs
+```
+
+| Endpoint | Returns |
+| --- | --- |
+| `GET /health` | Database presence and schema version |
+| `GET /runs` | Every run, newest first |
+| `GET /runs/{id}` | One run's provenance |
+| `GET /runs/{id}/outcomes` | Finding counts by outcome |
+| `GET /runs/{id}/findings?limit=&offset=` | Paginated findings with a total |
+| `GET /runs/{id}/groups?method=` | Failure groups, discriminating by default |
+| `GET /groups/{id}/members` | The findings in one group |
+| `GET /runs/{id}/root-causes?factor=` | Attributed conditions |
+| `GET /runs/{id}/factor-rates` | Lift and significance per factor |
+| `GET /runs/{id}/recommendations` | Suggested actions, documented order |
+| `GET /runs/{id}/mask-findings?disagreements=` | Outline-level results |
+| `GET /runs/{id}/findings/{id}/neighbours?limit=` | Visually similar failures |
+| `GET /images/{id}` | Source image bytes |
+| `GET /findings/{id}/heatmap?method=` | Grad-CAM overlay bytes |
+
+**It adds no analysis.** Every endpoint is a query from this document, answered
+by the same readers the CLI uses. Rows are returned as documented — the API does
+not reshape them for any particular screen.
+
+**Status codes.** `404` for an unknown run, finding or image, and for a file that
+is no longer on disk. `403` for a stored path outside the directories the service
+may read. `503` when the database itself is absent, carrying the command that
+creates one. An optional table that does not exist yields `[]`, not an error.
+
+**Files are addressed by id only.** No endpoint accepts a filesystem path.
+
+**Operational note.** Start the API with the same `MD_DATASETS_DIR` the runs were
+diagnosed with, or their images resolve outside the allowed roots and return
+`403`. Use `MD_API_FILE_ROOTS` when images live in several places. CORS defaults
+to `localhost:3000` and is set with `MD_CORS_ORIGINS`.
+
+See DECISIONS D-037.
+
+---
+
+## 8. Producing data
 
 ```bash
 python -m app.diagnosis --split test --save     # runs, images, findings
