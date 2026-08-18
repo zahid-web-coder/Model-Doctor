@@ -215,7 +215,7 @@ association. See [DECISIONS.md](DECISIONS.md) D-031.
 | `utils/statistics.py` — lift and Fisher's exact test | Completed |
 | `measure_factor_rates()` over both groups in one pass | Completed |
 | Crowding neighbours fix (49 -> 73 attributions) | Completed |
-| Dashboard base-rate column | Planned — dashboard work |
+| Dashboard base-rate column | Completed |
 
 Depends on: Milestone 3, Week 7.
 
@@ -265,7 +265,7 @@ groups on both splits. See [DECISIONS.md](DECISIONS.md) D-033.
 | `config.DISCRIMINATING_FACTORS`, configured not computed | Completed |
 | Second grouping method under the existing `method` seam | Completed |
 | `group_run(allowed_factors=...)` | Completed |
-| Dashboard defaults to the discriminating partition | Planned — dashboard work |
+| Dashboard defaults to the discriminating partition | Completed |
 
 Depends on: Milestones 5, 5.5, 5.6.
 
@@ -290,7 +290,7 @@ the reference dataset is the honest verdict for `edge_truncation` and `blur`.
 | Four evidence statuses, refusals stored not omitted | Completed |
 | Cross-run replication via `model_sha256` | Completed |
 | Traceability: recommendation → group → findings → factor rates | Completed |
-| Dashboard recommendations view | Planned — dashboard work |
+| Dashboard recommendations view | Completed |
 
 On the reference run: two actionable recommendations, one investigation, and one
 explicit refusal to act on a pattern two runs disagree about. See
@@ -300,7 +300,7 @@ Depends on: Milestones 5, 5.5, 5.7.
 
 ---
 
-## Milestone 7 — Developer dashboard · **In Progress**
+## Milestone 7 — Developer dashboard · **Completed**
 
 Present saved analysis through a developer-facing interface. The first slice
 uses the stable Milestone 3 SQLite contract, so it can be useful before visual
@@ -314,9 +314,10 @@ explanation, clustering, and recommendations publish their own tables.
 | Worst-image ranking and box/polygon overlays | Completed |
 | Graceful missing database and image states | Completed |
 | Grad-CAM / visual explanation views | Completed |
-| Root-cause views | Completed |
-| Failure-group views | Planned — the `clusters` contract is published (v5) |
-| Recommendation views | Planned — depends on the Milestone 6 table |
+| Root-cause views, ranked by lift rather than count | Completed |
+| Failure-group views, with drill-down to members | Completed |
+| Recommendation views, refusals included | Completed |
+| Outline-level comparison views | Completed |
 
 The dashboard remains read-only. It must continue to query only documented
 schema tables, including when later milestone tables are added.
@@ -344,7 +345,7 @@ Scope:
 | `mask_findings` table, schema version 8 | Completed |
 | CLI (`python -m app.mask_diagnosis`) | Completed |
 | Verified on two splits | Completed |
-| Dashboard outline view | Planned — dashboard work |
+| Dashboard outline view | Completed |
 
 Pairs are **not** re-matched on mask IoU: the box pairing is kept and the
 outline measured on it, so "correct by box, not by outline" stays expressible.
