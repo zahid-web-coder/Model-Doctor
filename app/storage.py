@@ -605,6 +605,68 @@ def list_runs(connection: sqlite3.Connection) -> list[RunRecord]:
     return [_row_to_run(row) for row in rows]
 
 
+@dataclass(frozen=True)
+class ImageRow:
+    """One image as attempted, including images that produced nothing.
+
+    Every image the run touched appears here, which is what makes the counts
+    trustworthy: an image processed cleanly with nothing in it has no finding,
+    and an image that never ran has ``error`` set. Deriving image totals from
+    ``findings`` silently loses both cases.
+    """
+
+    id: int
+    run_id: int
+    path: str
+    filename: str
+    width: int | None
+    height: int | None
+    prediction_count: int
+    truth_count: int
+    error: str | None
+
+
+def load_images(connection: sqlite3.Connection, run_id: int) -> list[ImageRow]:
+    """Return every image attempted in a run, in insertion order.
+
+    Includes images that errored and images that produced no findings. Both are
+    dropped by any count derived from ``findings``, and ``error`` exists
+    precisely so "processed and found nothing" stays distinguishable from
+    "never ran".
+
+    Args:
+        connection: An open connection.
+        run_id: Which run to read.
+
+    Returns:
+        Image rows exactly as the schema defines them.
+    """
+    rows = connection.execute(
+        """
+        SELECT id, run_id, path, filename, width, height,
+               prediction_count, truth_count, error
+        FROM images
+        WHERE run_id = ?
+        ORDER BY id
+        """,
+        (run_id,),
+    ).fetchall()
+    return [
+        ImageRow(
+            id=row["id"],
+            run_id=row["run_id"],
+            path=row["path"],
+            filename=row["filename"],
+            width=row["width"],
+            height=row["height"],
+            prediction_count=row["prediction_count"],
+            truth_count=row["truth_count"],
+            error=row["error"],
+        )
+        for row in rows
+    ]
+
+
 def load_findings(
     connection: sqlite3.Connection,
     run_id: int,
