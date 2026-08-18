@@ -118,10 +118,26 @@ every one of both is present exactly once.
 
 **`class_name` is attributed to ground truth when one exists.** For a
 `wrong_class` finding, `class_name` is the class that *should* have been found,
-not the one the model guessed. To show the wrong guess, look it up from the
-prediction side in your own UI copy — the predicted class id is not stored
-separately, by design: per-class statistics should charge a miss to the class
-that was missed.
+not the one the model guessed.
+
+> **The predicted class is not stored anywhere, and cannot be recovered.**
+> This is deliberate — per-class statistics should charge a miss to the class
+> that was missed (D-028). For a `wrong_class` finding, display something like
+> "predicted class not recorded". Do **not** infer it by elimination from the
+> class list: that happens to work while there are exactly two classes and will
+> silently produce wrong labels the moment a third is added.
+
+What each outcome can answer, for a UI showing predicted against actual:
+
+| Outcome | Predicted | Actual |
+| --- | --- | --- |
+| `correct` | `class_name` | `class_name` |
+| `false_positive` | `class_name` — **is** the prediction | nothing was there |
+| `false_negative` | nothing was predicted | `class_name` |
+| `poor_localization` | `class_name` | `class_name`, with `iou` as the story |
+| `wrong_class` | **not recorded** | `class_name` |
+
+Four of the five are fully answerable from `findings` alone.
 
 **`truth_polygon` is populated only for segmentation datasets.** Predicted
 outlines are not stored here — they live in `mask_findings.pred_polygon`, added
