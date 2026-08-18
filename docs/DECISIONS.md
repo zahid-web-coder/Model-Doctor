@@ -1399,3 +1399,83 @@ finding was measured.
 segmentation dataset no longer need to warn that thin-structure failures are
 invisible — they are measured, and the class comparison prints both numbers
 side by side.
+
+---
+
+## D-037 — The API is a read-only projection of the published schema
+
+**Status:** Accepted · API layer
+
+**Decision.** `app/api.py` serves the schema over HTTP and adds nothing. Every
+endpoint is a documented query answered by an existing `app/storage.py` reader.
+Connections are opened read-only. Files are addressed by **id**, never by path,
+and every stored path is verified against configured roots before it is opened.
+Responses are schema rows, not view-models.
+
+**Reasoning.** A browser cannot open a SQLite file, so a Next.js front end needs
+a service where Streamlit needed none. The question was how much that service
+should know.
+
+The answer is nothing. `docs/SCHEMA.md` has survived eight versions without
+breaking a query, and two independent consumers have now been built against it.
+If the API reimplemented those queries, a disagreement between the dashboard and
+the web UI would become possible — and the first symptom would be two different
+numbers on two screens with no way to tell which was right. Seventeen storage
+readers already return exactly what the endpoints serve; they are reused
+verbatim.
+
+**Why `storage.connect()` is unusable here.** It calls `initialise_database()`,
+which creates tables and can bump `schema_info.version`. Correct for a CLI pass
+that may open a fresh database; wrong for a request handler, where concurrent
+workers could race on a schema upgrade and where analysis history is evidence
+that must not change because someone loaded a page. The API opens
+`mode=ro` URI connections instead and passes them to the same readers, which
+issue only `SELECT`s. A reader that ever began writing now fails loudly at this
+boundary rather than silently mutating history.
+
+**Why files are served by id.** A `?path=` parameter would be a straight
+traversal hole. But the *stored* path is not automatically trustworthy either:
+it was written by whichever process ran the diagnosis, into a database file the
+operator selected. It is input. Each path is resolved — following symlinks —
+and checked against `config.API_FILE_ROOTS` before opening.
+
+Three outcomes are kept distinct rather than collapsed:
+
+| Situation | Status |
+| --- | --- |
+| Resolves outside every allowed root | **403** |
+| Allowed, but the file is gone | **404** |
+| Allowed and present | **200** |
+
+Collapsing 403 into 404 would hide a misconfiguration behind a message about a
+missing file. Collapsing either into 500 would report an ordinary state as a
+server fault — a run diagnosed from a temporary directory outlives it, and that
+is normal.
+
+**Why rows rather than view-models.** A response shaped for a screen encodes
+assumptions about a front end that does not exist yet, and both consumers would
+then have to share those assumptions. Rows are what the contract documents;
+composition belongs in the client.
+
+**Rejected.** *Next.js route handlers with `better-sqlite3`* — duplicates every
+query in TypeScript, which is the coupling this decision exists to avoid.
+*Static JSON export per run* — goes stale, and cannot answer
+`/findings/{id}/neighbours`, which is computed. *Write endpoints* — analysis
+history is evidence; running a diagnosis stays a CLI action, for the same reason
+the dashboard is read-only (D-029). *Authentication* — speculative surface on a
+single-user local tool (D-015).
+
+**Trade-off.** The API must be started with the same `MD_DATASETS_DIR` the runs
+were diagnosed with, or their images resolve outside every allowed root and are
+refused with 403. That is a real operational constraint, and it is stated in the
+403 body rather than left to be discovered. `MD_API_FILE_ROOTS` exists for
+datasets that live in several places.
+
+Serving image bytes through the API is slower than a static mount. Accepted: a
+mount would be a second path-validation surface, and one security boundary that
+is definitely correct beats two that are probably correct.
+
+**One capability this unlocks.** `app/similarity.py` has been built and tested
+since Milestone 5 and has never been reachable, because nearest-neighbour search
+is Python and the dashboard reads only SQL. `/findings/{id}/neighbours` is the
+first thing the new front end can do that the old one could not.

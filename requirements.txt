@@ -28,6 +28,11 @@ streamlit>=1.30.0         # Developer dashboard (later milestone)
 plotly>=5.18.0            # Interactive charts in the dashboard
 open_clip_torch>=2.24.0   # CLIP embeddings for failure feature extraction
 
+# --- API layer ---
+fastapi>=0.110.0          # Read-only HTTP projection of the published schema
+uvicorn>=0.27.0           # ASGI server for the API
+httpx>=0.26.0             # Test client for API contract tests
+
 # --- Configuration ---
 pyyaml>=6.0               # Parsing the YOLO data.yaml descriptor
 

@@ -241,6 +241,41 @@ MIN_RECOMMENDATION_GROUP_SIZE: Final[int] = int(os.getenv("MD_MIN_REC_GROUP", "1
 RECOMMENDATION_OUTCOME_SHARE: Final[float] = float(os.getenv("MD_REC_SHARE", "0.60"))
 
 # ---------------------------------------------------------------------------
+# API layer
+# ---------------------------------------------------------------------------
+# Browser origins permitted to call the read-only API. A Next.js development
+# server runs on port 3000 while the API runs on 8000, so without this every
+# request fails CORS. Never widened to "*": the API serves local file contents,
+# and any page in any tab could then read them.
+CORS_ORIGINS: Final[tuple[str, ...]] = tuple(
+    origin.strip()
+    for origin in os.getenv(
+        "MD_CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000"
+    ).split(",")
+    if origin.strip()
+)
+
+# Directories the API may read image and heatmap files from. A stored path is
+# resolved and checked against these before it is opened, so a database
+# containing a path to somewhere else cannot make the API serve it (D-037).
+#
+# The API must be started with the same `MD_DATASETS_DIR` the runs were
+# diagnosed with, or their images will resolve outside every allowed root and
+# be refused. Extra roots can be added here when images live in several places.
+API_FILE_ROOTS: Final[tuple[Path, ...]] = tuple(
+    Path(root).expanduser().resolve()
+    for root in (
+        *(
+            part.strip()
+            for part in os.getenv("MD_API_FILE_ROOTS", "").split(",")
+            if part.strip()
+        ),
+        str(DATASETS_DIR),
+        str(RESULTS_DIR),
+    )
+)
+
+# ---------------------------------------------------------------------------
 # Device selection
 # ---------------------------------------------------------------------------
 DEVICE_OVERRIDE: Final[str] = os.getenv("MD_DEVICE", "").strip()

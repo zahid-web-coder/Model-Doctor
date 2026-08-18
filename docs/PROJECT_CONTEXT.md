@@ -44,6 +44,7 @@ architectural concern but is **not implemented**.
 | Discriminating failure groups (two partitions) | **Completed** — no schema change |
 | Recommendations with evidence status | **Completed** — schema version 7 |
 | Mask-level diagnosis | **Completed** — schema version 8 |
+| Read-only HTTP API | **Completed** — no schema change; D-037 |
 | Data-calibrated size and shape factors | **Completed** — replicated on two splits |
 | Similar-failure retrieval (nearest neighbour) | **Completed** — reads existing embeddings |
 | Developer dashboard | **In Progress** — saved-run explorer, charts, filters, image overlays, heatmaps, root causes |
