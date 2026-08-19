@@ -30,14 +30,21 @@ SELECT path FROM images LIMIT 1;
 
 ```bash
 docker run --rm -p 8000:8000 \
-  -v /host/path/to/db:/data/db:ro \
-  -v /host/path/to/images:/data/images:ro \
-  -v /host/path/to/results:/data/results:ro \
+  --mount type=bind,source=/host/path/to/db,target=/data/db,readonly \
+  --mount type=bind,source=/host/path/to/images,target=/data/images,readonly \
+  --mount type=bind,source=/host/path/to/results,target=/data/results,readonly \
   -e MD_CORS_ORIGINS=https://your-frontend.example \
   model-doctor-api
 ```
 
-Mounts are read-only (`:ro`) because the service never writes.
+Mounts are read-only because the service never writes.
+
+**Use `--mount`, not `-v`.** `-v` splits its argument on colons positionally,
+and it mangles a source and target that are the same absolute path — during
+verification `-v "$DS:$DS:ro"` silently produced a target of `…_1280o`, with the
+trailing `o` stolen from `ro`, and dropped the read-only flag. It reported no
+error; the directory simply appeared empty inside the container and every image
+returned 404. `--mount` is explicit and cannot do this.
 
 ## The path-matching problem
 
