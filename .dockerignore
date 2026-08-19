@@ -1,0 +1,16 @@
+# Everything the API image must not contain.
+.venv/
+models/
+datasets/
+db/
+results/
+web/
+tests/
+docs/
+.git/
+.github/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+*.pdf

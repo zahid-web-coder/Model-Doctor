@@ -1479,3 +1479,61 @@ is definitely correct beats two that are probably correct.
 since Milestone 5 and has never been reachable, because nearest-neighbour search
 is Python and the dashboard reads only SQL. `/findings/{id}/neighbours` is the
 first thing the new front end can do that the old one could not.
+
+---
+
+## D-038 — The compute device is resolved on first access, not at import
+
+**Status:** Accepted · API deployment readiness
+
+**Decision.** `config.DEVICE` is computed the first time it is read and cached,
+via a module-level `__getattr__` (PEP 562), rather than assigned at import.
+Every caller reads `config.DEVICE` exactly as before.
+
+**Reasoning.** `resolve_device()` imports torch to probe for CUDA and MPS. It
+was called at import time, and **every module in the project imports
+`config`** — so any process that merely wanted a path loaded the entire ML
+stack.
+
+The read-only API is precisely such a process. It touches no model, runs no
+inference, and reads SQLite. Yet `import app.api` loaded torch before serving a
+request. Measured on this machine:
+
+| | Installed |
+| --- | --- |
+| torch | 498 MB |
+| cv2, scipy, pandas, scikit-learn, numpy, matplotlib, ultralytics | ~395 MB |
+| What the API genuinely needs | **~46 MB** |
+
+A deployable container went from roughly 100 MB to 2.5 GB for a device string
+that is never read on that path.
+
+**This completes an intent already stated rather than changing one.** The
+docstring on `resolve_device()` says it imports torch lazily *"so that config
+stays importable in an environment where the ML stack is not installed"*. The
+eager assignment defeated that whenever the stack **was** installed. Only three
+call sites read `DEVICE` — `features.py`, `inference.py` and the resources
+health check — all of them ML paths that load torch regardless.
+
+**Rejected.** *Turning `DEVICE` into a function* — changes three call sites and
+every future one, for no benefit over deferring the value. *Shipping torch in
+the API image* — a 25× size penalty to avoid a six-line change. *Duplicating a
+cut-down config for the API* — two sources of truth for the same settings, and
+they would drift.
+
+**Trade-off.** `DEVICE` can no longer be annotated `Final`, since it is not a
+module-level assignment. It is still resolved once and cached, so it is
+constant for the life of the process exactly as before; a `TYPE_CHECKING` block
+declares it for type checkers. This is a narrow deviation from D-002's
+"configuration read at import time", and it applies to this one value — the
+only one whose computation costs anything.
+
+Deferring also means a torch import failure now surfaces at first device read
+rather than at startup. `resolve_device()` already catches `ImportError` and
+returns `"cpu"`, so the failure mode is unchanged.
+
+**Guarded by test.** `test_importing_the_api_does_not_load_torch` spawns a
+fresh interpreter and asserts neither torch nor ultralytics is loaded after
+`import app.api`. It runs in a subprocess deliberately: the test suite has
+already imported torch through other modules, so checking `sys.modules` in
+process would prove nothing.
