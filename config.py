@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -315,7 +315,44 @@ def resolve_device() -> str:
     return "cpu"
 
 
-DEVICE: Final[str] = resolve_device()
+# Resolved on first access rather than at import. `resolve_device()` imports
+# torch, and every module in this project imports `config` — so an eager call
+# here pulled ~500 MB of ML stack into any process that merely wanted a path.
+# The read-only API is exactly that process: it never touches a model, but
+# `import app.api` loaded torch before serving a request, taking a deployable
+# container from roughly 100 MB to 2.5 GB.
+#
+# `config.DEVICE` still reads identically for every caller. Only the moment of
+# computation moved, which is what the docstring above already intended when it
+# said config must stay importable without the ML stack (D-038).
+_DEVICE: str | None = None
+
+if TYPE_CHECKING:  # pragma: no cover - for type checkers only
+    DEVICE: str
+
+
+def __getattr__(name: str) -> str:
+    """Compute module attributes that are deliberately deferred to first use.
+
+    ``DEVICE`` is the only one. It cannot be annotated ``Final`` because it is
+    not a module-level assignment; the value is nevertheless resolved once and
+    cached, so it is constant for the life of the process exactly as before.
+
+    Args:
+        name: Attribute being accessed.
+
+    Returns:
+        The resolved device string.
+
+    Raises:
+        AttributeError: For any other name, matching normal module behaviour.
+    """
+    if name == "DEVICE":
+        global _DEVICE
+        if _DEVICE is None:
+            _DEVICE = resolve_device()
+        return _DEVICE
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 # ---------------------------------------------------------------------------
 # Logging

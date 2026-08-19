@@ -1,0 +1,19 @@
+# Model Doctor — API-only dependencies
+#
+# The read-only API touches no model. It reads SQLite and serves file bytes,
+# so it needs neither torch, ultralytics, opencv, numpy nor scikit-learn —
+# together roughly 800 MB installed.
+#
+# That only holds because `config.DEVICE` is resolved on first access rather
+# than at import (D-038). An eager call there imports torch, and every module
+# imports config, so the API would drag in the whole ML stack for a device
+# string it never reads. A test asserts this stays true:
+#   tests/test_api.py::test_importing_the_api_does_not_load_torch
+#
+# Install for a deployment:
+#   pip install -r requirements-api.txt
+#
+# For development, or to run any analysis pass, use requirements.txt instead.
+
+fastapi>=0.110.0          # The read-only HTTP projection of the schema
+uvicorn[standard]>=0.27.0 # ASGI server

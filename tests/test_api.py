@@ -582,3 +582,59 @@ def test_images_work_without_any_optional_table(minimal_client: TestClient) -> N
 
     assert response.status_code == 200
     assert len(response.json()) == 1
+
+
+# ---------------------------------------------------------------------------
+# Deployability — the API must not drag in the ML stack
+# ---------------------------------------------------------------------------
+def test_importing_the_api_does_not_load_torch() -> None:
+    """The API never touches a model, and must not pay for one to be deployed.
+
+    `config.DEVICE` was resolved at import, and `resolve_device()` imports
+    torch. Every module imports `config`, so `import app.api` pulled in roughly
+    500 MB of ML stack before serving a request — the difference between a
+    100 MB container and a 2.5 GB one (D-038).
+
+    Run in a fresh interpreter: this test process has already imported torch
+    through the other suites, so checking `sys.modules` here would prove
+    nothing.
+    """
+    import subprocess
+    import sys
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys; import app.api; "
+            "print('torch' in sys.modules or 'ultralytics' in sys.modules)",
+        ],
+        capture_output=True,
+        text=True,
+        cwd=Path(__file__).resolve().parent.parent,
+        check=True,
+    )
+
+    assert result.stdout.strip() == "False", (
+        "importing app.api loaded the ML stack; a deployed API would need it"
+    )
+
+
+def test_device_is_still_readable_and_cached() -> None:
+    """Deferring the computation must not change what callers see."""
+    import config as config_module
+
+    first = config_module.DEVICE
+    second = config_module.DEVICE
+
+    assert isinstance(first, str)
+    assert first
+    assert first is second, "resolved once, then cached"
+
+
+def test_an_unknown_config_attribute_still_raises() -> None:
+    """The lazy hook must not swallow genuine typos."""
+    import config as config_module
+
+    with pytest.raises(AttributeError, match="no attribute"):
+        _ = config_module.NOT_A_REAL_SETTING
