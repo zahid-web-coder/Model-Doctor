@@ -26,7 +26,7 @@ export function Sidebar() {
   const { runId, run } = useRun();
 
   const items = [
-    { icon: LayoutGrid,  label: "Overview",    href: "/" },
+    { icon: LayoutGrid,  label: "Overview",    href: "/dashboard" },
     { icon: Activity,    label: "Root Causes", href: `/runs/${runId}/root-causes` },
     { icon: GitMerge,    label: "Clusters",    href: `/runs/${runId}/clusters` },
     { icon: AlertCircle, label: "Failures",    href: `/runs/${runId}/failures` },
@@ -39,7 +39,6 @@ export function Sidebar() {
   // "Runs" owns only the index and a bare /runs/:id, never the tab pages —
   // those belong to their own nav items.
   const isActive = (href: string) => {
-    if (href === "/") return pathname === "/";
     if (href === "/runs") return pathname === "/runs" || /^\/runs\/[^/]+$/.test(pathname);
     return pathname === href;
   };
