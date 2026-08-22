@@ -1,14 +1,19 @@
 "use client";
 
+import { useEffect, useState } from "react";
+
 import {
   LayoutGrid, Activity, GitMerge, AlertCircle, Clock, Target,
-  FileText, Settings,
+  FileText, Settings, PanelLeftClose, PanelLeftOpen,
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useRun } from "@/lib/run-context";
 import { modelName, datasetName, modelFingerprint } from "@/lib/derive";
 import { num } from "@/lib/format";
+import { Logo, Wordmark } from "@/components/shared/Logo";
+
+const STORAGE_KEY = "md.sidebar.collapsed";
 
 /**
  * Primary navigation, plus the current-run card.
@@ -20,13 +25,32 @@ import { num } from "@/lib/format";
  * every screen alongside the real one. Both are fixed below: hrefs are built
  * from the selected run, and matching is exact except where a section
  * genuinely owns a subtree.
+ *
+ * **Collapsible to a 68px rail**, remembered across navigations. The mark
+ * stays at both widths; the labels and the run cards are what give way.
  */
 export function Sidebar() {
   const pathname = usePathname();
   const { runId, run } = useRun();
 
+  // Starts expanded and corrects on mount rather than reading storage during
+  // render: the server has no localStorage, so seeding from it directly would
+  // render one width on the server and another on the client.
+  const [collapsed, setCollapsed] = useState(false);
+  useEffect(() => {
+    setCollapsed(window.localStorage.getItem(STORAGE_KEY) === "1");
+  }, []);
+
+  const toggle = () => {
+    setCollapsed((was) => {
+      const next = !was;
+      window.localStorage.setItem(STORAGE_KEY, next ? "1" : "0");
+      return next;
+    });
+  };
+
   const items = [
-    { icon: LayoutGrid,  label: "Overview",    href: "/" },
+    { icon: LayoutGrid,  label: "Overview",    href: "/dashboard" },
     { icon: Activity,    label: "Root Causes", href: `/runs/${runId}/root-causes` },
     { icon: GitMerge,    label: "Clusters",    href: `/runs/${runId}/clusters` },
     { icon: AlertCircle, label: "Failures",    href: `/runs/${runId}/failures` },
@@ -39,26 +63,30 @@ export function Sidebar() {
   // "Runs" owns only the index and a bare /runs/:id, never the tab pages —
   // those belong to their own nav items.
   const isActive = (href: string) => {
-    if (href === "/") return pathname === "/";
     if (href === "/runs") return pathname === "/runs" || /^\/runs\/[^/]+$/.test(pathname);
     return pathname === href;
   };
 
   return (
-    <div className="w-[240px] h-full flex flex-col justify-between shrink-0">
+    <div
+      className={`${collapsed ? "w-[68px]" : "w-[240px]"} h-full flex flex-col justify-between shrink-0 transition-[width] duration-200`}
+    >
       <div className="flex flex-col gap-8">
-        <div className="flex items-center gap-3 px-2">
-          <div className="w-10 h-10 bg-gradient-to-br from-[#D4CFC4] to-[#AFAAA0] rounded-sm flex items-center justify-center shadow-sm">
-            <div className="w-5 h-5 border-[2px] border-white/80" />
-          </div>
-          <div>
-            <h2 className="text-[15px] font-bold tracking-wide text-ink/90 leading-tight">
-              MODEL<br />DOCTOR
-            </h2>
-            <p className="text-[9px] font-semibold tracking-wider text-slate uppercase mt-[2px]">
-              AI Model Diagnostics
-            </p>
-          </div>
+        {/* The mark stays at every width — it is the one thing that should not
+            collapse, because a rail with no identity on it reads as chrome
+            belonging to the browser rather than to the product. */}
+        <div className={`flex items-center ${collapsed ? "flex-col gap-3" : "justify-between"} px-2`}>
+          {collapsed ? <Logo size={34} /> : <Wordmark size={38} />}
+          <button
+            type="button"
+            onClick={toggle}
+            aria-expanded={!collapsed}
+            aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            className="grid place-items-center w-7 h-7 rounded-md text-slate hover:text-ink hover:bg-black/5 transition-colors shrink-0"
+          >
+            {collapsed ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}
+          </button>
         </div>
 
         <nav className="flex flex-col gap-1">
@@ -69,14 +97,18 @@ export function Sidebar() {
                 href={href}
                 key={label}
                 aria-current={active ? "page" : undefined}
-                className={`flex items-center gap-3 px-4 py-3 text-[14px] font-medium rounded-lg transition-colors ${
+                // The label is the accessible name at full width; collapsed,
+                // the icon alone is not, so `title` carries it for pointers and
+                // the visually-hidden span carries it for screen readers.
+                title={collapsed ? label : undefined}
+                className={`flex items-center gap-3 ${collapsed ? "justify-center px-0" : "px-4"} py-3 text-[14px] font-medium rounded-lg transition-colors ${
                   active
-                    ? "bg-gradient-to-r from-[#EBE6D8] to-transparent text-ink border-l-[3px] border-brass"
+                    ? `bg-gradient-to-r from-[#EBE6D8] to-transparent text-ink ${collapsed ? "" : "border-l-[3px] border-brass"}`
                     : "text-slate hover:bg-black/5"
                 }`}
               >
                 <Icon size={18} className={active ? "text-ink" : "text-slate"} strokeWidth={2} />
-                <span>{label}</span>
+                <span className={collapsed ? "sr-only" : undefined}>{label}</span>
               </Link>
             );
           })}
@@ -85,7 +117,22 @@ export function Sidebar() {
 
       {/* Current run. Reads the selected run rather than a hardcoded one, and
           links back to that run's page. No LIVE badge and no Model Health:
-          nothing streams, and there is no such metric in the schema. */}
+          nothing streams, and there is no such metric in the schema.
+
+          Collapsed, this becomes a single badge. Squeezing the two cards into
+          a 68px rail would leave every value truncated, and a truncated
+          fingerprint is worse than no fingerprint — the run number is the part
+          that still means something at this width. */}
+      {collapsed ? (
+        <Link
+          href={`/runs/${runId}/failures`}
+          title={`Run #${runId} — ${run?.split ?? "n/a"}`}
+          className="grid place-items-center mx-auto w-11 h-11 rounded-xl bg-[#EBE6D8]/50 border border-border/40 hover:border-brass/60 transition-colors"
+        >
+          <span className="text-[9px] font-medium text-slate leading-none">Run</span>
+          <span className="text-ink font-semibold text-[13px] leading-none mt-0.5">#{runId}</span>
+        </Link>
+      ) : (
       <div className="flex flex-col gap-4">
         <Link
           href={`/runs/${runId}/failures`}
@@ -117,6 +164,7 @@ export function Sidebar() {
           <Config label="Image size" value={run ? num(run.image_size) : "n/a"} />
         </div>
       </div>
+      )}
     </div>
   );
 }
