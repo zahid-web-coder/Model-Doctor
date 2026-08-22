@@ -42,10 +42,23 @@ const PROGRESS = [
   [1.00, 0.905],
 ] as const;
 
-/** Idle glow, then full scan, then handed off downstream. */
+/**
+ * Pilot glow, then the scanner activates, then it hands off downstream.
+ *
+ * The hero is deliberately near zero. The heatmap's opacity is derived from
+ * the beam (§3), so any beam in the hero puts a heatmap on whichever plate
+ * happens to be under the aperture — and since the line is running, one always
+ * eventually is. At 0.22 that read as a result appearing at random before
+ * anything had been inspected.
+ *
+ * A pilot glow of 0.05 keeps the lens alive without the overlay reaching a
+ * visible alpha, and the scanner coming up during INSPECTION is the beat the
+ * sequence was supposed to have anyway.
+ */
 const BEAM = [
-  [0.00, 0.22],
-  [0.22, 0.35],
+  [0.00, 0.05],
+  [0.20, 0.06],
+  [0.32, 0.62],
   [0.40, 1.00],
   [0.60, 1.00],
   [0.72, 0.30],
