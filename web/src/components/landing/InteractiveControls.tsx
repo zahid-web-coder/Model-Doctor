@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef } from "react";
 import { useHero } from "@/lib/hero/store";
+import { nudgeArm, resetArm } from "@/lib/hero/armControl";
 
 /**
  * The controls that turn the story into something you can operate.
@@ -20,14 +21,8 @@ import { useHero } from "@/lib/hero/store";
  * underneath, so leaving orbit mode drops you somewhere you never scrolled to.
  */
 
-const YAW_STEP = 0.05;
-const YAW_LIMIT = 1;
-const TILT_STEP = 0.022;
-const TILT_LIMIT = 0.4;
 const REPEAT_MS = 40;
 const HOLD_DELAY_MS = 220;
-
-const clamp = (v: number, limit: number) => Math.max(-limit, Math.min(limit, v));
 
 /**
  * A button that fires once on press and then repeats while held.
@@ -100,10 +95,11 @@ export function InteractiveControls() {
     return () => window.removeEventListener("keydown", onKey);
   }, [freeOrbit]);
 
-  const nudgeYaw = (direction: number) => () =>
-    useHero.setState((s) => ({ armYaw: clamp(s.armYaw + direction * YAW_STEP, YAW_LIMIT) }));
-  const nudgeTilt = (direction: number) => () =>
-    useHero.setState((s) => ({ headTilt: clamp(s.headTilt + direction * TILT_STEP, TILT_LIMIT) }));
+  // Arguments are screen directions: +1 is right, and +1 is down. The
+  // conversion to arm motion lives in one place so the arrows on these buttons
+  // and a drag on the machine can never disagree about which way is which.
+  const swing = (screenDirection: number) => () => nudgeArm("yaw", screenDirection);
+  const tilt = (screenDirection: number) => () => nudgeArm("tilt", screenDirection);
 
   if (!freeOrbit) {
     return (
@@ -124,26 +120,35 @@ export function InteractiveControls() {
           Operate the arm
         </p>
         {/* The drag is the control; the buttons below are the fallback. Saying
-            so is the whole affordance, since the grab volume is invisible. */}
-        <p className="text-[11px] leading-relaxed text-white/60 mb-3">
-          Drag the machine to swing and tilt it. Drag anywhere else to orbit.
-        </p>
+            which target does which is the whole affordance, because the grab
+            volume is invisible and the two gestures are the same gesture on
+            different pixels. */}
+        <ul className="text-[11px] leading-relaxed text-white/60 mb-3 space-y-1">
+          <li>
+            <span className="text-white/85">Drag the Model&nbsp;Doctor</span>
+            {" "}to swing and tilt it
+          </li>
+          <li>
+            <span className="text-white/85">Drag anywhere else</span>
+            {" "}to rotate 360°
+          </li>
+        </ul>
 
         <div className="flex items-center gap-2 mb-2">
           <span className="text-[11px] text-white/50 w-9">Swing</span>
-          <HoldButton onStep={nudgeYaw(-1)} label="Swing arm left">←</HoldButton>
-          <HoldButton onStep={nudgeYaw(1)} label="Swing arm right">→</HoldButton>
+          <HoldButton onStep={swing(-1)} label="Swing the arm left">←</HoldButton>
+          <HoldButton onStep={swing(1)} label="Swing the arm right">→</HoldButton>
         </div>
 
         <div className="flex items-center gap-2 mb-3">
           <span className="text-[11px] text-white/50 w-9">Tilt</span>
-          <HoldButton onStep={nudgeTilt(1)} label="Tilt scanner up">↑</HoldButton>
-          <HoldButton onStep={nudgeTilt(-1)} label="Tilt scanner down">↓</HoldButton>
+          <HoldButton onStep={tilt(-1)} label="Tilt the scanner up">↑</HoldButton>
+          <HoldButton onStep={tilt(1)} label="Tilt the scanner down">↓</HoldButton>
         </div>
 
         <HoldButton
           wide
-          onStep={() => useHero.setState({ armYaw: 0, headTilt: 0, headRotation: 0 })}
+          onStep={resetArm}
           label="Reset the arm to its modelled pose"
         >
           Reset
@@ -180,7 +185,12 @@ export function ScrollGuide({ hidden }: { hidden?: boolean }) {
   return (
     <div
       aria-hidden
-      className={`fixed left-1/2 -translate-x-1/2 bottom-6 z-20 flex flex-col items-center gap-1.5 transition-opacity duration-500 ${
+      // `pointer-events-none` unconditionally. This is decoration, but it is
+      // `fixed` at the bottom centre — directly under the machine — so without
+      // it every drag that starts there is swallowed by an element the visitor
+      // cannot see, and orbiting appears to work everywhere except the one
+      // place people naturally grab. Opacity zero does not stop hit-testing.
+      className={`fixed left-1/2 -translate-x-1/2 bottom-6 z-20 flex flex-col items-center gap-1.5 pointer-events-none transition-opacity duration-500 ${
         hidden ? "opacity-0" : "opacity-100"
       }`}
     >

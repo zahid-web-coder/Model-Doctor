@@ -57,21 +57,28 @@ export type CameraKey = {
 
 export const CAMERA_PATH: CameraKey[] = [
   // HERO — wide, high, the whole line in frame.
-  { at: 0.0, position: [6.4, 3.5, 7.2], target: [-0.2, 1.05, 0.0] },
-  { at: 0.2, position: [4.5, 2.6, 4.9], target: [-0.3, 1.1, 0.0] },
-  // INSPECTION — in to the scanner, the arm dominating the frame.
-  { at: 0.4, position: [2.35, 1.85, 2.55], target: [-0.15, 1.15, 0.05] },
+  //
+  // The hero *holds* its shot. The first version travelled from 10m to 7m
+  // across this beat and then to 3m in the next, so by the time the headline
+  // had finished fading the camera was already deep in a close-up and the two
+  // screens read as unrelated shots rather than one move. Establishing means
+  // staying put long enough for the frame to be read.
+  { at: 0.0, position: [7.0, 3.8, 7.9], target: [-0.2, 1.05, 0.0] },
+  { at: 0.2, position: [6.5, 3.5, 7.3], target: [-0.2, 1.08, 0.0] },
+  // INSPECTION — one continuous push down the line to the scanner. Pulled back
+  // from the old 2.55 so the pod is the subject without being cropped by it.
+  { at: 0.4, position: [3.0, 2.1, 3.35], target: [-0.15, 1.15, 0.05] },
   // DIAGNOSIS — the plate under the aperture, held left of centre.
   //
   // Aimed to the right of the plate rather than straight at it, which is what
   // pushes the subject into the left of the frame and leaves the right clear
   // for the evidence cards. Framed straight on, the copy and the machine fight
   // for the same pixels and neither reads.
-  { at: 0.6, position: [1.15, 1.28, 1.95], target: [0.5, 0.8, 0.05] },
+  { at: 0.6, position: [1.45, 1.35, 2.15], target: [0.5, 0.82, 0.05] },
   // VERIFICATION — downstream, the station straddling the belt.
-  { at: 0.8, position: [3.05, 1.55, 2.35], target: [1.9, 0.95, 0.0] },
+  { at: 0.8, position: [3.4, 1.7, 2.6], target: [1.9, 0.98, 0.0] },
   // TRANSITION — pushing into the station's display.
-  { at: 1.0, position: [2.25, 1.12, 1.05], target: [2.06, 0.99, 0.0] },
+  { at: 1.0, position: [2.4, 1.15, 1.15], target: [2.06, 0.99, 0.0] },
 ];
 
 /** Where the verification station stands on the belt. */

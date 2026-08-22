@@ -101,9 +101,14 @@ export function Landing() {
 
   return (
     <main className="bg-[#6f6757]">
-      {/* Always reachable, never behind the story. */}
-      <header className="fixed top-0 inset-x-0 z-30 flex items-center justify-between px-6 md:px-10 py-5">
-        <span className="flex items-center gap-2.5 text-white">
+      {/* Always reachable, never behind the story.
+
+          The bar spans the full width and is `fixed`, so it is transparent to
+          the pointer and only its two children take clicks. Left solid, it
+          eats every drag that starts in the top strip of the canvas — which is
+          where the machine usually is. */}
+      <header className="fixed top-0 inset-x-0 z-30 flex items-center justify-between px-6 md:px-10 py-5 pointer-events-none">
+        <span className="flex items-center gap-2.5 text-white pointer-events-auto">
           <Logo size={26} title={null} />
           <span className="font-heading text-[15px] tracking-wide">
             Model&nbsp;Doctor
@@ -112,7 +117,7 @@ export function Landing() {
         <Link
           href="/dashboard"
           onClick={(e) => { e.preventDefault(); enter(); }}
-          className="rounded-md bg-white/12 hover:bg-white/20 border border-white/20 backdrop-blur-sm px-4 py-2 text-[12px] font-medium text-white transition-colors"
+          className="pointer-events-auto rounded-md bg-white/12 hover:bg-white/20 border border-white/20 backdrop-blur-sm px-4 py-2 text-[12px] font-medium text-white transition-colors"
         >
           Launch Dashboard →
         </Link>
@@ -158,8 +163,16 @@ export function Landing() {
               content would swallow the drags meant for the controls. */}
           {immersive && (
             <div
+              // `pointer-events-none` here is not enough on its own: each
+              // beat's content sets `pointer-events-auto` to stay clickable
+              // during the story, and an `auto` child overrides a `none`
+              // parent. So orbit mode forces it down the whole subtree —
+              // otherwise invisible copy keeps eating drags across the middle
+              // and right of the screen.
               className={`absolute inset-0 transition-opacity duration-300 ${
-                freeOrbit ? "opacity-0 pointer-events-none" : "opacity-100"
+                freeOrbit
+                  ? "opacity-0 pointer-events-none [&_*]:pointer-events-none"
+                  : "opacity-100"
               }`}
             >
               <Beat name="hero">
