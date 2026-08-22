@@ -1,90 +1,64 @@
+/**
+ * Factor rates, shaped like the `factor_rates` table.
+ *
+ * Every factor carries lift and significance, and the two honest outcomes are
+ * kept deliberately: a factor that is common in failures but equally common in
+ * correct detections (lift ~1.00, not significant), and one with too little
+ * data to compute lift at all. Those are the cases the product exists to catch.
+ */
 export interface RootCauseFactor {
   factor: string;
   rateInFailures: number;
   rateInCorrect: number;
   lift: number | null;
   pValue: number | null;
+  failures: number;
+  impact: "High" | "Medium" | "Low" | null;
   reading: string;
   evidence: string[];
 }
 
 export const mockRootCauses: RootCauseFactor[] = [
   {
-    factor: "blur",
-    rateInFailures: 0.33,
-    rateInCorrect: 0.12,
-    lift: 2.71,
-    pValue: 0.0001,
-    reading: "highly over-represented in failures",
+    factor: "small_object", rateInFailures: 0.33, rateInCorrect: 0.12, lift: 2.77, pValue: 0.0001,
+    failures: 412, impact: "High", reading: "highly over-represented in failures",
     evidence: [
-      "Detected via Laplacian variance (σ² < 100) on 412 failed images.",
-      "Most frequent in 'Crack' and 'Deformation' classes.",
-    ]
+      "Object area below the 25th percentile on 412 failed findings.",
+      "Replicated on the val split at 3.45x, p<0.001.",
+    ],
   },
   {
-    factor: "low_light",
-    rateInFailures: 0.28,
-    rateInCorrect: 0.125,
-    lift: 2.24,
-    pValue: 0.0005,
-    reading: "over-represented in failures",
+    factor: "thin_structure", rateInFailures: 0.28, rateInCorrect: 0.125, lift: 2.14, pValue: 0.0005,
+    failures: 351, impact: "High", reading: "over-represented in failures",
     evidence: [
-      "Average brightness < 40 on 351 failed images.",
-    ]
+      "Aspect ratio above the 75th percentile on 351 failed findings.",
+      "Replicated on the val split at 2.32x, p<0.001.",
+    ],
   },
   {
-    factor: "occlusion",
-    rateInFailures: 0.18,
-    rateInCorrect: 0.104,
-    lift: 1.72,
-    pValue: 0.002,
-    reading: "over-represented in failures",
+    factor: "crowding", rateInFailures: 0.18, rateInCorrect: 0.104, lift: 1.72, pValue: 0.041,
+    failures: 232, impact: "Medium", reading: "significant on test, not replicated on val",
     evidence: [
-      "Bounding box IoU with known occluders > 0.5 in 232 cases."
-    ]
+      "Three or more instances within the same neighbourhood.",
+      "Failed to replicate on the val split (p=0.310), so not actionable alone.",
+    ],
   },
   {
-    factor: "small_object",
-    rateInFailures: 0.15,
-    rateInCorrect: 0.105,
-    lift: 1.42,
-    pValue: 0.006,
-    reading: "slightly over-represented",
-    evidence: [
-      "Object area < 2% of image total area."
-    ]
+    factor: "low_contrast", rateInFailures: 0.15, rateInCorrect: 0.105, lift: 1.42, pValue: 0.006,
+    failures: 198, impact: "Medium", reading: "slightly over-represented",
+    evidence: ["Local contrast below threshold on 198 failed findings."],
   },
   {
-    factor: "contrast",
-    rateInFailures: 0.14,
-    rateInCorrect: 0.11,
-    lift: 1.27,
-    pValue: 0.031,
-    reading: "marginally over-represented",
+    factor: "edge_truncation", rateInFailures: 0.71, rateInCorrect: 0.76, lift: 1.00, pValue: 1.0,
+    failures: 892, impact: null, reading: "no significant difference",
     evidence: [
-      "RMS contrast < 20."
-    ]
+      "Present on 71% of failures — and on 76% of correct detections.",
+      "Describes the dataset, not the failures. Not a cause.",
+    ],
   },
   {
-    factor: "background_clutter",
-    rateInFailures: 0.45,
-    rateInCorrect: 0.43,
-    lift: 1.04,
-    pValue: 0.45,
-    reading: "no significant difference",
-    evidence: [
-      "High edge density in background regions."
-    ]
+    factor: "rotation_anomaly", rateInFailures: 0.05, rateInCorrect: 0.05, lift: null, pValue: null,
+    failures: 12, impact: null, reading: "insufficient data to calculate lift",
+    evidence: ["Only 12 findings carry this factor — too few for a stable estimate."],
   },
-  {
-    factor: "rotation_anomaly",
-    rateInFailures: 0.05,
-    rateInCorrect: 0.05,
-    lift: null,
-    pValue: null,
-    reading: "insufficient data to calculate lift",
-    evidence: [
-      "Object rotated > 45 degrees."
-    ]
-  }
 ];

@@ -1,73 +1,88 @@
-import { mockRuns } from "@/lib/mock-data/runs";
-import { PageShell } from "@/components/shared/PageShell";
-import Link from "next/link";
+"use client";
 
+import { useState } from "react";
+import Link from "next/link";
+import { ArrowRight, Plus, GitCompare } from "lucide-react";
+import { PageShell } from "@/components/shared/PageShell";
+import { Pagination } from "@/components/shared/Pagination";
+import { mockRuns } from "@/lib/mock-data/runs";
+import { num } from "@/lib/format";
+
+const PAGE_SIZE = 10;
+
+/**
+ * Run history.
+ *
+ * No accuracy or mAP column: that was excluded, and the run row in the schema
+ * carries configuration and counts, not a headline score. Every run id routes
+ * to that run, and the rest of the app follows the selection.
+ */
 export default function RunsPage() {
+  const [page, setPage] = useState(1);
+  const pageCount = Math.max(1, Math.ceil(mockRuns.length / PAGE_SIZE));
+  const visible = mockRuns.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+
   return (
     <PageShell>
       <div className="flex flex-col h-full overflow-hidden">
-        <div className="mb-6">
-          <h2 className="text-2xl font-heading text-ink">Run History</h2>
-          <p className="text-[13px] text-slate">View and compare past inspection runs.</p>
+        <div className="flex items-start justify-between mb-5 shrink-0">
+          <div>
+            <h3 className="text-[17px] font-heading text-ink">Run History</h3>
+            <p className="text-[13px] text-slate">Track and compare model runs.</p>
+          </div>
+          <div className="flex items-center gap-2">
+            <button type="button" className="flex items-center gap-2 px-3 py-1.5 rounded-md border border-border/60 bg-card text-[13px] text-ink hover:border-brass/50 transition-colors">
+              <GitCompare size={13} className="text-slate" /> Compare
+            </button>
+            <button type="button" className="flex items-center gap-2 px-3 py-1.5 rounded-md bg-brass/90 text-[13px] text-white hover:bg-brass transition-colors">
+              <Plus size={13} /> New Run
+            </button>
+          </div>
         </div>
 
-        <div className="flex-1 bg-card border border-border/40 rounded-xl overflow-hidden shadow-sm flex flex-col">
-          <div className="overflow-x-auto flex-1 custom-scrollbar">
-            <table className="w-full text-[13px] text-left border-collapse whitespace-nowrap">
-              <thead className="sticky top-0 bg-muted/90 backdrop-blur-sm z-10 border-b border-border/40">
-                <tr>
-                  <th className="py-3 px-4 font-medium text-slate">Run ID</th>
-                  <th className="py-3 px-4 font-medium text-slate">Status</th>
-                  <th className="py-3 px-4 font-medium text-slate">Model</th>
-                  <th className="py-3 px-4 font-medium text-slate">Dataset</th>
-                  <th className="py-3 px-4 font-medium text-slate">Date</th>
-                  <th className="py-3 px-4 font-medium text-slate text-right">Images</th>
-                  <th className="py-3 px-4 font-medium text-slate text-right">Failures</th>
-                  <th className="py-3 px-4 font-medium text-slate text-right">Accuracy</th>
+        <div className="flex-1 flex flex-col overflow-hidden bg-card border border-border/40 rounded-lg">
+          <div className="flex-1 overflow-y-auto custom-scrollbar">
+            <table className="w-full text-[13px]">
+              <thead className="sticky top-0 bg-card border-b border-border/40">
+                <tr className="text-left text-slate">
+                  <th className="font-medium px-4 py-3">Run ID</th>
+                  <th className="font-medium px-3 py-3">Status</th>
+                  <th className="font-medium px-3 py-3">Model</th>
+                  <th className="font-medium px-3 py-3">Dataset</th>
+                  <th className="font-medium px-3 py-3">Split</th>
+                  <th className="font-medium px-3 py-3">Date</th>
+                  <th className="font-medium px-3 py-3 text-right">Images</th>
+                  <th className="font-medium px-3 py-3 text-right">Findings</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-border/20">
-                {mockRuns.map((run) => (
-                  <tr 
-                    key={run.id} 
-                    className="hover:bg-muted/30 transition-colors cursor-pointer group"
-                  >
-                    <td className="py-3 px-4">
-                      <Link href={`/runs/${run.id}/root-causes`} className="flex items-center gap-2 group-hover:text-brass transition-colors">
-                        <span className="font-mono font-medium text-ink group-hover:text-brass">#{run.id}</span>
-                        <span className="text-brass opacity-0 group-hover:opacity-100 transition-opacity">→</span>
+              <tbody>
+                {visible.map((run) => (
+                  <tr key={run.id} className="border-b border-border/25 hover:bg-black/[0.02] transition-colors">
+                    <td className="px-4 py-3">
+                      <Link href={`/runs/${run.id}/failures`} className="inline-flex items-center gap-1.5 font-mono text-[12px] text-ink hover:text-brass transition-colors">
+                        #{run.id} <ArrowRight size={12} />
                       </Link>
                     </td>
-                    <td className="py-3 px-4">
-                      {run.status === 'Live' && (
-                        <div className="flex items-center gap-1.5 w-max bg-[#4CAF50]/10 px-2 py-0.5 rounded-full">
-                          <div className="w-1.5 h-1.5 rounded-full bg-[#4CAF50] animate-pulse" />
-                          <span className="text-[#4CAF50] text-[10px] font-bold uppercase">Live</span>
-                        </div>
-                      )}
-                      {run.status === 'Complete' && (
-                        <div className="flex items-center gap-1.5 w-max bg-slate/10 px-2 py-0.5 rounded-full">
-                          <div className="w-1.5 h-1.5 rounded-full bg-slate" />
-                          <span className="text-slate text-[10px] font-bold uppercase">Complete</span>
-                        </div>
-                      )}
-                      {run.status === 'Failed' && (
-                        <div className="flex items-center gap-1.5 w-max bg-[#E47260]/10 px-2 py-0.5 rounded-full">
-                          <div className="w-1.5 h-1.5 rounded-full bg-[#E47260]" />
-                          <span className="text-[#E47260] text-[10px] font-bold uppercase">Failed</span>
-                        </div>
-                      )}
+                    <td className="px-3 py-3">
+                      <span className={`text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full ${
+                        run.status === "Failed" ? "bg-[#B3452F]/10 text-[#B3452F]" : "bg-black/5 text-slate"
+                      }`}>
+                        {run.status}
+                      </span>
                     </td>
-                    <td className="py-3 px-4 text-ink">{run.model}</td>
-                    <td className="py-3 px-4 text-ink">{run.dataset}</td>
-                    <td className="py-3 px-4 text-slate">{run.date}</td>
-                    <td className="py-3 px-4 text-right font-mono text-ink">{run.totalImages.toLocaleString()}</td>
-                    <td className="py-3 px-4 text-right font-mono text-ink">{run.failureCount.toLocaleString()}</td>
-                    <td className="py-3 px-4 text-right font-mono font-medium text-ink">{(run.accuracy * 100).toFixed(1)}%</td>
+                    <td className="px-3 py-3 font-mono text-[12px] text-ink">{run.model}</td>
+                    <td className="px-3 py-3 font-mono text-[12px] text-slate">{run.dataset}</td>
+                    <td className="px-3 py-3 font-mono text-[12px] text-slate">{run.split}</td>
+                    <td className="px-3 py-3 text-slate">{run.date}</td>
+                    <td className="px-3 py-3 text-right font-mono text-[12px] text-ink">{num(run.totalImages)}</td>
+                    <td className="px-3 py-3 text-right font-mono text-[12px] text-ink">{num(run.failureCount)}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
+          </div>
+          <div className="px-4 border-t border-border/40">
+            <Pagination page={page} pageCount={pageCount} total={mockRuns.length} pageSize={PAGE_SIZE} onChange={setPage} />
           </div>
         </div>
       </div>
