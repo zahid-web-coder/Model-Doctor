@@ -1,27 +1,18 @@
-import Link from "next/link";
+import type { Metadata } from "next";
+import { Landing } from "@/components/landing/Landing";
+
+export const metadata: Metadata = {
+  title: "Model Doctor — AI that explains vision model failures",
+  description:
+    "Find why a vision model fails, not just how often. Every claim carries its evidence: lift, significance, and whether it replicates on a second run.",
+};
 
 /**
- * Placeholder. The landing page (phase 2 onward) replaces this file entirely.
+ * The landing page.
  *
- * It exists so the site root is not a 404 between phases, and it is
- * deliberately plain — no 3D, no scroll story, no layout worth keeping. The
- * dashboard lives at `/dashboard` from this commit onward.
+ * A server component with one client child, so nothing about the story — three,
+ * drei, gsap — reaches the server bundle. The dashboard lives at `/dashboard`.
  */
-export default function RootPlaceholder() {
-  return (
-    <main className="min-h-screen grid place-items-center p-8">
-      <div className="text-center">
-        <h1 className="font-heading text-ink text-[28px] mb-2">Model Doctor</h1>
-        <p className="text-[13px] text-slate mb-6">
-          The landing page is not built yet.
-        </p>
-        <Link
-          href="/dashboard"
-          className="inline-flex items-center gap-2 px-4 py-2.5 rounded-md bg-brass/90 text-white text-[13px] font-medium hover:bg-brass transition-colors"
-        >
-          Open the dashboard →
-        </Link>
-      </div>
-    </main>
-  );
+export default function LandingPage() {
+  return <Landing />;
 }

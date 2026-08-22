@@ -9,6 +9,7 @@ import { usePathname } from "next/navigation";
 import { useRun } from "@/lib/run-context";
 import { modelName, datasetName, modelFingerprint } from "@/lib/derive";
 import { num } from "@/lib/format";
+import { Wordmark } from "@/components/shared/Logo";
 
 /**
  * Primary navigation, plus the current-run card.
@@ -46,18 +47,8 @@ export function Sidebar() {
   return (
     <div className="w-[240px] h-full flex flex-col justify-between shrink-0">
       <div className="flex flex-col gap-8">
-        <div className="flex items-center gap-3 px-2">
-          <div className="w-10 h-10 bg-gradient-to-br from-[#D4CFC4] to-[#AFAAA0] rounded-sm flex items-center justify-center shadow-sm">
-            <div className="w-5 h-5 border-[2px] border-white/80" />
-          </div>
-          <div>
-            <h2 className="text-[15px] font-bold tracking-wide text-ink/90 leading-tight">
-              MODEL<br />DOCTOR
-            </h2>
-            <p className="text-[9px] font-semibold tracking-wider text-slate uppercase mt-[2px]">
-              AI Model Diagnostics
-            </p>
-          </div>
+        <div className="px-2">
+          <Wordmark size={38} />
         </div>
 
         <nav className="flex flex-col gap-1">
