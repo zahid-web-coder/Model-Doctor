@@ -7,7 +7,7 @@ import {
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useRun } from "@/lib/run-context";
-import { findRun } from "@/lib/mock-data/runs";
+import { modelName, datasetName, modelFingerprint } from "@/lib/derive";
 import { num } from "@/lib/format";
 
 /**
@@ -23,8 +23,7 @@ import { num } from "@/lib/format";
  */
 export function Sidebar() {
   const pathname = usePathname();
-  const { runId } = useRun();
-  const run = findRun(runId);
+  const { runId, run } = useRun();
 
   const items = [
     { icon: LayoutGrid,  label: "Overview",    href: "/" },
@@ -96,25 +95,37 @@ export function Sidebar() {
           <div className="flex justify-between items-center mb-3">
             <h3 className="text-ink font-semibold text-[15px]">Run #{runId}</h3>
             <span className="text-[10px] font-semibold uppercase tracking-wide text-slate px-2 py-0.5 rounded-full bg-black/5">
-              {run?.status ?? "unknown"}
+              {run?.split ?? "n/a"}
             </span>
           </div>
           <p className="text-slate text-[12px] mb-1">
-            {run?.model ?? "n/a"} • {num(run?.totalImages)} images
+            {modelName(run) ?? "n/a"}
+            <span className="text-slate/60 font-mono text-[10px] ml-1.5">{modelFingerprint(run)}</span>
           </p>
-          <p className="text-slate/70 text-[11px]">
-            {run?.dataset ?? "n/a"} • {run?.split ?? "n/a"} split
-          </p>
+          <p className="text-slate/70 text-[11px]">{datasetName(run) ?? "n/a"}</p>
         </Link>
 
+        {/* Run configuration, straight off the run row. A findings count
+            would need a second request per page for a number the pages
+            already show, so the card carries the thresholds the pass ran at
+            instead — which nothing else on screen surfaces. */}
         <div className="bg-[#EBE6D8]/50 rounded-xl p-4 border border-border/40">
-          <p className="text-slate text-[11px] font-medium mb-1">Findings</p>
-          <h3 className="text-ink font-heading text-4xl mb-1">{num(run?.failureCount)}</h3>
-          <p className="text-slate text-[12px]">
-            of {num(run?.totalImages)} images in this run
-          </p>
+          <p className="text-slate text-[11px] font-medium mb-2">Run configuration</p>
+          <Config label="Confidence" value={run ? run.confidence_threshold.toFixed(2) : "n/a"} />
+          <Config label="Match IoU" value={run ? run.match_iou_threshold.toFixed(2) : "n/a"} />
+          <Config label="Localisation floor" value={run ? run.localization_iou_floor.toFixed(2) : "n/a"} />
+          <Config label="Image size" value={run ? num(run.image_size) : "n/a"} />
         </div>
       </div>
+    </div>
+  );
+}
+
+function Config({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-baseline justify-between gap-2 mb-1 last:mb-0">
+      <span className="text-slate text-[11px]">{label}</span>
+      <span className="text-ink font-mono text-[11px]">{value}</span>
     </div>
   );
 }

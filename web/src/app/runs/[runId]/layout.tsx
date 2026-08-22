@@ -1,18 +1,25 @@
 import { ReactNode } from "react";
 import { PageShell } from "@/components/shared/PageShell";
 import { RunNav } from "@/components/layout/RunNav";
-import { findRun } from "@/lib/mock-data/runs";
+import { api } from "@/lib/api/client";
+import { modelName, datasetName } from "@/lib/derive";
 import { num } from "@/lib/format";
 
 export default async function RunLayout({
-  children,
-  params,
+  children, params,
 }: {
   children: ReactNode;
   params: Promise<{ runId: string }>;
 }) {
   const { runId } = await params;
-  const run = findRun(runId);
+  const [run, outcomes] = await Promise.all([
+    api.run(runId).catch(() => undefined),
+    api.outcomes(runId).catch(() => undefined),
+  ]);
+
+  const findings = outcomes
+    ? Object.values(outcomes).reduce((sum, n) => sum + n, 0)
+    : null;
 
   return (
     <PageShell>
@@ -22,14 +29,11 @@ export default async function RunLayout({
             <div className="flex items-center gap-3 mb-2">
               <h2 className="text-2xl font-heading text-ink">Run #{runId}</h2>
               <span className="text-[10px] font-bold uppercase tracking-wide text-slate px-2.5 py-1 rounded-full bg-black/5">
-                {run?.status ?? "unknown"}
+                {run?.split ?? "n/a"}
               </span>
             </div>
-            {/* Real run metadata, from the runs table shape. No LIVE badge:
-                nothing streams, and the run is a completed analysis pass. */}
-            <p className="text-[13px] text-slate">
-              {run?.model ?? "n/a"} • {run?.dataset ?? "n/a"} • {run?.split ?? "n/a"} split •{" "}
-              {num(run?.totalImages)} images
+            <p className="text-[13px] text-slate font-mono">
+              {modelName(run) ?? "n/a"} • {datasetName(run) ?? "n/a"} • {num(findings)} findings
             </p>
           </div>
           <RunNav runId={runId} />

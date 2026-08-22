@@ -1,26 +1,27 @@
-"use client";
-
-import { useState } from "react";
 import Link from "next/link";
 import { ArrowRight, Plus, GitCompare } from "lucide-react";
 import { PageShell } from "@/components/shared/PageShell";
-import { Pagination } from "@/components/shared/Pagination";
-import { mockRuns } from "@/lib/mock-data/runs";
+import { api } from "@/lib/api/client";
+import { modelName, datasetName } from "@/lib/derive";
 import { num } from "@/lib/format";
 
-const PAGE_SIZE = 10;
-
 /**
- * Run history.
+ * Run history, from `/runs`.
  *
- * No accuracy or mAP column: that was excluded, and the run row in the schema
- * carries configuration and counts, not a headline score. Every run id routes
- * to that run, and the rest of the app follows the selection.
+ * Columns are what the run row actually carries: configuration and identity.
+ * There is no accuracy or mAP column — that was excluded, and the row does not
+ * hold one. Findings per run come from `/runs/{id}/outcomes`, requested
+ * alongside so the table can show a count without inventing one.
  */
-export default function RunsPage() {
-  const [page, setPage] = useState(1);
-  const pageCount = Math.max(1, Math.ceil(mockRuns.length / PAGE_SIZE));
-  const visible = mockRuns.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+export default async function RunsPage() {
+  const runs = await api.runs().catch(() => []);
+  const counts = await Promise.all(
+    runs.map((run) =>
+      api.outcomes(run.id)
+        .then((o) => Object.values(o).reduce((sum, n) => sum + n, 0))
+        .catch(() => null)
+    )
+  );
 
   return (
     <PageShell>
@@ -46,17 +47,17 @@ export default function RunsPage() {
               <thead className="sticky top-0 bg-card border-b border-border/40">
                 <tr className="text-left text-slate">
                   <th className="font-medium px-4 py-3">Run ID</th>
-                  <th className="font-medium px-3 py-3">Status</th>
+                  <th className="font-medium px-3 py-3">Split</th>
                   <th className="font-medium px-3 py-3">Model</th>
                   <th className="font-medium px-3 py-3">Dataset</th>
-                  <th className="font-medium px-3 py-3">Split</th>
-                  <th className="font-medium px-3 py-3">Date</th>
-                  <th className="font-medium px-3 py-3 text-right">Images</th>
+                  <th className="font-medium px-3 py-3">Created</th>
+                  <th className="font-medium px-3 py-3 text-right">Image size</th>
+                  <th className="font-medium px-3 py-3 text-right">Confidence</th>
                   <th className="font-medium px-3 py-3 text-right">Findings</th>
                 </tr>
               </thead>
               <tbody>
-                {visible.map((run) => (
+                {runs.map((run, i) => (
                   <tr key={run.id} className="border-b border-border/25 hover:bg-black/[0.02] transition-colors">
                     <td className="px-4 py-3">
                       <Link href={`/runs/${run.id}/failures`} className="inline-flex items-center gap-1.5 font-mono text-[12px] text-ink hover:text-brass transition-colors">
@@ -64,25 +65,25 @@ export default function RunsPage() {
                       </Link>
                     </td>
                     <td className="px-3 py-3">
-                      <span className={`text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full ${
-                        run.status === "Failed" ? "bg-[#B3452F]/10 text-[#B3452F]" : "bg-black/5 text-slate"
-                      }`}>
-                        {run.status}
+                      <span className="text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-black/5 text-slate">
+                        {run.split}
                       </span>
                     </td>
-                    <td className="px-3 py-3 font-mono text-[12px] text-ink">{run.model}</td>
-                    <td className="px-3 py-3 font-mono text-[12px] text-slate">{run.dataset}</td>
-                    <td className="px-3 py-3 font-mono text-[12px] text-slate">{run.split}</td>
-                    <td className="px-3 py-3 text-slate">{run.date}</td>
-                    <td className="px-3 py-3 text-right font-mono text-[12px] text-ink">{num(run.totalImages)}</td>
-                    <td className="px-3 py-3 text-right font-mono text-[12px] text-ink">{num(run.failureCount)}</td>
+                    <td className="px-3 py-3 font-mono text-[12px] text-ink">{modelName(run)}</td>
+                    <td className="px-3 py-3 font-mono text-[12px] text-slate truncate max-w-[220px]">{datasetName(run)}</td>
+                    <td className="px-3 py-3 text-slate">{new Date(run.created_at).toLocaleDateString()}</td>
+                    <td className="px-3 py-3 text-right font-mono text-[12px] text-slate">{run.image_size}</td>
+                    <td className="px-3 py-3 text-right font-mono text-[12px] text-slate">{run.confidence_threshold.toFixed(2)}</td>
+                    <td className={`px-3 py-3 text-right font-mono text-[12px] ${counts[i] === null ? "text-slate italic" : "text-ink"}`}>
+                      {num(counts[i])}
+                    </td>
                   </tr>
                 ))}
+                {runs.length === 0 && (
+                  <tr><td colSpan={8} className="px-4 py-10 text-center text-slate">No runs in this database.</td></tr>
+                )}
               </tbody>
             </table>
-          </div>
-          <div className="px-4 border-t border-border/40">
-            <Pagination page={page} pageCount={pageCount} total={mockRuns.length} pageSize={PAGE_SIZE} onChange={setPage} />
           </div>
         </div>
       </div>
