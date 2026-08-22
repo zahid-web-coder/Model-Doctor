@@ -1,6 +1,9 @@
 # 3D Hero — Architecture and Preparation
 
-**Status:** Design only. **No implementation until all six screens are done.**
+**Status:** Design settled. The standalone Blender asset (§4) is being built
+now, independently. **The R3F scene is not implemented until all six screens
+are done**, and nothing here touches the Next.js app or the backend before
+then — the asset is modelled and verified on its own, then integrated.
 
 The application is complete and useful without this. If the hero slips or
 disappoints, the six screens still ship — that constraint governs every decision
@@ -30,21 +33,27 @@ here* — expressed physically.
         <CameraRig/>             parallax on pointer, dolly on scroll
         <Ground/>                shadow catcher only, no visible plane
 
-        <Conveyor>               static frame
-          <Rollers/>             rotate with belt speed
-          <BeltSurface/>         texture offset, or repeated segments
+        <Conveyor>               rails and legs — static
+          <Rollers/>             one node each; all spin at conveyorSpeed
+          <ConveyorStart/>       landmark: where objectProgress = 0
+          <ConveyorEnd/>         landmark: where objectProgress = 1
         </Conveyor>
 
-        <Gantry>                 travels along X
-          <Arm/>
-          <ScannerHead>          rotates, tilts
-            <Lens/>
-            <Beam/>              emissive cone; intensity is a prop
-          </ScannerHead>
-        </Gantry>
+        <ArmMount>               pedestal, fixed beside the conveyor
+          <ArmBase>              yaws about Z — armYaw
+            <ArmShoulder>        swings on the shoulder joint
+              <ArmForearm>       swings on the elbow joint
+                <ScannerHead>    rotates, tilts, on the wrist joint
+                  <ScannerLens/>
+                  <Beam/>        emissive cone; intensity is a prop
+                </ScannerHead>
+              </ArmForearm>
+            </ArmShoulder>
+          </ArmBase>
+        </ArmMount>
 
-        <InspectionObject>       travels along the belt
-          <HeatmapOverlay/>      opacity derived, not stored
+        <InspectionObject>       travels along the rollers
+          <HeatmapOverlay/>      runtime only — see below
         </InspectionObject>
       </Canvas>
     </Suspense>
@@ -55,6 +64,25 @@ here* — expressed physically.
 Every moving part is its own component with its own transform origin. That is
 the whole reason for building rather than importing a fused mesh.
 
+**The arm is a kinematic chain, and the nesting is what makes it one.** Yawing
+`ArmBase` carries the whole arm; swinging `ArmShoulder` carries everything
+below it; tilting `ScannerHead` re-aims the beam. Each parameter is set once,
+on one node, and the rest follows — no value is derived twice and nothing has
+to be kept in step by hand.
+
+**Rollers are separate nodes, not one mesh.** Each turns about its own axis;
+joined into a single mesh they would orbit a shared origin like a carousel.
+There is no belt surface — plates ride directly on the rollers, so conveyor
+motion reads from the rollers turning and the plates translating, and the asset
+carries one fewer texture for it.
+
+**`HeatmapOverlay` exists only at runtime.** Its opacity is derived from the
+beam (§3), so it is built in R3F from `InspectionObject`'s own bounds and is
+deliberately absent from the exported asset. A placeholder plane would ship
+geometry the runtime replaces; a placeholder material would put the appearance
+of a measurement into the asset, where nothing can keep it in step with what
+the beam is actually doing.
+
 ---
 
 ## 3. State model — and the rule that keeps it sane
@@ -64,7 +92,7 @@ Seven controllable parameters, one store:
 ```ts
 type HeroState = {
   conveyorSpeed:   number   // 0..1, belt and rollers
-  gantryX:         number   // -1..1, normalised travel along the conveyor
+  armYaw:          number   // -1..1, base rotation sweeping across the work
   headRotation:    number   // radians
   headTilt:        number   // radians
   beamIntensity:   number   // 0..1
@@ -84,7 +112,7 @@ symptom is jitter that appears only sometimes and is miserable to debug.
 | `objectProgress` | `useFrame` | Advances every frame, wraps at 1 |
 | Belt offset, roller spin | `useFrame` | Derived from `conveyorSpeed` |
 | Beam flicker | `useFrame` | A small multiplier on `beamIntensity` |
-| `gantryX` | **GSAP** | Scroll-linked |
+| `armYaw` | **GSAP** | Scroll-linked |
 | `beamIntensity` (base) | **GSAP** | Scroll-linked |
 | `headRotation`, `headTilt` | **GSAP** | Scroll-linked |
 | `cameraPreset` | **GSAP** | Scroll-linked |
@@ -104,7 +132,10 @@ eighth stored parameter would be one more thing to keep in step.
 
 ## 4. Blender or procedural — the decision
 
-**Open question, and the only blocking one: does Jawad know Blender?**
+**Decided 2026-08-22: Blender.** The comparison below was written while the
+question was still open and reads as an argument for procedural. It is kept
+because it is still an accurate account of the trade-off — what changed is
+which side of it matters most.
 
 | | Procedural R3F | Blender |
 | --- | --- | --- |
@@ -115,13 +146,31 @@ eighth stored parameter would be one more thing to keep in step.
 | Ceiling on looks | Good, clearly stylised | Higher, with skill |
 | Time to something on screen | Hours | Days |
 
-**Default: procedural.** A scanner and conveyor are boxes, cylinders and a
-gantry. Restraint plus good lighting reads as premium; geometric detail does
-not, and detail is what procedural gives up.
+**The reason.** Two things decided it. First, **Jawad is already proficient in
+Blender** — the condition this section originally set for choosing it, and the
+one that removes its largest risk, since the pipeline stages in the table are
+only expensive to someone learning them. Second, **Blender → GLB → R3F delivers
+both halves of what the hero needs**: modelled realism a procedural scene
+cannot reach, *and* full browser interactivity — the exported asset is not a
+video, and every part arrives as a named node the runtime drives through the
+parameters in §3.
 
-**Switch to Blender only if** Jawad already works in it *and* the procedural
-version has been tried and judged insufficient. Not before — the four extra
-pipeline stages are the most likely source of a slipped week.
+The approved mockup does not change this and was never a candidate to build
+from. It is a photorealistic still from an image model — a **look reference and
+nothing else** — whose parts do not connect coherently and whose perspective
+does not agree between views (§7). The mockup sets the look, Blender settles the
+geometry, R3F controls the motion.
+
+**The cost is carried, not argued away.** Four extra pipeline stages, pivots
+placed by hand, and a slower edit loop. Pivots are the specific risk: an origin
+at a part's visual centre rather than its joint gives a scanner head that spins
+in place instead of swinging on its mount, and that is expensive to correct
+once the geometry is finished. It is mitigated by setting and verifying every
+origin during blockout, and by exporting a grey-box GLB and confirming names,
+hierarchy and pivots survive the round trip **before** any detail work starts.
+
+**Ownership.** The asset is built standalone and does not enter the Next.js
+project until the six screens are done, so it cannot block them.
 
 **AI 3D generation (Meshy, Tripo) is out for the mechanical parts.** It produces
 a single fused mesh with baked shading and arbitrary origins; splitting and
@@ -191,7 +240,7 @@ Three things that read as premium in real-time 3D, in order:
 
 Without blocking Jawad, and without writing scene code:
 
-- [ ] **Ask Jawad about Blender.** The one blocking unknown.
+- [x] **Blender or procedural — settled.** Blender, for the reasons in §4.
 - [ ] Collect 5–10 photographs of real industrial scanners. Reality is a better
       modelling reference than the mockup.
 - [ ] Agree the beige palette as tokens, shared with the 2D UI.
