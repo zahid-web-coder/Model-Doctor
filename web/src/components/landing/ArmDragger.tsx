@@ -1,9 +1,86 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import { useThree, type ThreeEvent } from "@react-three/fiber";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useFrame, useThree, type ThreeEvent } from "@react-three/fiber";
+import * as THREE from "three";
 import { useHero } from "@/lib/hero/store";
-import { poseFromDrag } from "@/lib/hero/armControl";
+import { poseFromDrag, screen } from "@/lib/hero/armControl";
+
+/**
+ * Keeps the screen-to-arm mapping in step with wherever the camera has been
+ * orbited to.
+ *
+ * Both axes move the scanner along a circle — yaw about the world vertical
+ * through the arm's base, tilt about the head's own transverse axis. Whether
+ * either reads as left/right or up/down *on screen* depends on where you are
+ * standing, and this view lets you stand anywhere. Tilt is worse still: its
+ * axis is carried by the head, so it also moves as the arm swings.
+ *
+ * So both are measured rather than assumed. The tangential direction for a
+ * positive rotation is `ω × r`; dotting it with the camera's right or up
+ * vector gives the sign directly.
+ *
+ * Without this the controls are correct from one angle and inverted from the
+ * opposite one, which is indistinguishable from a plain sign bug until you
+ * notice it depends on where you orbited — which is why picking a constant
+ * failed twice before this.
+ */
+function useScreenSigns() {
+  const { camera, scene } = useThree();
+  const v = useMemo(() => ({
+    right: new THREE.Vector3(),
+    up: new THREE.Vector3(),
+    basePos: new THREE.Vector3(),
+    headPos: new THREE.Vector3(),
+    lensPos: new THREE.Vector3(),
+    axis: new THREE.Vector3(),
+    radius: new THREE.Vector3(),
+    tangent: new THREE.Vector3(),
+    quat: new THREE.Quaternion(),
+    forward: new THREE.Vector3(),
+  }), []);
+
+  useFrame(() => {
+    const base = scene.getObjectByName("ArmBase");
+    const head = scene.getObjectByName("ScannerHead");
+    const lens = scene.getObjectByName("ScannerLens") ?? head;
+    if (!base || !head || !lens) return;
+
+    base.getWorldPosition(v.basePos);
+    head.getWorldPosition(v.headPos);
+    lens.getWorldPosition(v.lensPos);
+
+    // Screen axes in world. Right is flattened to the ground plane — there is
+    // no roll here and the vertical component only adds noise to a left/right
+    // question. Up is the camera's own, so it stays correct when looking down.
+    camera.getWorldDirection(v.forward);
+    v.right.set(-v.forward.z, 0, v.forward.x).normalize();
+    v.up.set(0, 1, 0).applyQuaternion(camera.quaternion).normalize();
+
+    // Yaw: the scanner swings about the world +Y through the arm's base.
+    // Tangent = omega x r.
+    v.radius.subVectors(v.lensPos, v.basePos);
+    v.tangent.set(0, 1, 0).cross(v.radius);
+    const yawDot = v.tangent.dot(v.right);
+    // Ignore the degenerate band where the tangent is nearly edge-on: the sign
+    // is meaningless there and would flap frame to frame, reversing the
+    // controls under the visitor's hand mid-drag.
+    if (Math.abs(yawDot) > 0.05) screen.yawSign = yawDot > 0 ? 1 : -1;
+
+    // Tilt: the head pitches about its own local (0,0,-1) — the asset's
+    // Blender +Y — carried into world space by the head's current rotation.
+    // Its axis therefore moves as the arm swings, which is the second reason
+    // a constant could never be right.
+    v.axis.set(0, 0, -1).applyQuaternion(head.getWorldQuaternion(v.quat)).normalize();
+    v.radius.subVectors(v.lensPos, v.headPos);
+    v.tangent.crossVectors(v.axis, v.radius);
+    const tiltDot = v.tangent.dot(v.up);
+    // `tiltDot > 0` means a positive headTilt lifts the beam on screen. The
+    // stored sign multiplies a screen direction where +1 is *down*, so it is
+    // the negation.
+    if (Math.abs(tiltDot) > 0.01) screen.tiltSign = tiltDot > 0 ? -1 : 1;
+  });
+}
 
 /**
  * Grab the machine and move it.
@@ -31,6 +108,9 @@ export function ArmDragger({ enabled }: { enabled: boolean }) {
   const controls = useThree((s) => s.controls) as { enabled: boolean } | null;
   const drag = useRef<Drag | null>(null);
   const [hovered, setHovered] = useState(false);
+
+  // Hooks run unconditionally; the early return below is after them.
+  useScreenSigns();
 
   // The cursor is the only affordance the volume has — it is invisible, so
   // without this there is nothing to say the machine can be grabbed.

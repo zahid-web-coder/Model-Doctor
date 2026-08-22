@@ -46,8 +46,11 @@ function HoldButton({
     timers.current = {};
   }, []);
 
+  // Only the *repeat* hangs off the pointer. The single step is `onClick`,
+  // which fires for a mouse, a touch, a keyboard and assistive tech alike —
+  // driving the step from `onPointerDown` alone meant any input that arrives
+  // as a plain click did nothing at all, and the button looked dead.
   const start = useCallback(() => {
-    onStep();
     stop();
     timers.current.delay = window.setTimeout(() => {
       timers.current.repeat = window.setInterval(onStep, REPEAT_MS);
@@ -62,11 +65,11 @@ function HoldButton({
     <button
       type="button"
       aria-label={label}
+      onClick={onStep}
       onPointerDown={start}
       onPointerUp={stop}
       onPointerLeave={stop}
       onPointerCancel={stop}
-      onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") onStep(); }}
       className={`h-9 ${wide ? "px-3" : "w-9"} grid place-items-center rounded-md border border-white/20 bg-black/40 text-white/85 text-[13px] backdrop-blur-sm hover:bg-black/60 hover:border-white/35 active:bg-white/20 transition-colors select-none touch-none`}
     >
       {children}

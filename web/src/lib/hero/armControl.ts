@@ -6,27 +6,39 @@ import { useHero } from "./store";
  * **One definition, read by both the drag handler and the nudge buttons.**
  * They were written separately and disagreed: the buttons swung the arm the
  * opposite way to their own arrows, and the drag ran opposite to the buttons.
- * Anything that converts screen direction to arm motion belongs here, because
- * two copies of a sign convention is two chances to get it backwards.
  *
- * ## The sign
+ * ## Why the direction cannot be a constant
  *
- * `armYaw` rotates `ArmBase` about the asset's Z (three's +Y). From the story
- * camera — which sits on +X/+Z looking back at the line — a positive rotation
- * carries the scanner to the *left* of frame. So screen-right is negative yaw,
- * and everything that speaks in screen terms goes through `SCREEN_TO_YAW`.
+ * `armYaw` rotates `ArmBase` about three's +Y, which carries the scanner along
+ * a circle. Whether that circle takes it left or right *on screen* depends
+ * entirely on where the camera is standing — and this view lets the visitor
+ * put the camera anywhere. From the default hero angle a positive yaw reads as
+ * screen-right; orbit round to the far side of the line and the same rotation
+ * reads as screen-left.
  *
- * Tilt is the same story: the head pitches up on positive `headTilt`, so
- * dragging *down* has to reduce it or the machine fights the hand holding it.
+ * So the first two attempts at this were both wrong in the same way: they
+ * picked a constant. The first matched no angle, the second matched the
+ * starting angle and inverted the moment you orbited past 90°. The sign has to
+ * be measured against the camera that is actually there, which is what
+ * `screen.yawSign` is — recomputed every frame by `ArmDragger` from the
+ * scanner's tangential direction and the camera's right vector.
+ *
+ * Tilt has the same problem and gets the same treatment. The head pitches
+ * about its own transverse axis, and which way that reads on screen depends on
+ * both where the camera is and where the arm has been swung to — so it is
+ * measured against the camera too, not assumed.
  */
 
 export const YAW_LIMIT = 1;
 export const TILT_LIMIT = 0.4;
 
-/** Screen-right (+1) to arm yaw. Negative: the arm swings the other way. */
-export const SCREEN_TO_YAW = -1;
-/** Screen-down (+1) to head tilt. Negative: drag down, head goes down. */
-export const SCREEN_TO_TILT = -1;
+/**
+ * Live mapping from screen-right to the sign of `armYaw`, kept up to date by
+ * the scene. Module state rather than React state because it is written every
+ * frame and read inside event handlers — a store would re-render the controls
+ * sixty times a second to change a number nothing renders.
+ */
+export const screen = { yawSign: 1, tiltSign: -1 };
 
 /** One button press. Small enough to aim with, given the buttons repeat. */
 export const YAW_STEP = 0.05;
@@ -43,8 +55,8 @@ export const clampTo = (v: number, limit: number) =>
 export function nudgeArm(axis: "yaw" | "tilt", screenDirection: number) {
   useHero.setState((s) =>
     axis === "yaw"
-      ? { armYaw: clampTo(s.armYaw + screenDirection * SCREEN_TO_YAW * YAW_STEP, YAW_LIMIT) }
-      : { headTilt: clampTo(s.headTilt + screenDirection * SCREEN_TO_TILT * TILT_STEP, TILT_LIMIT) },
+      ? { armYaw: clampTo(s.armYaw + screenDirection * screen.yawSign * YAW_STEP, YAW_LIMIT) }
+      : { headTilt: clampTo(s.headTilt + screenDirection * screen.tiltSign * TILT_STEP, TILT_LIMIT) },
   );
 }
 
@@ -55,8 +67,8 @@ export function poseFromDrag(
   dy: number,
 ) {
   return {
-    armYaw: clampTo(start.yaw + dx * SCREEN_TO_YAW * YAW_PER_PIXEL, YAW_LIMIT),
-    headTilt: clampTo(start.tilt + dy * SCREEN_TO_TILT * TILT_PER_PIXEL, TILT_LIMIT),
+    armYaw: clampTo(start.yaw + dx * screen.yawSign * YAW_PER_PIXEL, YAW_LIMIT),
+    headTilt: clampTo(start.tilt + dy * screen.tiltSign * TILT_PER_PIXEL, TILT_LIMIT),
   };
 }
 
