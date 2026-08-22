@@ -1,39 +1,31 @@
+"use client";
+
+import { HeroCanvas } from "@/components/landing/HeroCanvas";
+import { useRun } from "@/lib/run-context";
+
 /**
  * The hero.
  *
- * **This is the integration point for the 3D scene and nothing else.** The
- * decision between the video and the R3F hero has not been made, so the slot
- * keeps its exact box — aspect, radius, overlays, and the copy that sits on
- * top — and swaps only what fills it. Replacing the video with the R3F canvas
- * should be a change to `HeroMedia` alone, with no other file touched.
+ * The slot keeps its exact box — aspect, radius, overlays, and the copy that
+ * sits on top — and only what fills it changes. The R3F scene replaced the
+ * video here; `HeroCanvas` is behind `next/dynamic` with `ssr: false`, so
+ * three never reaches the server bundle, and it carries its own no-WebGL and
+ * reduced-motion paths.
  *
- * When the 3D hero lands it goes in behind `next/dynamic` with `ssr: false`,
- * so three never reaches the server bundle, and the current video becomes the
- * poster used for the no-WebGL and reduced-motion paths.
+ * Client component because the call to action follows the selected run. It
+ * used to be hardcoded to `/runs/1287/failures` — a run that does not exist,
+ * so the Overview's primary action 500'd and ignored run selection entirely.
  */
-function HeroMedia() {
-  return (
-    <video
-      autoPlay
-      muted
-      loop
-      playsInline
-      aria-hidden
-      className="w-full h-full object-cover opacity-90"
-    >
-      <source src="/scanning-video.mp4" type="video/mp4" />
-    </video>
-  );
-}
-
 export function HeroSlot() {
+  const { runId } = useRun();
+
   return (
     <div className="relative rounded-xl overflow-hidden border border-border/40 bg-panel-dark min-h-[320px]">
       <div className="absolute inset-0">
-        <HeroMedia />
+        <HeroCanvas className="w-full h-full" />
       </div>
 
-      {/* Overlays live outside HeroMedia so the fill can be swapped without
+      {/* Overlays live outside the canvas so the fill can be swapped without
           touching the copy that sits on it. */}
       <div className="absolute inset-0 bg-gradient-to-r from-canvas via-canvas/70 to-transparent pointer-events-none" />
       <div className="absolute inset-0 bg-gradient-to-t from-canvas/60 to-transparent pointer-events-none" />
@@ -49,7 +41,7 @@ export function HeroSlot() {
         </p>
         <div className="flex items-center gap-3">
           <a
-            href="/runs/1287/failures"
+            href={`/runs/${runId}/failures`}
             className="inline-flex items-center gap-2 px-4 py-2.5 rounded-md bg-brass/90 text-white text-[13px] font-medium hover:bg-brass transition-colors"
           >
             Explore Failures →
