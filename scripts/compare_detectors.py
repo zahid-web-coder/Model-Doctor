@@ -161,7 +161,11 @@ def build_detector(spec: ModelSpec, confidence: float) -> Any:
     if spec.family == "rfdetr":
         from app.rfdetr_adapter import RFDetrDetector
 
-        detector = RFDetrDetector(model_path=str(spec.weights), confidence=confidence)
+        detector = RFDetrDetector(
+            model_path=str(spec.weights),
+            confidence=confidence,
+            image_size=spec.native_imgsz,
+        )
     else:
         from app.inference import Detector
 
@@ -316,11 +320,19 @@ def main(argv: list[str] | None = None) -> int:
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    # The 2x2. The first comparison ran each model at its own training
+    # resolution, which confounds architecture with input size: RF-DETR's
+    # recall advantage could have been the architecture, or simply that 312
+    # and 672 are different experiments. Running both models at both
+    # resolutions separates the two, and is the only way to answer whether
+    # RF-DETR is better or merely differently configured.
+    yolo = Path("models/columns/yolo26_nano_seg.pt")
+    rfdetr = Path("models/columns/rfdetr_nano_seg.pt")
     specs = [
-        ModelSpec("yolo26", "YOLO26-Nano Seg", Path("models/columns/yolo26_nano_seg.pt"),
-                  "yolo", 672, "trained at imgsz 672"),
-        ModelSpec("rfdetr", "RF-DETR Seg Nano", Path("models/columns/rfdetr_nano_seg.pt"),
-                  "rfdetr", 312, "native resolution 312"),
+        ModelSpec("yolo26", "YOLO26 @672 (native)", yolo, "yolo", 672, "trained at imgsz 672"),
+        ModelSpec("yolo26_312", "YOLO26 @312", yolo, "yolo", 312, "matched to RF-DETR native"),
+        ModelSpec("rfdetr", "RF-DETR @312 (native)", rfdetr, "rfdetr", 312, "trained at 312"),
+        ModelSpec("rfdetr_672", "RF-DETR @672", rfdetr, "rfdetr", 672, "matched to YOLO native"),
     ]
 
     if args.stage == "predict":

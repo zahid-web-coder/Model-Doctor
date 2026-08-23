@@ -45,6 +45,10 @@ logger = get_logger(__name__)
 # against it zero — worse than admitting there is no usable outline.
 MIN_POLYGON_POINTS = 3
 
+# RF-DETR requires a square resolution divisible by `patch_size * num_windows`.
+# For the Nano segmentation variant that product is 12.
+RESOLUTION_MULTIPLE = 12
+
 
 def _mask_to_polygon(mask: np.ndarray) -> list[list[float]] | None:
     """Trace a boolean raster mask back to a single polygon outline.
@@ -118,10 +122,28 @@ class RFDetrDetector(Detector):
                 "rfdetr is not installed. Run: pip install rfdetr==1.8.3"
             ) from exc
 
-        logger.info("Loading RF-DETR checkpoint %s", weights.name)
+        # Resolution is settable, and the checkpoint's training value is not
+        # binding at inference — RF-DETR interpolates its positional encodings.
+        # It must be a multiple of `patch_size * num_windows`, which is 12 for
+        # this variant; an illegal value fails inside the backbone with a shape
+        # error that says nothing about resolution, so it is checked here.
+        kwargs: dict[str, Any] = {}
+        if self.image_size:
+            if self.image_size % RESOLUTION_MULTIPLE:
+                raise ModelLoadError(
+                    f"RF-DETR resolution must be a multiple of "
+                    f"{RESOLUTION_MULTIPLE}; got {self.image_size}."
+                )
+            kwargs["resolution"] = int(self.image_size)
+
+        logger.info(
+            "Loading RF-DETR checkpoint %s%s",
+            weights.name,
+            f" at resolution {kwargs['resolution']}" if kwargs else " at its native resolution",
+        )
         started = time.perf_counter()
         try:
-            self._model = RFDETRSegNano.from_checkpoint(str(weights))
+            self._model = RFDETRSegNano.from_checkpoint(str(weights), **kwargs)
         except Exception as exc:
             raise ModelLoadError(
                 f"Could not load {weights} as an RF-DETR checkpoint: {exc}"
