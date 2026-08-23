@@ -328,12 +328,21 @@ def main(argv: list[str] | None = None) -> int:
     # RF-DETR is better or merely differently configured.
     yolo = Path("models/columns/yolo26_nano_seg.pt")
     rfdetr = Path("models/columns/rfdetr_nano_seg.pt")
+
+    # YOLO at its native resolution is the reference line. It is not swept:
+    # the question here is where RF-DETR should run, not how to retune YOLO.
     specs = [
-        ModelSpec("yolo26", "YOLO26 @672 (native)", yolo, "yolo", 672, "trained at imgsz 672"),
-        ModelSpec("yolo26_312", "YOLO26 @312", yolo, "yolo", 312, "matched to RF-DETR native"),
-        ModelSpec("rfdetr", "RF-DETR @312 (native)", rfdetr, "rfdetr", 312, "trained at 312"),
-        ModelSpec("rfdetr_672", "RF-DETR @672", rfdetr, "rfdetr", 672, "matched to YOLO native"),
+        ModelSpec("yolo26", "YOLO26 @672 (ref)", yolo, "yolo", 672, "reference"),
     ]
+    # RF-DETR accepts any resolution that is a multiple of 12, interpolating
+    # its positional encodings. 768 is past the range asked for and is included
+    # only to show whether accuracy is still climbing at 672 or has levelled
+    # off — an operating point chosen at the edge of a sweep is a guess.
+    for res in (312, 384, 480, 576, 672, 768):
+        specs.append(ModelSpec(
+            f"rfdetr_{res}", f"RF-DETR @{res}", rfdetr, "rfdetr", res,
+            "native" if res == 312 else "",
+        ))
 
     if args.stage == "predict":
         for spec in specs:

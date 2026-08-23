@@ -202,7 +202,7 @@ def main(argv: list[str] | None = None) -> int:
     truths = truths_for(gt)
 
     report: dict[str, Any] = {}
-    for key in ("yolo26", "yolo26_312", "rfdetr", "rfdetr_672"):
+    for key in ("yolo26", "rfdetr_312", "rfdetr_384", "rfdetr_480", "rfdetr_576", "rfdetr_672", "rfdetr_768"):
         payload = json.loads((root / f"{key}.json").read_text())
         logger.info("diagnosing %s", key)
         report[key] = diagnose_model(payload, truths, Path(args.images))
