@@ -51,10 +51,13 @@ def peak_rss_mb() -> float:
 
 
 def main() -> int:
+    """Benchmark one detector and print a JSON result line."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", choices=["yolo26", "rfdetr"], required=True)
     parser.add_argument("--imgsz", type=int, required=True)
-    parser.add_argument("--images", default="datasets/columns_all_1280_yolo/test/images")
+    parser.add_argument(
+        "--images", default="datasets/columns_all_1280_yolo/test/images"
+    )
     args = parser.parse_args()
 
     # Belt and braces: some stacks probe accelerators at import time.
@@ -86,8 +89,8 @@ def main() -> int:
             model.predict(source=str(path), conf=0.25, imgsz=args.imgsz,
                           device="cpu", verbose=False)
     else:
-        from rfdetr import RFDETRSegNano
         from PIL import Image
+        from rfdetr import RFDETRSegNano
 
         model = RFDETRSegNano.from_checkpoint(
             "models/columns/rfdetr_nano_seg.pt",

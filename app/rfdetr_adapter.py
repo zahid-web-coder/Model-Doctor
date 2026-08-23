@@ -33,7 +33,6 @@ from typing import Any
 
 import numpy as np
 
-import config
 from app.inference import Detection, Detector, ImagePrediction, ValidationMetrics
 from utils.exceptions import ModelLoadError, ResourceNotFoundError
 from utils.logging_utils import get_logger
@@ -90,6 +89,7 @@ class RFDetrDetector(Detector):
     """
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
+        """Accept the base detector's arguments unchanged."""
         super().__init__(*args, **kwargs)
         self._class_names: dict[int, str] = {}
 
@@ -107,6 +107,20 @@ class RFDetrDetector(Detector):
         if self._model is not None:
             return
 
+        # Resolution is validated first, before the filesystem is touched. It is
+        # a caller error that does not depend on the weights existing, and
+        # checking it here means a misconfigured resolution reports itself
+        # rather than hiding behind a missing-file message.
+        #
+        # RF-DETR requires a multiple of `patch_size * num_windows` — 12 for
+        # this variant. An illegal value otherwise fails deep inside the
+        # backbone with a tensor shape mismatch that never mentions resolution.
+        if self.image_size and self.image_size % RESOLUTION_MULTIPLE:
+            raise ModelLoadError(
+                f"RF-DETR resolution must be a multiple of "
+                f"{RESOLUTION_MULTIPLE}; got {self.image_size}."
+            )
+
         weights = Path(self._explicit_model_path) if self._explicit_model_path else None
         if weights is None or not weights.is_file():
             raise ResourceNotFoundError(
@@ -122,24 +136,19 @@ class RFDetrDetector(Detector):
                 "rfdetr is not installed. Run: pip install rfdetr==1.8.3"
             ) from exc
 
-        # Resolution is settable, and the checkpoint's training value is not
-        # binding at inference — RF-DETR interpolates its positional encodings.
-        # It must be a multiple of `patch_size * num_windows`, which is 12 for
-        # this variant; an illegal value fails inside the backbone with a shape
-        # error that says nothing about resolution, so it is checked here.
+        # The checkpoint's training resolution is not binding at inference —
+        # RF-DETR interpolates its positional encodings to whatever is asked
+        # for. Validity was already checked above.
         kwargs: dict[str, Any] = {}
         if self.image_size:
-            if self.image_size % RESOLUTION_MULTIPLE:
-                raise ModelLoadError(
-                    f"RF-DETR resolution must be a multiple of "
-                    f"{RESOLUTION_MULTIPLE}; got {self.image_size}."
-                )
             kwargs["resolution"] = int(self.image_size)
 
         logger.info(
             "Loading RF-DETR checkpoint %s%s",
             weights.name,
-            f" at resolution {kwargs['resolution']}" if kwargs else " at its native resolution",
+            f" at resolution {kwargs['resolution']}"
+            if kwargs
+            else " at its native resolution",
         )
         started = time.perf_counter()
         try:
@@ -184,6 +193,12 @@ class RFDetrDetector(Detector):
         equivalent; passing ``True`` is accepted and ignored rather than
         pretending to write a file that will not exist.
         """
+        # Accepted and ignored: rendering in the base class is Ultralytics'
+        # `result.plot()`, which RF-DETR has no equivalent of. Honouring the
+        # base signature keeps the two detectors substitutable; pretending to
+        # write a file that will not exist would not.
+        del save_annotated
+
         image_path = Path(image_path)
         prediction = ImagePrediction(image_path=image_path)
 
@@ -233,7 +248,9 @@ class RFDetrDetector(Detector):
         masks = getattr(result, "mask", None)
 
         if confidences is None or class_ids is None:
-            logger.warning("RF-DETR returned boxes without confidence or class; skipped")
+            logger.warning(
+                "RF-DETR returned boxes without confidence or class; skipped"
+            )
             return []
 
         detections: list[Detection] = []

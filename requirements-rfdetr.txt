@@ -1,0 +1,22 @@
+# Model Doctor — optional RF-DETR detector
+#
+# RF-DETR is a second, accuracy-focused detector. It is NOT required to run
+# Model Doctor: YOLO is the default and everything works without this file
+# installed.
+#
+# Install alongside the core requirements, into the same environment:
+#   ./.venv/bin/python -m pip install -r requirements-rfdetr.txt
+#
+# Verified to coexist with the core stack (ultralytics 8.4.115, torch 2.13.0)
+# on Python 3.11 — it pulls only new packages and does not move torch,
+# torchvision or numpy. Re-check that if you bump either side.
+#
+# **Read the numbers before deploying this.** On CPU, RF-DETR @480 measured
+# 1.7 FPS in 2.8GB against YOLO26 @672's 20.9 FPS in 390MB on this project's
+# columns test set. It is more accurate there, but it needs a GPU to be
+# interactive, and its memory floor does not fall when you lower the
+# resolution. See config.DETECTOR_FAMILY.
+
+rfdetr==1.8.3             # RF-DETR segmentation models and checkpoint loading
+pycocotools>=2.0.7        # Shared COCO evaluator, so both families are scored
+                          # by the same code rather than each library's own

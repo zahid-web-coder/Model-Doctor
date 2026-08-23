@@ -31,7 +31,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app.diagnosis import Outcome, diagnose_image
+from app.diagnosis import diagnose_image
 from app.root_cause import (
     BlurFactor,
     CrowdingFactor,
@@ -50,7 +50,9 @@ logger = get_logger(__name__)
 OPERATING_CONFIDENCE = 0.25
 
 
-def to_annotations(records: list[dict[str, Any]], with_confidence: bool) -> list[ObjectAnnotation]:
+def to_annotations(
+    records: list[dict[str, Any]], with_confidence: bool
+) -> list[ObjectAnnotation]:
     """Build annotations from stored detection dicts."""
     out: list[ObjectAnnotation] = []
     for det in records:
@@ -112,7 +114,10 @@ def diagnose_model(payload: dict[str, Any], truths: dict[str, list[ObjectAnnotat
     for record in payload["images"]:
         name = record["file_name"]
         truth = truths.get(name, [])
-        preds = [d for d in record["detections"] if d["confidence"] >= OPERATING_CONFIDENCE]
+        preds = [
+            d for d in record["detections"]
+            if d["confidence"] >= OPERATING_CONFIDENCE
+        ]
         diagnosis = diagnose_image(
             image_path=images_dir / name,
             predictions=to_annotations(preds, with_confidence=True),
@@ -192,9 +197,12 @@ def diagnose_model(payload: dict[str, Any], truths: dict[str, list[ObjectAnnotat
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Diagnose every model and write the comparison report."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--results", default="results/comparison")
-    parser.add_argument("--images", default="datasets/columns_all_1280_yolo/test/images")
+    parser.add_argument(
+        "--images", default="datasets/columns_all_1280_yolo/test/images"
+    )
     args = parser.parse_args(argv)
 
     root = Path(args.results)
@@ -202,7 +210,11 @@ def main(argv: list[str] | None = None) -> int:
     truths = truths_for(gt)
 
     report: dict[str, Any] = {}
-    for key in ("yolo26", "rfdetr_312", "rfdetr_384", "rfdetr_480", "rfdetr_576", "rfdetr_672", "rfdetr_768"):
+    keys = (
+        "yolo26", "rfdetr_312", "rfdetr_384", "rfdetr_480",
+        "rfdetr_576", "rfdetr_672", "rfdetr_768",
+    )
+    for key in keys:
         payload = json.loads((root / f"{key}.json").read_text())
         logger.info("diagnosing %s", key)
         report[key] = diagnose_model(payload, truths, Path(args.images))

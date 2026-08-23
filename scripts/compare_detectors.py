@@ -246,7 +246,10 @@ def to_coco_predictions(
     from pycocotools import mask as mask_utils
 
     ids = {image["file_name"]: image["id"] for image in gt["images"]}
-    sizes = {image["file_name"]: (image["height"], image["width"]) for image in gt["images"]}
+    sizes = {
+        image["file_name"]: (image["height"], image["width"])
+        for image in gt["images"]
+    }
 
     results: list[dict[str, Any]] = []
     for record in payload["images"]:
@@ -276,7 +279,9 @@ def to_coco_predictions(
     return results
 
 
-def coco_evaluate(gt: dict[str, Any], predictions: list[dict[str, Any]], kind: str) -> dict[str, float]:
+def coco_evaluate(
+    gt: dict[str, Any], predictions: list[dict[str, Any]], kind: str
+) -> dict[str, float]:
     """Run COCOeval and return the standard summary metrics."""
     import contextlib
     import io
@@ -298,12 +303,15 @@ def coco_evaluate(gt: dict[str, Any], predictions: list[dict[str, Any]], kind: s
         ev.accumulate()
         ev.summarize()
 
-    keys = ["map50_95", "map50", "map75", "map_small", "map_medium", "map_large",
-            "ar1", "ar10", "ar100", "ar_small", "ar_medium", "ar_large"]
+    keys = [
+        "map50_95", "map50", "map75", "map_small", "map_medium", "map_large",
+        "ar1", "ar10", "ar100", "ar_small", "ar_medium", "ar_large",
+    ]
     return {k: float(v) for k, v in zip(keys, ev.stats, strict=False)}
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """Return the command-line parser."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--stage", choices=["predict", "evaluate"], required=True)
     parser.add_argument("--dataset", default="datasets/columns_all_1280_yolo")
@@ -313,6 +321,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Run the requested stage and return an exit code."""
     args = build_parser().parse_args(argv)
     root = Path(args.dataset)
     images_dir = root / args.split / "images"
