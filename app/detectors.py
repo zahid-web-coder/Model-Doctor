@@ -19,6 +19,7 @@ import cost and the failure mode both belong to the family that needs them.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import config
@@ -27,6 +28,46 @@ from utils.exceptions import ModelLoadError
 
 #: Families this project can load. Keys are what ``MD_DETECTOR`` accepts.
 SUPPORTED_FAMILIES: tuple[str, ...] = ("yolo", "rfdetr")
+
+
+def detect_family(weights: Path | str) -> str:
+    """Return which family a checkpoint belongs to, by reading the file.
+
+    **This is why the schema did not need a new column.** A run records the
+    weights it used, and the weights say what they are: an RF-DETR checkpoint
+    carries ``rfdetr_version`` and ``model_name`` keys that an Ultralytics one
+    does not. So the family of any saved run is recoverable from data already
+    stored, and adding a ``detector_family`` column would have duplicated a
+    fact the checkpoint already holds — with the usual consequence that the two
+    can disagree.
+
+    Args:
+        weights: Path to a ``.pt`` checkpoint.
+
+    Returns:
+        ``"rfdetr"`` or ``"yolo"``. Unreadable or unrecognised files are
+        reported as ``"yolo"``, the default family, so a corrupt file fails
+        later with the loader's own message rather than a vague one from here.
+    """
+    path = Path(weights)
+    if not path.is_file():
+        return "yolo"
+    try:
+        import torch
+
+        # `weights_only=True` is enough to read the key names and refuses to
+        # execute pickled code, which matters for a file this function is
+        # deliberately willing to open before anything has validated it.
+        checkpoint = torch.load(path, map_location="cpu", weights_only=True)
+    except Exception:
+        return "yolo"
+
+    if isinstance(checkpoint, dict) and (
+        "rfdetr_version" in checkpoint
+        or str(checkpoint.get("model_name", "")).lower().startswith("rfdetr")
+    ):
+        return "rfdetr"
+    return "yolo"
 
 
 def default_image_size(family: str) -> int:
@@ -91,4 +132,9 @@ def build_detector(
     return Detector(model_path=model_path, image_size=size, **kwargs)
 
 
-__all__ = ["SUPPORTED_FAMILIES", "build_detector", "default_image_size"]
+__all__ = [
+    "SUPPORTED_FAMILIES",
+    "build_detector",
+    "default_image_size",
+    "detect_family",
+]

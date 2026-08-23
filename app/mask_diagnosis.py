@@ -31,6 +31,7 @@ from typing import Any
 
 import config
 from app import storage
+from app.detectors import SUPPORTED_FAMILIES, build_detector, detect_family
 from app.inference import Detector
 from utils.exceptions import ModelDoctorError
 from utils.geometry import BoxGeometryMixin, box_iou
@@ -183,18 +184,23 @@ def diagnose_masks(
     engine = detector or Detector()
     engine.load()  # idempotent: returns immediately if already loaded
 
-    # Inference size is fixed at import (D-002), so it cannot be varied per
-    # call. Re-running at a different size would produce different boxes and
+    # Re-running at a different size would produce different boxes and
     # different outlines, and the comparison against stored findings would be
     # against predictions the run never made. Say so rather than quietly
     # measuring the wrong thing.
+    #
+    # The comparison is against the engine that is about to run, not against
+    # the global MD_IMGSZ. Those are the same thing only when the caller took
+    # the default YOLO detector; a second detector family has its own
+    # configured size, and checking the global would reject a perfectly
+    # consistent RF-DETR run while advising a fix that mis-sizes YOLO.
     expected = image_size or run.image_size
-    if expected != config.IMAGE_SIZE:
+    if expected != engine.image_size:
         raise MaskDiagnosisError(
             f"Run {run_id} was diagnosed at image size {expected}, but this "
-            f"process is configured for {config.IMAGE_SIZE}. Re-running at a "
-            "different size would not reproduce its predictions. Set "
-            f"MD_IMGSZ={expected} and try again."
+            f"detector is configured for {engine.image_size}. Re-running at a "
+            "different size would not reproduce its predictions. Configure the "
+            f"detector for {expected} and try again."
         )
 
     by_image: dict[str, list[Any]] = {}
@@ -334,6 +340,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--imgsz", type=int, help="Inference size. Defaults to the run's own."
     )
+    parser.add_argument(
+        "--model", help="Weights override. Defaults to the run's own checkpoint."
+    )
+    parser.add_argument(
+        "--detector",
+        choices=SUPPORTED_FAMILIES,
+        help=(
+            "Detector family. Defaults to whatever the run's own checkpoint "
+            "says it is, so this normally needs no flag."
+        ),
+    )
     return parser
 
 
@@ -358,7 +375,30 @@ def main(argv: Sequence[str] | None = None) -> int:
             logger.info("Using newest run %d", run_id)
 
         try:
-            report = diagnose_masks(connection, run_id, image_size=args.imgsz)
+            # Everything about the detector comes from the run itself unless
+            # overridden: the weights, the family and the size.
+            #
+            # This pass re-runs inference and matches the outlines back to
+            # findings that are already stored, so it has to reproduce the
+            # run's own predictions. Taking the weights from the run rather
+            # than from discovery is what makes that true — discovery scans the
+            # models directory and would happily pick a different checkpoint,
+            # producing outlines for predictions this run never made.
+            #
+            # The family is read from the checkpoint rather than assumed, so
+            # the right loader is chosen without a flag and without a new
+            # column in the schema.
+            saved = storage.load_run(connection, run_id)
+            weights = args.model or (saved.model_path if saved else None)
+            family = args.detector or (detect_family(weights) if weights else None)
+            engine = build_detector(
+                family,
+                model_path=str(weights) if weights else None,
+                image_size=args.imgsz or (saved.image_size if saved else None),
+            )
+            report = diagnose_masks(
+                connection, run_id, image_size=args.imgsz, detector=engine
+            )
         except MaskDiagnosisError as exc:
             logger.error("%s", exc)
             return 1

@@ -37,6 +37,7 @@ if __package__ in (None, ""):  # pragma: no cover - import-path bootstrap
 
 import config
 from app import storage
+from app.detectors import detect_family
 from utils.cam import CamAdapter, GradCAM, prepare_image, render_overlay
 from utils.exceptions import ExplainabilityError
 from utils.logging_utils import get_logger
@@ -413,6 +414,25 @@ def main(argv: Sequence[str] | None = None) -> int:
         tuple(int(v) for v in args.layers.split(",")) if args.layers else (16, 19, 22)
     )
     adapter = Yolo26SegAdapter(layer_indices=indices)
+
+    # Grad-CAM is the only explanation method implemented, and the only adapter
+    # for it targets YOLO26's feature pyramid. That does not carry across to
+    # RF-DETR: a DETR has no pyramid feeding a convolutional head, and what
+    # explains its predictions is decoder cross-attention, which is a different
+    # method rather than a different adapter.
+    #
+    # So this refuses rather than running. Pointing Grad-CAM at the wrong
+    # architecture does not error — it produces a map, and the map is
+    # meaningless. A heatmap that looks plausible and explains nothing is worse
+    # than no heatmap, because it will be believed.
+    if args.model and detect_family(args.model) == "rfdetr":
+        logger.error(
+            "Grad-CAM targets YOLO26's feature pyramid and does not transfer to "
+            "RF-DETR. Explaining a DETR means decoder cross-attention, which is "
+            "a different method, not another CamAdapter. Heatmaps are YOLO-only "
+            "for now; every other stage of the pipeline supports both families."
+        )
+        return 1
 
     with storage.connect(Path(args.db) if args.db else None) as connection:
         run_id = args.run

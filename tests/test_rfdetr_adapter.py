@@ -20,7 +20,12 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import config
-from app.detectors import SUPPORTED_FAMILIES, build_detector, default_image_size
+from app.detectors import (
+    SUPPORTED_FAMILIES,
+    build_detector,
+    default_image_size,
+    detect_family,
+)
 from app.inference import Detector
 from app.rfdetr_adapter import RESOLUTION_MULTIPLE, RFDetrDetector, _mask_to_polygon
 from utils.exceptions import ModelLoadError
@@ -269,3 +274,41 @@ def test_rfdetr_default_resolution_is_the_measured_knee() -> None:
 def test_supported_families_are_the_two_documented_ones() -> None:
     """Adding a family should be a deliberate change, visible in the diff."""
     assert set(SUPPORTED_FAMILIES) == {"yolo", "rfdetr"}
+
+
+# ---------------------------------------------------------------------------
+# Family detection — why no schema column was needed
+# ---------------------------------------------------------------------------
+def test_family_is_read_from_the_checkpoint(tmp_path) -> None:
+    """An RF-DETR checkpoint identifies itself; a YOLO one does not.
+
+    This is what let the run pipeline stay on the existing schema: a run
+    already records its weights, and the weights already say what they are, so
+    a `detector_family` column would have duplicated a stored fact — and two
+    copies of a fact can disagree.
+    """
+    torch = pytest.importorskip("torch")
+
+    rf = tmp_path / "rf.pt"
+    torch.save({"rfdetr_version": "1.8.3", "state_dict": {}}, rf)
+    assert detect_family(rf) == "rfdetr"
+
+    yolo = tmp_path / "y.pt"
+    torch.save({"epoch": 1, "state_dict": {}}, yolo)
+    assert detect_family(yolo) == "yolo"
+
+
+def test_family_of_a_missing_file_falls_back_to_the_default() -> None:
+    """A path that is not there defers to the loader's own error, not ours."""
+    assert detect_family("no/such/file.pt") == "yolo"
+
+
+def test_family_of_an_unreadable_file_does_not_raise(tmp_path) -> None:
+    """A corrupt checkpoint must not crash family detection.
+
+    It should fail later, in the loader, with a message about the checkpoint —
+    not here, with one about family detection.
+    """
+    junk = tmp_path / "junk.pt"
+    junk.write_bytes(b"not a checkpoint")
+    assert detect_family(junk) == "yolo"

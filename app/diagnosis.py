@@ -48,6 +48,7 @@ if __package__ in (None, ""):  # pragma: no cover - import-path bootstrap
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import config
+from app.detectors import SUPPORTED_FAMILIES, build_detector
 from app.inference import Detector
 from utils.annotations import ObjectAnnotation
 from utils.dataset import DatasetConfig, load_dataset_config, load_ground_truth
@@ -625,6 +626,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--split", default="test", help="Dataset split to diagnose (default: test)."
     )
     parser.add_argument("--model", help="Path to specific .pt weights.")
+    parser.add_argument(
+        "--detector",
+        choices=SUPPORTED_FAMILIES,
+        help=(
+            "Detector family. Defaults to MD_DETECTOR (currently "
+            f"'{config.DETECTOR_FAMILY}'). Both families produce the same "
+            "findings, so runs from either are directly comparable."
+        ),
+    )
     parser.add_argument("--conf", type=float, help="Confidence threshold override.")
     parser.add_argument("--imgsz", type=int, help="Inference image size override.")
     parser.add_argument(
@@ -685,8 +695,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         logger.error("%s", exc)
         return 1
 
-    detector = Detector(
-        model_path=model_override, confidence=args.conf, image_size=args.imgsz
+    # The only line in the run pipeline that had to change. Everything after
+    # this point — diagnose_split, the outcome taxonomy, the run context, the
+    # findings — already works on any Detector, because it consumes Detection
+    # objects and has never known which library produced them.
+    detector = build_detector(
+        args.detector,
+        model_path=str(model_override) if model_override else None,
+        confidence=args.conf,
+        image_size=args.imgsz,
     )
     try:
         summary = diagnose_split(detector, dataset, args.split, limit=args.limit)
