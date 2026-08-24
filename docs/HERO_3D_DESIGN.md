@@ -1,13 +1,17 @@
 # 3D Hero — Architecture and Preparation
 
-**Status:** Design settled. The standalone Blender asset (§4) is being built
-now, independently. **The R3F scene is not implemented until all six screens
-are done**, and nothing here touches the Next.js app or the backend before
-then — the asset is modelled and verified on its own, then integrated.
+**Status: shipped.** The asset is built and verified (30/30 kinematic
+assertions, 19,568 triangles, 174 KB), and the R3F scene is live in both the
+dashboard Overview hero and the landing page, on `main`.
 
-The application is complete and useful without this. If the hero slips or
-disappoints, the six screens still ship — that constraint governs every decision
-below.
+The sequencing constraint below — *build the asset alone, integrate only after
+the six screens are done* — was honoured and is kept as the record of why. The
+six screens shipped first; the hero followed and could not have delayed them.
+
+Sections written in the future tense describe the plan as it stood. Where the
+implementation diverged, the companion note
+[`LANDING_PAGE_DESIGN.md`](LANDING_PAGE_DESIGN.md) records it — what shipped is
+the authority, not what was intended.
 
 ---
 
@@ -247,6 +251,10 @@ Without blocking Jawad, and without writing scene code:
 - [ ] Decide the scroll narrative: how many beats, and what changes at each.
 - [ ] Build the **poster image** — required by two fallback paths anyway.
 
-**Do not build the scene.** Not because it would break anything — it is an
+**Do not build the scene** *(historical — this held until the six screens
+shipped, and was then lifted)*. Not because it would break anything — it is an
 isolated route — but because a finished hero waiting in a branch creates
 pressure to integrate early, and that is exactly how the screens slip.
+
+It worked: the screens went in first, and the scene followed without ever
+competing with them for attention.
