@@ -137,6 +137,37 @@ IMAGE_SIZE: Final[int] = int(os.getenv("MD_IMGSZ", "640"))
 MAX_DETECTIONS: Final[int] = int(os.getenv("MD_MAX_DET", "300"))
 
 # ---------------------------------------------------------------------------
+# Detector selection
+# ---------------------------------------------------------------------------
+# Which detector family loads the weights. Two are supported, and the default
+# is deliberate rather than arbitrary.
+#
+# **YOLO stays the default because it is the only one that runs anywhere.**
+# Measured on this project's columns test set, CPU, one process each:
+#
+#     YOLO26 @672    47.8 ms   20.9 FPS    390 MB RSS
+#     RF-DETR @480  579.4 ms    1.7 FPS   2833 MB RSS
+#
+# RF-DETR is more accurate on that set — better recall, better masks, and a
+# low-light advantage that survived a resolution control — but it is twelve
+# times slower and holds seven times the memory on CPU, and its memory floor
+# does not fall when resolution does. It is an accuracy option for GPU and
+# batch work, not a drop-in replacement.
+DETECTOR_FAMILY: Final[str] = os.getenv("MD_DETECTOR", "yolo").strip().lower()
+
+# Input resolution for RF-DETR, which accepts any multiple of 12 and
+# interpolates its positional encodings to match.
+#
+# 480 is the efficiency knee measured on the columns set: it captures 68% of
+# the total accuracy available across the 312-768 sweep for 18% of the extra
+# latency. 672 is the accuracy and F1 optimum if throughput does not matter;
+# past that, accuracy creeps up while precision falls.
+#
+# Separate from IMAGE_SIZE because the two models want different values and
+# sharing one would silently mis-size whichever was not being tuned.
+RFDETR_IMAGE_SIZE: Final[int] = int(os.getenv("MD_RFDETR_IMGSZ", "480"))
+
+# ---------------------------------------------------------------------------
 # Feature extraction
 # ---------------------------------------------------------------------------
 # CLIP encoder used to turn failed regions into comparable vectors. ViT-B-32 is
