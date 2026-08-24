@@ -415,25 +415,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     adapter = Yolo26SegAdapter(layer_indices=indices)
 
-    # Grad-CAM is the only explanation method implemented, and the only adapter
-    # for it targets YOLO26's feature pyramid. That does not carry across to
-    # RF-DETR: a DETR has no pyramid feeding a convolutional head, and what
-    # explains its predictions is decoder cross-attention, which is a different
-    # method rather than a different adapter.
-    #
-    # So this refuses rather than running. Pointing Grad-CAM at the wrong
-    # architecture does not error — it produces a map, and the map is
-    # meaningless. A heatmap that looks plausible and explains nothing is worse
-    # than no heatmap, because it will be believed.
-    if args.model and detect_family(args.model) == "rfdetr":
-        logger.error(
-            "Grad-CAM targets YOLO26's feature pyramid and does not transfer to "
-            "RF-DETR. Explaining a DETR means decoder cross-attention, which is "
-            "a different method, not another CamAdapter. Heatmaps are YOLO-only "
-            "for now; every other stage of the pipeline supports both families."
-        )
-        return 1
-
     with storage.connect(Path(args.db) if args.db else None) as connection:
         run_id = args.run
         if run_id is None:
@@ -445,6 +426,34 @@ def main(argv: Sequence[str] | None = None) -> int:
                 return 1
             run_id = runs[0].id
             logger.info("Using newest run %d", run_id)
+
+        # Grad-CAM is the only explanation method implemented, and the only
+        # adapter for it targets YOLO26's feature pyramid. That does not carry
+        # across to RF-DETR: a DETR has no pyramid feeding a convolutional
+        # head, and what explains its predictions is decoder cross-attention —
+        # a different method rather than a different adapter.
+        #
+        # The family comes from the run's own checkpoint, not from `--model`.
+        # Checking the flag alone left a hole: asking for heatmaps on an
+        # RF-DETR run without passing `--model` fell through to weight
+        # discovery, found the YOLO checkpoint, and attached YOLO Grad-CAM maps
+        # to RF-DETR findings. Pointing Grad-CAM at the wrong architecture does
+        # not error — it produces a map, and the map is meaningless. A heatmap
+        # that looks plausible and explains nothing is worse than none, because
+        # it will be believed.
+        saved = storage.load_run(connection, run_id)
+        weights = args.model or (saved.model_path if saved else None)
+        if weights and detect_family(weights) == "rfdetr":
+            logger.error(
+                "Run %d was produced by RF-DETR (%s). Grad-CAM targets YOLO26's "
+                "feature pyramid and does not transfer to it: explaining a DETR "
+                "means decoder cross-attention, which is a different method, not "
+                "another CamAdapter. Heatmaps are YOLO-only for now; every other "
+                "stage of the pipeline supports both families.",
+                run_id,
+                Path(weights).name,
+            )
+            return 1
 
         try:
             model = load_explainable_model(

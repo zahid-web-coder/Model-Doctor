@@ -312,3 +312,94 @@ def test_family_of_an_unreadable_file_does_not_raise(tmp_path) -> None:
     junk = tmp_path / "junk.pt"
     junk.write_bytes(b"not a checkpoint")
     assert detect_family(junk) == "yolo"
+
+
+# ---------------------------------------------------------------------------
+# The mask pass must reproduce the run it is re-examining
+# ---------------------------------------------------------------------------
+def test_mask_pass_defaults_to_the_run_s_own_checkpoint(monkeypatch, tmp_path) -> None:
+    """With no detector injected, the run's own weights and family are used.
+
+    This pass re-runs inference and matches outlines back to findings already
+    stored, so it must reproduce that run's predictions. The previous default
+    built a YOLO detector by discovery — scanning the models directory — which
+    for a run made with any other checkpoint would measure outlines belonging
+    to predictions the run never made, and report them as its own.
+    """
+    torch = pytest.importorskip("torch")
+    from app import mask_diagnosis
+
+    weights = tmp_path / "rf.pt"
+    torch.save({"rfdetr_version": "1.8.3", "state_dict": {}}, weights)
+
+    class _Run:
+        model_path = str(weights)
+        image_size = 480
+
+    class _StopError(Exception):
+        """Halt the pass once the detector has been chosen.
+
+        Nothing beyond that choice is under test here, and stopping avoids
+        loading real weights.
+        """
+
+    built: dict[str, object] = {}
+
+    def _spy(family=None, *, model_path=None, image_size=None, **_kwargs):
+        built.update(family=family, model_path=model_path, image_size=image_size)
+        raise _StopError
+
+    monkeypatch.setattr(mask_diagnosis.storage, "load_run", lambda _c, _r: _Run())
+    monkeypatch.setattr(
+        mask_diagnosis.storage,
+        "load_findings_for_embedding",
+        lambda _c, _r, **_kwargs: [{"finding_id": 1}],
+    )
+    monkeypatch.setattr(mask_diagnosis, "build_detector", _spy)
+
+    with pytest.raises(_StopError):
+        mask_diagnosis.diagnose_masks(object(), 1)
+
+    assert built["family"] == "rfdetr"
+    assert built["model_path"] == str(weights)
+    assert built["image_size"] == 480
+
+
+# ---------------------------------------------------------------------------
+# Heatmaps must refuse for RF-DETR, however they are invoked
+# ---------------------------------------------------------------------------
+def test_heatmaps_refuse_for_an_rfdetr_run_without_a_model_flag(
+    monkeypatch, tmp_path
+) -> None:
+    """The refusal reads the run's checkpoint, not the ``--model`` flag.
+
+    Checking the flag alone left a hole found in review: asking for heatmaps on
+    an RF-DETR run without ``--model`` fell through to weight discovery, found
+    the YOLO checkpoint, and attached YOLO Grad-CAM maps to RF-DETR findings.
+    Grad-CAM against the wrong architecture does not error — it produces a map
+    that means nothing, which is worse than none because it gets believed.
+    """
+    torch = pytest.importorskip("torch")
+    from app import explainability
+
+    weights = tmp_path / "rf.pt"
+    torch.save({"rfdetr_version": "1.8.3", "state_dict": {}}, weights)
+
+    class _Run:
+        id = 1
+        model_path = str(weights)
+
+    class _Conn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_a):
+            return False
+
+    monkeypatch.setattr(explainability.storage, "connect", lambda _p: _Conn())
+    monkeypatch.setattr(explainability.storage, "load_run", lambda _c, _r: _Run())
+
+    # No --model: the family must still be resolved from the run itself.
+    exit_code = explainability.main(["--run", "1"])
+
+    assert exit_code == 1, "expected a refusal, not a generated heatmap"

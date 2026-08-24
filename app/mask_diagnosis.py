@@ -181,7 +181,18 @@ def diagnose_masks(
             f"Run {run_id} has no findings. Diagnose and save it first."
         )
 
-    engine = detector or Detector()
+    # When no detector is injected, build the one this run actually used —
+    # its own weights, its own family, its own size. The previous default
+    # constructed a plain YOLO detector by discovery, which scans the models
+    # directory: for a run made with any other checkpoint it would re-run
+    # inference with the wrong weights and match those outlines back to
+    # findings this run never produced, silently. The run already records
+    # everything needed to avoid that.
+    engine = detector or build_detector(
+        detect_family(run.model_path),
+        model_path=run.model_path,
+        image_size=run.image_size,
+    )
     engine.load()  # idempotent: returns immediately if already loaded
 
     # Re-running at a different size would produce different boxes and
