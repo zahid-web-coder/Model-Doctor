@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 
 import {
   LayoutGrid, Activity, GitMerge, AlertCircle, Clock, Target,
-  FileText, Settings, PanelLeftClose, PanelLeftOpen,
+  FileText, Settings, PanelLeftClose, PanelLeftOpen, Scale,
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -55,6 +55,7 @@ export function Sidebar() {
     { icon: GitMerge,    label: "Clusters",    href: `/runs/${runId}/clusters` },
     { icon: AlertCircle, label: "Failures",    href: `/runs/${runId}/failures` },
     { icon: Clock,       label: "Runs",        href: "/runs" },
+    { icon: Scale,       label: "Compare",     href: "/compare" },
     { icon: Target,      label: "Heatmaps",    href: `/runs/${runId}/heatmaps` },
     { icon: FileText,    label: "Reports",     href: "/reports" },
     { icon: Settings,    label: "Settings",    href: "/settings" },
