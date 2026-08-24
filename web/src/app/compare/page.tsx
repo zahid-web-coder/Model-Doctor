@@ -74,6 +74,8 @@ export default async function ComparePage({
           factorsB: b.factors,
           masksA: a.masks,
           masksB: b.masks,
+          imagesA: a.images,
+          imagesB: b.images,
           runA: a.run,
           runB: b.run,
         };

@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import type { FactorRate, MaskFinding, Outcomes, Run } from "@/lib/api/rows";
+import type { FactorRate, ImageRow, MaskFinding, Outcomes, Run } from "@/lib/api/rows";
 import type { Alignment, Compatibility } from "@/lib/compare/align";
 import type { RunMetrics } from "@/lib/compare/metrics";
 import { modelName } from "@/lib/derive";
@@ -34,6 +34,8 @@ export interface Prepared {
   factorsB: FactorRate[];
   masksA: MaskFinding[];
   masksB: MaskFinding[];
+  imagesA: ImageRow[];
+  imagesB: ImageRow[];
   runA: Run;
   runB: Run;
 }
@@ -136,12 +138,18 @@ export function ComparisonView({
             b={prepared.factorsB}
           />
 
+          {/* Keyed on the pair, so switching to a different comparison starts at
+              its first object. Swapping the same two runs keeps the key and so
+              holds position, which is what a reader means by "swap sides". */}
           <DiffViewer
+            key={[prepared.runA.id, prepared.runB.id].sort((x, y) => x - y).join("-")}
             labelA={labelFor(prepared.runA)}
             labelB={labelFor(prepared.runB)}
             alignment={prepared.alignment}
             masksA={prepared.masksA}
             masksB={prepared.masksB}
+            imagesA={prepared.imagesA}
+            imagesB={prepared.imagesB}
           />
         </>
       )}
