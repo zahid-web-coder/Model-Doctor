@@ -134,7 +134,17 @@ export function alignRuns(
   for (const { filename, finding } of left.withoutTruth) ensure(filename).a.push(finding);
   for (const { filename, finding } of right.withoutTruth) ensure(filename).b.push(finding);
 
-  pairs.sort((x, y) => x.filename.localeCompare(y.filename));
+  // Sorted by file, then by the pair key — never left to rely on the order the
+  // findings happened to arrive in. An image usually holds several annotated
+  // objects, so filename alone leaves ties, and a stable sort then settles them
+  // by whichever run was passed first. That made object *n* a different object
+  // depending on which run sat on the left, so swapping the two sides silently
+  // moved the reader somewhere else. The key is built from the filename and the
+  // truth box, so it is a property of the ground truth and identical whichever
+  // way round the runs are given.
+  pairs.sort(
+    (x, y) => x.filename.localeCompare(y.filename) || x.key.localeCompare(y.key),
+  );
 
   return {
     pairs,
