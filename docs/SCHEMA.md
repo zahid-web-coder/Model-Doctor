@@ -522,6 +522,19 @@ for this reason, and a consumer must not put two devices in one comparison.
 **Null is not zero.** A CPU run has no GPU counter, so `gpu_allocated_mb` and
 `gpu_driver_mb` are null — absence, not a measurement of nothing.
 
+**A device is a measurement, not a recommendation.** A row says this model was
+measured on that device on that host. It does not endorse the device, and
+nothing here ranks them: a consumer must not read two rows for one run as
+"the faster device is the right one". Deployment targets are chosen by
+constraints this table does not know about.
+
+**Families bind their device differently.** Ultralytics honours `device=` per
+`predict` call; RF-DETR binds it at construction and its `predict` takes no
+device. Passing nothing to RF-DETR does not fall back to `config.DEVICE` — the
+library chooses, and on Apple silicon it chooses MPS whatever was asked. Rows
+written before that was fixed recorded RF-DETR as `cpu` while it ran on MPS
+(588 ms stored as 162 ms). If a row predates the fix, re-run the benchmark.
+
 **Not the same as inference timing during diagnosis.** `ImagePrediction`
 carries an `inference_ms` per image, but it includes the first image's lazy
 kernel compilation and whatever device the run happened to use, and it is not

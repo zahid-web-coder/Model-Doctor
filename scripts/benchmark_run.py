@@ -20,6 +20,31 @@ the device explicitly. The two are never presented as equivalent.
 The device is required rather than autodetected, because the entire value of
 the number depends on knowing which one produced it.
 
+**A device is a measurement, not a recommendation.** A row here says only that
+this model was measured on that device on this host. It does not say the device
+is a sensible deployment target, and nothing in this project ranks devices — the
+comparison page will not even put two of them in one table. Two figures for one
+model mean it was measured twice, not that the faster one is endorsed.
+
+**Detector families bind their device differently, and it matters.** Ultralytics
+takes ``device=`` on each ``predict`` call, so the requested device is honoured
+per image. RF-DETR binds its device when the model is constructed and its
+``predict`` accepts no device at all; passing nothing does not fall back to
+``config.DEVICE``, it lets the library choose. On Apple silicon that choice is
+MPS regardless of what was asked for, which once produced rows recorded as
+``cpu`` while running on MPS — a 588 ms measurement stored as 162 ms.
+:meth:`RFDetrDetector.load` now passes the device explicitly; the regression is
+covered in ``tests/test_rfdetr_adapter.py``.
+
+**Threading caveat, from a separate codebase.** Concurrent RF-DETR inference on
+MPS from multiple threads is reported to deadlock in Metal
+(``[mutex.cc:452] RAW: Lock blocking``), and at least one production service
+pins RF-DETR to CPU on macOS and serialises every prediction because of it.
+This script is unaffected: it is one process, one model, one sequential loop,
+and no thread ever issues a second prediction concurrently. No lock is needed
+here and none is taken. Anything that later drives these detectors from a
+threaded server should not assume the same.
+
 Usage::
 
     python scripts/benchmark_run.py --run-id 1 --device cpu

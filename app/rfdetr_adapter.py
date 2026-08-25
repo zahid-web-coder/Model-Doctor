@@ -143,12 +143,23 @@ class RFDetrDetector(Detector):
         if self.image_size:
             kwargs["resolution"] = int(self.image_size)
 
+        # **The device has to be passed at construction.** Unlike Ultralytics,
+        # which takes `device=` on every `predict` call, RF-DETR binds its
+        # device when the model is built and its `predict` accepts no such
+        # argument. Omitting it here does not fall back to `config.DEVICE`; it
+        # lets RF-DETR choose for itself, which on this hardware means MPS
+        # whatever the caller asked for. That is how a run measured on the CPU
+        # came back at 162 ms instead of its true 601 ms — a figure recorded
+        # under the wrong device is worse than no figure, because it will be
+        # compared with something.
+        if self.device:
+            kwargs["device"] = str(self.device)
+
         logger.info(
-            "Loading RF-DETR checkpoint %s%s",
+            "Loading RF-DETR checkpoint %s at resolution %s on device %s",
             weights.name,
-            f" at resolution {kwargs['resolution']}"
-            if kwargs
-            else " at its native resolution",
+            kwargs.get("resolution", "native"),
+            kwargs.get("device", "the library's own choice"),
         )
         started = time.perf_counter()
         try:
