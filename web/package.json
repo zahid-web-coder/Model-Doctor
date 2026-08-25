@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
+    "test": "node --test \"src/**/*.test.ts\"",
     "start": "next start",
     "lint": "eslint",
     "postinstall": "node scripts/copy-draco.mjs"

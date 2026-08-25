@@ -2,6 +2,7 @@ import type {
   Run, Outcomes, Finding, Page, FactorRate, Group, GroupMember,
   MaskFinding, ImageRow, Evaluation, Benchmark,
 } from "./rows";
+import { normaliseOutcomes } from "./rows";
 
 /**
  * The one place the frontend talks to the backend.
@@ -63,7 +64,17 @@ export const api = {
 
   runs: () => get<Run[]>("/runs"),
   run: (id: string | number) => get<Run>(`/runs/${id}`),
-  outcomes: (id: string | number) => get<Outcomes>(`/runs/${id}/outcomes`),
+  /**
+   * Outcome counts, with the buckets the API omitted filled in as zero.
+   *
+   * The endpoint groups by outcome, so an outcome that never occurred does not
+   * appear at all. Repairing it here rather than in each screen is what makes
+   * the `Outcomes` type honest: every caller downstream can rely on all five
+   * keys existing, which is what the type says. A rejected request still
+   * rejects — this fills gaps in a payload, it never invents one.
+   */
+  outcomes: async (id: string | number): Promise<Outcomes> =>
+    normaliseOutcomes(await get<Partial<Outcomes>>(`/runs/${id}/outcomes`)),
 
   findings: (id: string | number, limit = 50, offset = 0) =>
     get<Page<Finding>>(`/runs/${id}/findings?limit=${limit}&offset=${offset}`),
