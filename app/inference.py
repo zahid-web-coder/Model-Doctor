@@ -67,10 +67,26 @@ class Detection(ObjectAnnotation):
     annotation model — an outline, a track id, an attribute — reaches
     predictions and ground truth together, and cannot reach only one.
 
-    All fields are inherited. ``confidence`` is optional on the base because
-    ground truth has none; here it is required, and that is enforced at
+    Every field but one is inherited. ``confidence`` is optional on the base
+    because ground truth has none; here it is required, and that is enforced at
     construction rather than left as a convention.
+
+    Attributes:
+        mask_rle: The instance's own mask as COCO RLE, in original-image
+            pixels, or ``None``. Populated only when a detector is built with
+            ``keep_raw_masks=True``, which nothing but evaluation does — so the
+            normal pipeline carries exactly what it always did.
+
+            It exists because ``polygon`` cannot serve evaluation. Model
+            Doctor's annotation model holds one polygon per object, so both
+            families reduce a mask to its largest component on the way in.
+            That is right for display and wrong for scoring: it would charge a
+            model for a representation choice rather than a prediction. This
+            field keeps every component, and is deliberately not persisted —
+            it is a measurement input, not a finding.
     """
+
+    mask_rle: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
         """Reject a prediction with no confidence.
@@ -334,6 +350,7 @@ class Detector:
         confidence: float | None = None,
         iou: float | None = None,
         image_size: int | None = None,
+        keep_raw_masks: bool = False,
     ) -> None:
         """Configure a detector without loading anything yet.
 
@@ -344,6 +361,10 @@ class Detector:
             confidence: Minimum confidence to keep a detection.
             iou: IoU threshold for Non-Maximum Suppression.
             image_size: Longest-side input resolution.
+            keep_raw_masks: Also carry each instance's full mask as COCO RLE on
+                :attr:`Detection.mask_rle`. Off by default, so the diagnosis
+                pipeline behaves exactly as before and pays nothing for a
+                feature only evaluation uses.
         """
         self._explicit_model_path = Path(model_path) if model_path else None
         self.device = device or config.DEVICE
@@ -352,6 +373,7 @@ class Detector:
         )
         self.iou = iou if iou is not None else config.NMS_IOU_THRESHOLD
         self.image_size = image_size or config.IMAGE_SIZE
+        self.keep_raw_masks = keep_raw_masks
 
         self._model: Any | None = None
         self._model_path: Path | None = None
@@ -534,14 +556,16 @@ class Detector:
                     len(coords),
                 )
 
+        rles = self._mask_rles(result, masks, len(coords))
+
         # strict=True enforces the parallel-tensor invariant rather than
         # trusting it. Without it, three tensors of differing length would zip
         # to the shortest and silently discard detections — a data-corruption
         # bug with no error message. If Ultralytics ever violates the
         # alignment, we want a loud ValueError, not quiet wrong output.
         detections: list[Detection] = []
-        for (x1, y1, x2, y2), conf, class_id, outline in zip(
-            coords, confidences, class_ids, outlines, strict=True
+        for (x1, y1, x2, y2), conf, class_id, outline, rle in zip(
+            coords, confidences, class_ids, outlines, rles, strict=True
         ):
             detections.append(
                 Detection(
@@ -553,6 +577,7 @@ class Detector:
                     x2=float(x2),
                     y2=float(y2),
                     polygon=outline,
+                    mask_rle=rle,
                 )
             )
 
@@ -560,6 +585,54 @@ class Detector:
         # ones a human reviewing the output should see at the top.
         detections.sort(key=lambda d: d.confidence, reverse=True)
         return detections
+
+    def _mask_rles(
+        self, result: Any, masks: Any, count: int
+    ) -> list[dict[str, Any] | None]:
+        """Return each instance's full mask as COCO RLE, or all ``None``.
+
+        **Ultralytics' raw masks are not in original-image pixels**, unlike its
+        boxes and its ``masks.xy`` outlines. ``masks.data`` comes back at the
+        letterboxed model-input size — 672x384 for a 720x1280 image at
+        ``imgsz=672`` — so it carries the aspect-preserving pad that the
+        letterbox added. Encoding that directly would place every mask in the
+        wrong frame while looking perfectly plausible, so it is mapped back
+        with the library's own ``scale_masks``, which removes the padding and
+        resizes in one step.
+
+        ``mode="nearest"`` because these are already binary: bilinear would
+        invent intermediate values at the boundary that a threshold then has to
+        guess at.
+
+        Returns a list of ``None`` when rasters were not requested or the model
+        does not segment, so the caller's ``zip(..., strict=True)`` still holds.
+        """
+        empty: list[dict[str, Any] | None] = [None] * count
+        if not self.keep_raw_masks or masks is None:
+            return empty
+
+        data = getattr(masks, "data", None)
+        if data is None or len(data) != count:
+            if data is not None:
+                logger.warning(
+                    "Model returned %d mask(s) for %d box(es); masks skipped "
+                    "for this image rather than guessed",
+                    len(data),
+                    count,
+                )
+            return empty
+
+        from ultralytics.utils import ops
+
+        from app.evaluation import encode_mask
+
+        height, width = result.orig_shape
+        scaled = ops.scale_masks(
+            data.float().unsqueeze(1).cpu(), (height, width), padding=True,
+            mode="nearest",
+        )
+        raster = scaled.squeeze(1).numpy() > 0.5
+        return [encode_mask(raster[index]) for index in range(count)]
 
     def _save_annotated(self, result: Any, image_path: Path) -> Path | None:
         """Write the rendered prediction image and return its path.

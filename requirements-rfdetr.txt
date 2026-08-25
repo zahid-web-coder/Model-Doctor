@@ -18,5 +18,7 @@
 # resolution. See config.DETECTOR_FAMILY.
 
 rfdetr==1.8.3             # RF-DETR segmentation models and checkpoint loading
-pycocotools>=2.0.7        # Shared COCO evaluator, so both families are scored
-                          # by the same code rather than each library's own
+
+# pycocotools moved to the core requirements: COCOeval is now Model Doctor's
+# canonical evaluator for every family, not something only this optional
+# detector needs.

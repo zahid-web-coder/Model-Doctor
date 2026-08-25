@@ -1,7 +1,9 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import type { FactorRate, ImageRow, MaskFinding, Outcomes, Run } from "@/lib/api/rows";
+import type {
+  Benchmark, Evaluation, FactorRate, ImageRow, MaskFinding, Outcomes, Run,
+} from "@/lib/api/rows";
 import type { Alignment, Compatibility } from "@/lib/compare/align";
 import type { RunMetrics } from "@/lib/compare/metrics";
 import { modelName } from "@/lib/derive";
@@ -36,6 +38,10 @@ export interface Prepared {
   masksB: MaskFinding[];
   imagesA: ImageRow[];
   imagesB: ImageRow[];
+  evaluationsA: Evaluation[];
+  evaluationsB: Evaluation[];
+  benchmarksA: Benchmark[];
+  benchmarksB: Benchmark[];
   runA: Run;
   runB: Run;
 }
@@ -107,6 +113,8 @@ export function ComparisonView({
             b={prepared.metricsB}
             factorsA={prepared.factorsA}
             factorsB={prepared.factorsB}
+            benchmarksA={prepared.benchmarksA}
+            benchmarksB={prepared.benchmarksB}
           />
 
           <MetricTable
@@ -128,6 +136,8 @@ export function ComparisonView({
               labelB={labelFor(prepared.runB)}
               runA={prepared.runA}
               runB={prepared.runB}
+              benchmarksA={prepared.benchmarksA}
+              benchmarksB={prepared.benchmarksB}
             />
           </div>
 

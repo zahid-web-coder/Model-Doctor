@@ -1,6 +1,6 @@
 import type {
   Run, Outcomes, Finding, Page, FactorRate, Group, GroupMember,
-  MaskFinding, ImageRow,
+  MaskFinding, ImageRow, Evaluation, Benchmark,
 } from "./rows";
 
 /**
@@ -80,6 +80,16 @@ export const api = {
 
   maskFindings: (id: string | number) =>
     getOptional<MaskFinding[]>(`/runs/${id}/mask-findings`, []),
+
+  /**
+   * Measured performance. Both default to empty rather than failing, because
+   * empty is the correct answer for a run that has not been evaluated or
+   * benchmarked — and for a database written before either table existed.
+   */
+  evaluation: (id: string | number) =>
+    getOptional<Evaluation[]>(`/runs/${id}/evaluation`, []),
+  benchmarks: (id: string | number) =>
+    getOptional<Benchmark[]>(`/runs/${id}/benchmarks`, []),
 
   /** Image and heatmap bytes are served by id; these are `src` values. */
   imageUrl: (imageId: number) => `${API_BASE}/images/${imageId}`,

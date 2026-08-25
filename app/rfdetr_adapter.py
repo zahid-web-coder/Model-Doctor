@@ -258,8 +258,21 @@ class RFDetrDetector(Detector):
             zip(boxes, confidences, class_ids, strict=True)
         ):
             outline = None
+            rle = None
             if masks is not None and index < len(masks):
                 outline = _mask_to_polygon(masks[index])
+                # The raster goes to evaluation untouched, while the polygon
+                # above keeps only its largest component. Both are correct for
+                # their purpose: the polygon is what Model Doctor stores and
+                # draws, and reducing a multi-part instance to one blob there
+                # is a deliberate simplification — but scoring against it would
+                # charge the model for that simplification rather than for its
+                # prediction. RF-DETR's mask is already at full image
+                # resolution, so nothing is rescaled.
+                if self.keep_raw_masks:
+                    from app.evaluation import encode_mask
+
+                    rle = encode_mask(np.asarray(masks[index], dtype=bool))
 
             x1, y1, x2, y2 = (float(v) for v in box)
             detections.append(
@@ -272,6 +285,7 @@ class RFDetrDetector(Detector):
                     x2=x2,
                     y2=y2,
                     polygon=outline,
+                    mask_rle=rle,
                 )
             )
 

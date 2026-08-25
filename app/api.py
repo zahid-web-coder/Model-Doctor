@@ -392,6 +392,39 @@ def create_app() -> FastAPI:
             )
 
     # -----------------------------------------------------------------------
+    # Measured performance
+    # -----------------------------------------------------------------------
+    @application.get("/runs/{run_id}/evaluation")
+    def get_evaluation(run_id: int) -> list[dict[str, Any]]:
+        """A run's mAP and AR, one row per task, from the shared evaluator.
+
+        Empty when the run has never been evaluated — which is a different
+        statement from a score of zero, and the caller must render it as one.
+        Each row carries the confidence sweep, IoU range, detection cap and
+        ground truth that produced it, because two mAPs are comparable only if
+        those agree.
+        """
+        with read_only() as connection:
+            resolve_run(connection, run_id)
+            if not has_table(connection, "run_evaluations"):
+                return []
+            return serialise(storage.load_evaluations(connection, run_id))
+
+    @application.get("/runs/{run_id}/benchmarks")
+    def get_benchmarks(run_id: int) -> list[dict[str, Any]]:
+        """A run's measured latency, memory and checkpoint size, per device.
+
+        One row per device the run was benchmarked on, because latency and
+        memory are properties of a model *on a device*: a figure from one is
+        not evidence about another. Empty when never benchmarked.
+        """
+        with read_only() as connection:
+            resolve_run(connection, run_id)
+            if not has_table(connection, "run_benchmarks"):
+                return []
+            return serialise(storage.load_benchmarks(connection, run_id))
+
+    # -----------------------------------------------------------------------
     # Similar failures — unreachable from a SQL-only consumer
     # -----------------------------------------------------------------------
     @application.get("/runs/{run_id}/findings/{finding_id}/neighbours")

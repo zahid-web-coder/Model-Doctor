@@ -2,7 +2,8 @@
 
 import type { RunMetrics } from "@/lib/compare/metrics";
 import { winner } from "@/lib/compare/metrics";
-import type { FactorRate } from "@/lib/api/rows";
+import type { Benchmark, FactorRate } from "@/lib/api/rows";
+import { sharedDevices } from "./EfficiencyPanel";
 import { isAvailable } from "@/lib/compare/provenance";
 
 /**
@@ -61,6 +62,85 @@ function robustness(
   return out;
 }
 
+/**
+ * Compute cost, decided only when both runs were measured on the same device.
+ *
+ * A run stores no device, so latency and memory could otherwise be compared
+ * across machines and reported as a property of the models. Where there is no
+ * shared device the dimension stays undecided and says why — an unanswered
+ * question, not an answered one with a caveat.
+ */
+function compute(a: Benchmark[], b: Benchmark[]): Dimension[] {
+  if (!a.length || !b.length) {
+    return [
+      {
+        name: "Compute cost",
+        winner: null,
+        undecided: true,
+        evidence: "not benchmarked on both sides",
+      },
+    ];
+  }
+
+  const device = sharedDevices(a, b)[0];
+  if (!device) {
+    return [
+      {
+        name: "Compute cost",
+        winner: null,
+        undecided: true,
+        evidence: "no device both runs were measured on",
+      },
+    ];
+  }
+
+  const rowA = a.find((row) => row.device === device);
+  const rowB = b.find((row) => row.device === device);
+  const value = (row: Benchmark | undefined, key: string): number | null => {
+    const raw = row?.measurements?.[key];
+    return typeof raw === "number" ? raw : null;
+  };
+
+  const out: Dimension[] = [];
+  const add = (
+    name: string,
+    key: string,
+    lowerIsBetter: boolean,
+    render: (value: number) => string,
+  ) => {
+    const x = value(rowA, key);
+    const y = value(rowB, key);
+    if (x === null || y === null) return;
+    out.push({
+      name,
+      winner: x === y ? null : (lowerIsBetter ? x < y : x > y) ? "a" : "b",
+      evidence: `${render(x)} against ${render(y)} on ${device}`,
+    });
+  };
+
+  add("Speed — latency", "latency_mean_ms", true, (v) => `${v.toFixed(1)} ms`);
+  add("Memory footprint", "rss_peak_mb", true, (v) =>
+    v >= 1024 ? `${(v / 1024).toFixed(2)} GB` : `${Math.round(v)} MB`,
+  );
+  add("Checkpoint size", "checkpoint_bytes", true, (v) => {
+    const megabytes = v / (1024 * 1024);
+    return megabytes >= 1024
+      ? `${(megabytes / 1024).toFixed(2)} GB`
+      : `${Math.round(megabytes)} MB`;
+  });
+
+  return out.length
+    ? out
+    : [
+        {
+          name: "Compute cost",
+          winner: null,
+          undecided: true,
+          evidence: `benchmarked on ${device}, but no shared measurement`,
+        },
+      ];
+}
+
 export function Verdict({
   labelA,
   labelB,
@@ -68,6 +148,8 @@ export function Verdict({
   b,
   factorsA,
   factorsB,
+  benchmarksA,
+  benchmarksB,
 }: {
   labelA: string;
   labelB: string;
@@ -75,6 +157,8 @@ export function Verdict({
   b: RunMetrics;
   factorsA: FactorRate[];
   factorsB: FactorRate[];
+  benchmarksA: Benchmark[];
+  benchmarksB: Benchmark[];
 }) {
   const value = (m: RunMetrics, key: keyof RunMetrics) => {
     const v = m[key];
@@ -127,17 +211,19 @@ export function Verdict({
       })(),
     },
     ...robustness(factorsA, factorsB),
-    {
-      name: "Compute cost",
-      winner: null,
-      undecided: true,
-      evidence: "latency, throughput and memory are not recorded per run",
-    },
+    ...compute(benchmarksA, benchmarksB),
   ];
 
   const decided = dimensions.filter((d) => !d.undecided && d.winner);
   const aWins = decided.filter((d) => d.winner === "a").length;
   const bWins = decided.filter((d) => d.winner === "b").length;
+
+  // Only claim compute is unsettled when it actually is. Once both runs are
+  // benchmarked on one device this stops being a caveat and starts being
+  // evidence, and the closing sentence has to stop saying otherwise.
+  const undecidedNote = dimensions.some((d) => d.undecided)
+    ? " Compute cost is undecided, so a deployment constrained by latency or memory is not settled by this comparison."
+    : "";
 
   const closing = (() => {
     if (decided.length === 0) {
@@ -152,7 +238,7 @@ export function Verdict({
       trailCount > 0
         ? ` ${trail} still leads on ${trailCount}, so this is a trade-off rather than a clean win.`
         : "";
-    return `${lead} leads on ${leadCount} of the ${decided.length} decided dimensions.${tail} Compute cost is undecided, so a deployment constrained by latency or memory is not settled by this comparison.`;
+    return `${lead} leads on ${leadCount} of the ${decided.length} decided dimensions.${tail}${undecidedNote}`;
   })();
 
   return (

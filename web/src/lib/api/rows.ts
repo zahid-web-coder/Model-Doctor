@@ -127,6 +127,50 @@ export interface MaskFinding {
   pred_polygon: number[][] | null;
 }
 
+/**
+ * One task's evaluation of one run, from the shared COCO evaluator.
+ *
+ * The settings travel with the numbers because two mAPs are comparable only if
+ * they agree on all of them. A caller that shows `map50` without checking
+ * `sweep_confidence`, `iou_thresholds` and `max_detections` match is comparing
+ * two different measurements.
+ */
+export interface Evaluation {
+  id: number;
+  run_id: number;
+  /** `"bbox"` or `"segm"`. */
+  task: string;
+  evaluator: string;
+  evaluator_version: string | null;
+  sweep_confidence: number;
+  iou_thresholds: string;
+  max_detections: number;
+  ground_truth: string;
+  gt_images: number;
+  gt_annotations: number;
+  prediction_count: number;
+  /** What segmentation was scored from; null for box tasks. */
+  mask_source: string | null;
+  metrics: Record<string, number | null>;
+  created_at: string;
+}
+
+/**
+ * One controlled compute measurement of a run, on one device.
+ *
+ * `device` is never absent. Latency and memory are properties of a model *on a
+ * device*, so a figure from one is not evidence about another — comparing
+ * across devices is the mistake this field exists to prevent.
+ */
+export interface Benchmark {
+  id: number;
+  run_id: number;
+  device: string;
+  image_size: number;
+  created_at: string;
+  measurements: Record<string, number | string | null>;
+}
+
 export interface ImageRow {
   id: number;
   run_id: number;
