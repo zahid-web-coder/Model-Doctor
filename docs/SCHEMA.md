@@ -141,7 +141,7 @@ Four of the five are fully answerable from `findings` alone.
 
 **`truth_polygon` is populated only for segmentation datasets.** Predicted
 outlines are not stored here — they live in `mask_findings.pred_polygon`, added
-at version 8, so this table kept its shape exactly as D-020 promised.
+at version 9, so this table kept its shape exactly as D-020 promised.
 
 ### `embeddings` — added in schema version 2
 
@@ -438,6 +438,112 @@ a segmentation model produces them at all. Absence means "not measured", not
 
 ---
 
+### `run_evaluations` — added in schema version 9
+
+One row per `(run_id, task)`, where `task` is `bbox` or `segm`. This is where
+**genuine COCO mAP lives** — the counts in `findings` are not mAP and never
+become it (section 4).
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `id` | INTEGER | Primary key |
+| `run_id` | INTEGER | The run scored |
+| `task` | TEXT | `bbox` or `segm` |
+| `evaluator` | TEXT | Always `pycocotools COCOeval` |
+| `evaluator_version` | TEXT | The installed pycocotools version, or null |
+| `sweep_confidence` | REAL | Confidence predictions were collected at |
+| `iou_thresholds` | TEXT | e.g. `0.50:0.05:0.95` |
+| `max_detections` | INTEGER | COCO `maxDets` cap |
+| `ground_truth` | TEXT | Which annotations were scored against |
+| `gt_images` | INTEGER | Images in the ground truth |
+| `gt_annotations` | INTEGER | Annotations in the ground truth |
+| `prediction_count` | INTEGER | Detections submitted for this task |
+| `mask_source` | TEXT | How segmentation was encoded; null for `bbox` |
+| `map50_95` … `ar_large` | REAL | The twelve COCOeval summary statistics |
+| `created_at` | TEXT | UTC ISO-8601 |
+
+Unique on `(run_id, task)`: re-evaluating supersedes rather than accumulates,
+because two contradictory scores for one run and task leave a reader no way to
+choose.
+
+**The settings are not decoration.** Two mAP figures are comparable only if
+they agree on `sweep_confidence`, `iou_thresholds`, `max_detections` and
+`ground_truth`. A consumer that compares `map50` across runs without checking
+those is comparing two different measurements.
+
+**Why a separate pass, and not derived from `findings`.** `findings` holds
+detections already thresholded at `runs.confidence_threshold` and already
+matched to ground truth. On this project's own data that is 252 of 5,454
+predictions for one model and 224 of 581 for another. mAP integrates over the
+entire precision/recall curve, so scoring the survivors would measure the
+operating point rather than the model, and would flatter whichever model is
+more confident. Produced by `scripts/evaluate_run.py`, which re-runs inference
+unthresholded.
+
+**`mask_source`** records that segmentation was scored from the model's own
+multi-component raster, RLE-encoded — not from `mask_findings.pred_polygon`,
+which keeps only the largest component. That reduction is right for storage and
+display and wrong for scoring: it would charge a model for a representation
+choice rather than a prediction.
+
+---
+
+### `run_benchmarks` — added in schema version 9
+
+One row per `(run_id, device, image_size)`. Latency, throughput, memory and
+checkpoint size, from a controlled measurement.
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `id` | INTEGER | Primary key |
+| `run_id` | INTEGER | The run measured |
+| `device` | TEXT | **Mandatory.** `cpu`, `mps`, `cuda:0`, … |
+| `image_size` | INTEGER | Inference resolution measured at |
+| `torch_threads` | INTEGER | Threads torch reported |
+| `warmup_images` | INTEGER | Excluded from timing |
+| `measured_images` | INTEGER | Sample size behind every latency figure |
+| `cold_start_s` | REAL | From interpreter start, including imports |
+| `weights_load_s` | REAL | Checkpoint load alone |
+| `latency_mean_ms`, `latency_median_ms`, `latency_p90_ms`, `latency_min_ms` | REAL | Per image |
+| `fps` | REAL | Derived from the mean |
+| `rss_baseline_mb`, `rss_after_load_mb`, `rss_peak_mb` | REAL | Process resident memory |
+| `gpu_allocated_mb`, `gpu_driver_mb` | REAL | Null where the device exposes no counter |
+| `checkpoint_bytes` | INTEGER | Size of the weights file |
+| `host_platform` | TEXT | e.g. `Darwin arm64` |
+| `created_at` | TEXT | UTC ISO-8601 |
+
+**`device` is part of the key because `runs` does not record one.** The device
+is resolved at run time from `config.DEVICE`, so the same checkpoint on the
+same data yields a different latency on CPU and on MPS. A figure without its
+device cannot be compared with anything, and comparing across devices measures
+two machines rather than two models. `save_benchmark` refuses an empty device
+for this reason, and a consumer must not put two devices in one comparison.
+
+**Null is not zero.** A CPU run has no GPU counter, so `gpu_allocated_mb` and
+`gpu_driver_mb` are null — absence, not a measurement of nothing.
+
+**A device is a measurement, not a recommendation.** A row says this model was
+measured on that device on that host. It does not endorse the device, and
+nothing here ranks them: a consumer must not read two rows for one run as
+"the faster device is the right one". Deployment targets are chosen by
+constraints this table does not know about.
+
+**Families bind their device differently.** Ultralytics honours `device=` per
+`predict` call; RF-DETR binds it at construction and its `predict` takes no
+device. Passing nothing to RF-DETR does not fall back to `config.DEVICE` — the
+library chooses, and on Apple silicon it chooses MPS whatever was asked. Rows
+written before that was fixed recorded RF-DETR as `cpu` while it ran on MPS
+(588 ms stored as 162 ms). If a row predates the fix, re-run the benchmark.
+
+**Not the same as inference timing during diagnosis.** `ImagePrediction`
+carries an `inference_ms` per image, but it includes the first image's lazy
+kernel compilation and whatever device the run happened to use, and it is not
+persisted. These rows come from `scripts/benchmark_run.py`, which warms up
+first, measures a fixed count, and names its device. Do not present the two as
+equivalent.
+
+---
+
 ### `clusters` and `cluster_members` — added in schema version 5
 
 **Failure groups.** Each row in `clusters` is one group of failures that share
@@ -667,9 +773,10 @@ Two deliberate differences:
    `runs.confidence_threshold` (default 0.25). mAP integrates across all
    thresholds. Fewer predictions are considered here.
 
-Model Doctor's own mAP figures come from the validation command, separately.
-If a dashboard shows both, label them distinctly and do not compute one from
-the other.
+**Genuine mAP lives in `run_evaluations`**, produced by a separate pass that
+re-runs inference unthresholded and scores every family with one COCO
+evaluator. If a dashboard shows both, label them distinctly and never compute
+one from the other — the two answer different questions and will not agree.
 
 ---
 
@@ -832,14 +939,15 @@ tables, never columns to these:
 `embeddings` arriving in version 2 is this guarantee working as intended: a new
 table was added and **`runs`, `images` and `findings` did not change**. Every
 query written against version 1 still returns exactly the same rows. Versions
-3 through 8 held the same line.
+3 through 9 held the same line.
 
 Opening an older database upgrades it in place — the new tables are created and
 existing data is untouched.
 
 **Check before querying the optional tables.** `embeddings`, `heatmaps`,
-`root_causes`, `clusters`, `cluster_members`, `factor_rates` and
-`recommendations` and `mask_findings` each arrived after version 1,
+`root_causes`, `clusters`, `cluster_members`, `factor_rates`,
+`recommendations`, `mask_findings`, `run_evaluations` and `run_benchmarks`
+each arrived after version 1,
 so a database saved by an earlier version will not have them. Only `runs`,
 `images` and `findings` are guaranteed. A missing table should degrade the one
 surface that needs it, never the whole page:
@@ -853,7 +961,7 @@ change ever becomes unavoidable, `schema_info.version` is incremented and this
 document is updated first.
 
 ```sql
-SELECT version FROM schema_info;   -- currently 8
+SELECT version FROM schema_info;   -- currently 9
 ```
 
 ---
@@ -882,6 +990,8 @@ cannot open the SQLite file — a browser, most obviously.
 | `GET /runs/{id}/factor-rates` | Lift and significance per factor |
 | `GET /runs/{id}/recommendations` | Suggested actions, documented order |
 | `GET /runs/{id}/mask-findings?disagreements=` | Outline-level results |
+| `GET /runs/{id}/evaluation` | COCO mAP/AR per task, with the settings behind them |
+| `GET /runs/{id}/benchmarks` | Measured latency, memory and checkpoint size, per device |
 | `GET /runs/{id}/findings/{id}/neighbours?limit=` | Visually similar failures |
 | `GET /images/{id}` | Source image bytes |
 | `GET /findings/{id}/heatmap?method=` | Grad-CAM overlay bytes |

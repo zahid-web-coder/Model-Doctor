@@ -13,6 +13,7 @@ needs opencv skips itself when it is absent.
 from __future__ import annotations
 
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -403,3 +404,61 @@ def test_heatmaps_refuse_for_an_rfdetr_run_without_a_model_flag(
     exit_code = explainability.main(["--run", "1"])
 
     assert exit_code == 1, "expected a refusal, not a generated heatmap"
+
+
+def test_device_reaches_rfdetr_at_construction(monkeypatch, tmp_path) -> None:
+    """The device must be passed when the model is built, not assumed.
+
+    Unlike Ultralytics, which accepts ``device=`` on every ``predict`` call,
+    RF-DETR binds its device at construction and its ``predict`` takes no such
+    argument. Omitting it does not fall back to the configured device — it
+    lets the library choose, which produced benchmark rows recorded under one
+    device and measured on another.
+    """
+    captured: dict[str, object] = {}
+
+    class _Stub:
+        class_names = ["column"]
+
+        @classmethod
+        def from_checkpoint(cls, path, **kwargs):
+            captured["path"] = path
+            captured.update(kwargs)
+            return cls()
+
+    weights = tmp_path / "rfdetr_nano_seg.pt"
+    weights.write_bytes(b"stub")
+
+    module = types.ModuleType("rfdetr")
+    module.RFDETRSegNano = _Stub
+    monkeypatch.setitem(sys.modules, "rfdetr", module)
+
+    detector = RFDetrDetector(model_path=weights, image_size=480, device="cpu")
+    detector.load()
+
+    assert captured["device"] == "cpu", "device was not passed to RF-DETR"
+    assert captured["resolution"] == 480
+
+
+def test_each_device_is_passed_through_verbatim(monkeypatch, tmp_path) -> None:
+    """No normalising, no substituting: the label recorded must be the one used."""
+    seen: list[str] = []
+
+    class _Stub:
+        class_names = ["column"]
+
+        @classmethod
+        def from_checkpoint(cls, path, **kwargs):  # noqa: ARG003
+            seen.append(kwargs.get("device"))
+            return cls()
+
+    weights = tmp_path / "rfdetr_nano_seg.pt"
+    weights.write_bytes(b"stub")
+    module = types.ModuleType("rfdetr")
+    module.RFDETRSegNano = _Stub
+    monkeypatch.setitem(sys.modules, "rfdetr", module)
+
+    for device in ("cpu", "mps", "cuda:0"):
+        RFDetrDetector(model_path=weights, image_size=480, device=device).load()
+
+    assert seen == ["cpu", "mps", "cuda:0"]

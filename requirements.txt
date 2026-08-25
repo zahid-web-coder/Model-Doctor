@@ -15,6 +15,14 @@ ultralytics>=8.4.0        # YOLO training, inference, and validation
 torch>=2.2.0              # Tensor/autograd backend (MPS on Apple Silicon)
 torchvision>=0.17.0       # NMS, IoU ops, and image transforms
 
+# --- Evaluation ---
+# COCOeval is Model Doctor's canonical evaluator: every detector family is
+# scored by this code rather than by whichever validator its own library
+# ships, because two libraries' numbers are not comparable. That makes it core
+# rather than optional — it is not RF-DETR's dependency, it is evaluation's,
+# and RF-DETR itself stays optional in requirements-rfdetr.txt.
+pycocotools>=2.0.7        # mAP/AR for boxes and masks, one evaluator for all
+
 # --- Image and numeric handling ---
 opencv-python>=4.9.0      # Image read/write and annotated-output rendering
 numpy>=1.26.0             # Array interchange between torch and everything else

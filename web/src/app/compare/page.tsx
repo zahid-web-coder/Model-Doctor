@@ -24,14 +24,20 @@ const FINDINGS_PAGE = 1000;
 const IMAGES_PAGE = 1000;
 
 async function loadRun(run: Run) {
-  const [outcomes, findings, images, factors, masks] = await Promise.all([
-    api.outcomes(run.id),
-    api.findings(run.id, FINDINGS_PAGE, 0),
-    api.images(run.id, IMAGES_PAGE, 0),
-    api.factorRates(run.id),
-    api.maskFindings(run.id),
-  ]);
-  return { run, outcomes, findings: findings.items, images, factors, masks };
+  const [outcomes, findings, images, factors, masks, evaluations, benchmarks] =
+    await Promise.all([
+      api.outcomes(run.id),
+      api.findings(run.id, FINDINGS_PAGE, 0),
+      api.images(run.id, IMAGES_PAGE, 0),
+      api.factorRates(run.id),
+      api.maskFindings(run.id),
+      api.evaluation(run.id),
+      api.benchmarks(run.id),
+    ]);
+  return {
+    run, outcomes, findings: findings.items, images, factors, masks,
+    evaluations, benchmarks,
+  };
 }
 
 export default async function ComparePage({
@@ -66,8 +72,8 @@ export default async function ComparePage({
             a.findings,
             b.findings,
           ),
-          metricsA: computeMetrics(a.outcomes, a.findings, a.masks),
-          metricsB: computeMetrics(b.outcomes, b.findings, b.masks),
+          metricsA: computeMetrics(a.outcomes, a.findings, a.masks, a.evaluations),
+          metricsB: computeMetrics(b.outcomes, b.findings, b.masks, b.evaluations),
           outcomesA: normaliseOutcomes(a.outcomes),
           outcomesB: normaliseOutcomes(b.outcomes),
           factorsA: a.factors,
@@ -76,6 +82,10 @@ export default async function ComparePage({
           masksB: b.masks,
           imagesA: a.images,
           imagesB: b.images,
+          evaluationsA: a.evaluations,
+          evaluationsB: b.evaluations,
+          benchmarksA: a.benchmarks,
+          benchmarksB: b.benchmarks,
           runA: a.run,
           runB: b.run,
         };

@@ -33,7 +33,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -48,7 +48,7 @@ logger = get_logger(__name__)
 # Bumped when the schema changes in a way that existing readers must know
 # about. Recorded in the database so a consumer can detect a mismatch instead
 # of failing on a missing column.
-SCHEMA_VERSION: int = 8
+SCHEMA_VERSION: int = 9
 
 SCHEMA_STATEMENTS: tuple[str, ...] = (
     """
@@ -251,6 +251,84 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
         UNIQUE (finding_id)
     )
     """,
+    # Added at schema version 9. Evaluation and benchmarking are separate
+    # tables because they are separate measurements with separate validity:
+    # mAP is a property of a model on a dataset and travels between machines,
+    # while latency and memory are properties of a model on *one* device and do
+    # not. Folding them together would invite a row that is half portable.
+    #
+    # Neither becomes a column on `runs`. The migration path here is additive —
+    # `initialise_database` creates missing tables and bumps the version, and
+    # cannot add a column to a table that already exists — so a new table is
+    # both the safer and the only supported shape (D-020).
+    #
+    # The settings that produced the numbers are stored beside them. An mAP
+    # without its confidence sweep, IoU range and detection cap is not a
+    # measurement, it is a rumour.
+    """
+    CREATE TABLE IF NOT EXISTS run_evaluations (
+        id                INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id            INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+        task              TEXT    NOT NULL,
+        evaluator         TEXT    NOT NULL,
+        evaluator_version TEXT,
+        sweep_confidence  REAL    NOT NULL,
+        iou_thresholds    TEXT    NOT NULL,
+        max_detections    INTEGER NOT NULL,
+        ground_truth      TEXT    NOT NULL,
+        gt_images         INTEGER NOT NULL,
+        gt_annotations    INTEGER NOT NULL,
+        prediction_count  INTEGER NOT NULL,
+        mask_source       TEXT,
+        map50_95          REAL,
+        map50             REAL,
+        map75             REAL,
+        map_small         REAL,
+        map_medium        REAL,
+        map_large         REAL,
+        ar1               REAL,
+        ar10              REAL,
+        ar100             REAL,
+        ar_small          REAL,
+        ar_medium         REAL,
+        ar_large          REAL,
+        created_at        TEXT    NOT NULL,
+        UNIQUE (run_id, task)
+    )
+    """,
+    # `device` is part of the key because `runs` does not record one: the
+    # device is resolved at run time from `config.DEVICE`. A latency without
+    # its device is meaningless, and silently comparing an MPS number against a
+    # CPU number is the worst thing this table could enable — so the device is
+    # mandatory, and the same run may hold one row per device it was measured
+    # on. `image_size` joins the key because resolution changes both.
+    """
+    CREATE TABLE IF NOT EXISTS run_benchmarks (
+        id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id             INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+        device             TEXT    NOT NULL,
+        image_size         INTEGER NOT NULL,
+        torch_threads      INTEGER,
+        warmup_images      INTEGER NOT NULL,
+        measured_images    INTEGER NOT NULL,
+        cold_start_s       REAL,
+        weights_load_s     REAL,
+        latency_mean_ms    REAL,
+        latency_median_ms  REAL,
+        latency_p90_ms     REAL,
+        latency_min_ms     REAL,
+        fps                REAL,
+        rss_baseline_mb    REAL,
+        rss_after_load_mb  REAL,
+        rss_peak_mb        REAL,
+        gpu_allocated_mb   REAL,
+        gpu_driver_mb      REAL,
+        checkpoint_bytes   INTEGER,
+        host_platform      TEXT,
+        created_at         TEXT    NOT NULL,
+        UNIQUE (run_id, device, image_size)
+    )
+    """,
     # Indexes chosen for the queries a dashboard actually issues: filter by
     # run, then by outcome or class. Without them every filter is a full scan.
     "CREATE INDEX IF NOT EXISTS idx_images_run ON images(run_id)",
@@ -268,6 +346,8 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
     "CREATE INDEX IF NOT EXISTS idx_mask_findings_run ON mask_findings(run_id)",
     "CREATE INDEX IF NOT EXISTS idx_cluster_members_finding "
     "ON cluster_members(finding_id)",
+    "CREATE INDEX IF NOT EXISTS idx_run_evaluations_run ON run_evaluations(run_id)",
+    "CREATE INDEX IF NOT EXISTS idx_run_benchmarks_run ON run_benchmarks(run_id)",
 )
 
 
@@ -1649,4 +1729,239 @@ def load_mask_findings(
             ),
         )
         for row in connection.execute(sql, (run_id,)).fetchall()
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Evaluation — mAP and AR, from one shared evaluator
+# ---------------------------------------------------------------------------
+_EVALUATION_METRICS: tuple[str, ...] = (
+    "map50_95", "map50", "map75", "map_small", "map_medium", "map_large",
+    "ar1", "ar10", "ar100", "ar_small", "ar_medium", "ar_large",
+)
+
+
+@dataclass(frozen=True)
+class EvaluationRow:
+    """One task's evaluation for one run, with the settings behind it.
+
+    The settings are not decoration. Two mAP figures are comparable only if
+    they share a confidence sweep, an IoU range, a detection cap and a ground
+    truth, so each is stored beside the number it produced rather than assumed
+    from a constant that may since have changed.
+    """
+
+    id: int
+    run_id: int
+    task: str
+    evaluator: str
+    evaluator_version: str | None
+    sweep_confidence: float
+    iou_thresholds: str
+    max_detections: int
+    ground_truth: str
+    gt_images: int
+    gt_annotations: int
+    prediction_count: int
+    mask_source: str | None
+    metrics: dict[str, float | None]
+    created_at: str
+
+
+def save_evaluation(
+    connection: sqlite3.Connection,
+    run_id: int,
+    task: str,
+    evaluator: str,
+    evaluator_version: str | None,
+    sweep_confidence: float,
+    iou_thresholds: str,
+    max_detections: int,
+    ground_truth: str,
+    gt_images: int,
+    gt_annotations: int,
+    prediction_count: int,
+    metrics: Mapping[str, float],
+    mask_source: str | None = None,
+) -> int:
+    """Persist one task's evaluation for a run, replacing any earlier one.
+
+    Replacing rather than accumulating: an evaluation is a statement about a
+    run as it stands, and two contradictory statements about the same run and
+    task would leave a reader with no way to choose. Re-running deliberately
+    supersedes.
+
+    Returns:
+        The number of rows written.
+    """
+    columns = ", ".join(_EVALUATION_METRICS)
+    placeholders = ", ".join("?" for _ in _EVALUATION_METRICS)
+    connection.execute(
+        f"""
+        INSERT INTO run_evaluations (
+            run_id, task, evaluator, evaluator_version, sweep_confidence,
+            iou_thresholds, max_detections, ground_truth, gt_images,
+            gt_annotations, prediction_count, mask_source, {columns}, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, {placeholders}, ?)
+        ON CONFLICT (run_id, task) DO UPDATE SET
+            evaluator = excluded.evaluator,
+            evaluator_version = excluded.evaluator_version,
+            sweep_confidence = excluded.sweep_confidence,
+            iou_thresholds = excluded.iou_thresholds,
+            max_detections = excluded.max_detections,
+            ground_truth = excluded.ground_truth,
+            gt_images = excluded.gt_images,
+            gt_annotations = excluded.gt_annotations,
+            prediction_count = excluded.prediction_count,
+            mask_source = excluded.mask_source,
+            {", ".join(f"{name} = excluded.{name}" for name in _EVALUATION_METRICS)},
+            created_at = excluded.created_at
+        """,
+        (
+            run_id, task, evaluator, evaluator_version, sweep_confidence,
+            iou_thresholds, max_detections, ground_truth, gt_images,
+            gt_annotations, prediction_count, mask_source,
+            *(metrics.get(name) for name in _EVALUATION_METRICS),
+            _timestamp(),
+        ),
+    )
+    return 1
+
+
+def load_evaluations(
+    connection: sqlite3.Connection, run_id: int
+) -> list[EvaluationRow]:
+    """Return every task evaluated for a run, or an empty list."""
+    rows = connection.execute(
+        "SELECT * FROM run_evaluations WHERE run_id = ? ORDER BY task", (run_id,)
+    ).fetchall()
+    return [
+        EvaluationRow(
+            id=row["id"],
+            run_id=row["run_id"],
+            task=row["task"],
+            evaluator=row["evaluator"],
+            evaluator_version=row["evaluator_version"],
+            sweep_confidence=row["sweep_confidence"],
+            iou_thresholds=row["iou_thresholds"],
+            max_detections=row["max_detections"],
+            ground_truth=row["ground_truth"],
+            gt_images=row["gt_images"],
+            gt_annotations=row["gt_annotations"],
+            prediction_count=row["prediction_count"],
+            mask_source=row["mask_source"],
+            metrics={name: row[name] for name in _EVALUATION_METRICS},
+            created_at=row["created_at"],
+        )
+        for row in rows
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Benchmark — latency, memory and checkpoint size, per device
+# ---------------------------------------------------------------------------
+_BENCHMARK_FIELDS: tuple[str, ...] = (
+    "torch_threads", "cold_start_s",
+    "weights_load_s", "latency_mean_ms", "latency_median_ms", "latency_p90_ms",
+    "latency_min_ms", "fps", "rss_baseline_mb", "rss_after_load_mb",
+    "rss_peak_mb", "gpu_allocated_mb", "gpu_driver_mb", "checkpoint_bytes",
+    "host_platform",
+)
+
+
+@dataclass(frozen=True)
+class BenchmarkRow:
+    """One controlled compute measurement of a run, on one device.
+
+    ``device`` is never optional. A latency without it cannot be compared with
+    anything, and comparing across devices is the mistake this field exists to
+    make impossible to commit by accident.
+    """
+
+    id: int
+    run_id: int
+    device: str
+    image_size: int
+    warmup_images: int
+    measured_images: int
+    created_at: str
+    measurements: dict[str, float | int | str | None]
+
+
+def save_benchmark(
+    connection: sqlite3.Connection,
+    run_id: int,
+    device: str,
+    image_size: int,
+    warmup_images: int,
+    measured_images: int,
+    measurements: Mapping[str, float | int | str | None],
+) -> int:
+    """Persist one device's benchmark of a run, replacing any earlier one.
+
+    ``device``, ``warmup_images`` and ``measured_images`` are named parameters
+    rather than entries in ``measurements`` because a latency is not a claim
+    without them. A mean over three images and a mean over thirty are different
+    statements, and one measured without a warm-up is mostly reporting kernel
+    compilation. Requiring them here means a caller cannot omit them by
+    forgetting a dictionary key.
+
+    Raises:
+        ValueError: If ``device`` is empty, or the image counts are negative or
+            leave nothing measured.
+    """
+    if not device or not device.strip():
+        raise ValueError(
+            "A benchmark must record the device it ran on; latency and memory "
+            "mean nothing without it."
+        )
+    if warmup_images < 0 or measured_images < 1:
+        raise ValueError(
+            "A benchmark needs a non-negative warm-up and at least one "
+            f"measured image; got warmup={warmup_images}, "
+            f"measured={measured_images}."
+        )
+
+    assignments = ", ".join(f"{name} = excluded.{name}" for name in _BENCHMARK_FIELDS)
+    connection.execute(
+        f"""
+        INSERT INTO run_benchmarks (
+            run_id, device, image_size, warmup_images, measured_images,
+            {", ".join(_BENCHMARK_FIELDS)}, created_at
+        ) VALUES (?, ?, ?, ?, ?, {", ".join("?" for _ in _BENCHMARK_FIELDS)}, ?)
+        ON CONFLICT (run_id, device, image_size) DO UPDATE SET
+            warmup_images = excluded.warmup_images,
+            measured_images = excluded.measured_images,
+            {assignments},
+            created_at = excluded.created_at
+        """,
+        (
+            run_id, device.strip(), image_size, warmup_images, measured_images,
+            *(measurements.get(name) for name in _BENCHMARK_FIELDS),
+            _timestamp(),
+        ),
+    )
+    return 1
+
+
+def load_benchmarks(
+    connection: sqlite3.Connection, run_id: int
+) -> list[BenchmarkRow]:
+    """Return every benchmark recorded for a run, or an empty list."""
+    rows = connection.execute(
+        "SELECT * FROM run_benchmarks WHERE run_id = ? ORDER BY device, image_size",
+        (run_id,),
+    ).fetchall()
+    return [
+        BenchmarkRow(
+            id=row["id"],
+            run_id=row["run_id"],
+            device=row["device"],
+            image_size=row["image_size"],
+            warmup_images=row["warmup_images"],
+            measured_images=row["measured_images"],
+            created_at=row["created_at"],
+            measurements={name: row[name] for name in _BENCHMARK_FIELDS},
+        )
+        for row in rows
     ]

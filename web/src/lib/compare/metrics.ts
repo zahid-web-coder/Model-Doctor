@@ -1,4 +1,4 @@
-import type { Finding, MaskFinding, Outcomes } from "@/lib/api/rows";
+import type { Evaluation, Finding, MaskFinding, Outcomes } from "@/lib/api/rows";
 import { REASONS, derived, stored, unavailable, type Value } from "./provenance";
 
 /**
@@ -73,21 +73,67 @@ export interface RunMetrics {
   falsePositive: Value<number>;
   poorLocalization: Value<number>;
   wrongClass: Value<number>;
-  mapBox50: Value<number>;
-  mapBox5095: Value<number>;
-  mapMask50: Value<number>;
-  mapMask5095: Value<number>;
+  // Nullable like the derived ratios: a stored evaluation may omit a statistic
+  // (COCOeval reports -1 for an area band with no ground truth), and that is
+  // absence, not zero.
+  mapBox50: Value<number | null>;
+  mapBox5095: Value<number | null>;
+  mapMask50: Value<number | null>;
+  mapMask5095: Value<number | null>;
 }
 
 const CONFUSION_NOTE =
   "poor localisation and wrong class each count as both a false positive and a false negative";
 
+/**
+ * The settings an evaluation must share before two of them can be compared.
+ *
+ * mAP is only meaningful against a stated protocol. Two runs scored at
+ * different confidence sweeps, IoU ranges or detection caps produce numbers
+ * that look alike and measure different things, so a mismatch is reported as
+ * such rather than quietly rendered side by side.
+ */
+export function comparableEvaluations(a: Evaluation, b: Evaluation): boolean {
+  return (
+    a.sweep_confidence === b.sweep_confidence &&
+    a.iou_thresholds === b.iou_thresholds &&
+    a.max_detections === b.max_detections &&
+    a.evaluator === b.evaluator
+  );
+}
+
+/** One run's evaluations, indexed by task. */
+export type EvaluationsByTask = Map<string, Evaluation>;
+
+export const indexEvaluations = (rows: Evaluation[]): EvaluationsByTask =>
+  new Map(rows.map((row) => [row.task, row]));
+
+/**
+ * Read one stored metric, or say why it is absent.
+ *
+ * `stored`, never `derived`: this figure was produced by COCOeval and written
+ * to `run_evaluations` verbatim. Nothing here recomputes it, and nothing here
+ * falls back to an approximation when it is missing.
+ */
+function evaluationMetric(
+  evaluations: EvaluationsByTask,
+  task: string,
+  key: string,
+): Value<number | null> {
+  const row = evaluations.get(task);
+  if (!row) return unavailable(REASONS.NOT_EVALUATED);
+  const value = row.metrics?.[key];
+  return typeof value === "number" ? stored(value) : unavailable(REASONS.NOT_EVALUATED);
+}
+
 export function computeMetrics(
   raw: Partial<Outcomes>,
   findings: Finding[],
   maskFindings: MaskFinding[],
+  evaluations: Evaluation[] = [],
 ): RunMetrics {
   const outcomes = normaliseOutcomes(raw);
+  const byTask = indexEvaluations(evaluations);
   const { truePositives: tp, falsePositives: fp, falseNegatives: fn } =
     confusion(outcomes);
 
@@ -127,11 +173,13 @@ export function computeMetrics(
     poorLocalization: stored(outcomes.poor_localization),
     wrongClass: stored(outcomes.wrong_class),
 
-    // Not shown as zero, not borrowed from the offline evaluator's artefacts.
-    mapBox50: unavailable(REASONS.MAP),
-    mapBox5095: unavailable(REASONS.MAP),
-    mapMask50: unavailable(REASONS.MAP),
-    mapMask5095: unavailable(REASONS.MAP),
+    // From `run_evaluations`, written by the shared COCO evaluator — or
+    // absent, saying so. Never zero, and never borrowed from a script artefact
+    // that cannot be attributed to this run.
+    mapBox50: evaluationMetric(byTask, "bbox", "map50"),
+    mapBox5095: evaluationMetric(byTask, "bbox", "map50_95"),
+    mapMask50: evaluationMetric(byTask, "segm", "map50"),
+    mapMask5095: evaluationMetric(byTask, "segm", "map50_95"),
   };
 }
 

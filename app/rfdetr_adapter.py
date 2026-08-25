@@ -143,12 +143,23 @@ class RFDetrDetector(Detector):
         if self.image_size:
             kwargs["resolution"] = int(self.image_size)
 
+        # **The device has to be passed at construction.** Unlike Ultralytics,
+        # which takes `device=` on every `predict` call, RF-DETR binds its
+        # device when the model is built and its `predict` accepts no such
+        # argument. Omitting it here does not fall back to `config.DEVICE`; it
+        # lets RF-DETR choose for itself, which on this hardware means MPS
+        # whatever the caller asked for. That is how a run measured on the CPU
+        # came back at 162 ms instead of its true 601 ms — a figure recorded
+        # under the wrong device is worse than no figure, because it will be
+        # compared with something.
+        if self.device:
+            kwargs["device"] = str(self.device)
+
         logger.info(
-            "Loading RF-DETR checkpoint %s%s",
+            "Loading RF-DETR checkpoint %s at resolution %s on device %s",
             weights.name,
-            f" at resolution {kwargs['resolution']}"
-            if kwargs
-            else " at its native resolution",
+            kwargs.get("resolution", "native"),
+            kwargs.get("device", "the library's own choice"),
         )
         started = time.perf_counter()
         try:
@@ -258,8 +269,21 @@ class RFDetrDetector(Detector):
             zip(boxes, confidences, class_ids, strict=True)
         ):
             outline = None
+            rle = None
             if masks is not None and index < len(masks):
                 outline = _mask_to_polygon(masks[index])
+                # The raster goes to evaluation untouched, while the polygon
+                # above keeps only its largest component. Both are correct for
+                # their purpose: the polygon is what Model Doctor stores and
+                # draws, and reducing a multi-part instance to one blob there
+                # is a deliberate simplification — but scoring against it would
+                # charge the model for that simplification rather than for its
+                # prediction. RF-DETR's mask is already at full image
+                # resolution, so nothing is rescaled.
+                if self.keep_raw_masks:
+                    from app.evaluation import encode_mask
+
+                    rle = encode_mask(np.asarray(masks[index], dtype=bool))
 
             x1, y1, x2, y2 = (float(v) for v in box)
             detections.append(
@@ -272,6 +296,7 @@ class RFDetrDetector(Detector):
                     x2=x2,
                     y2=y2,
                     polygon=outline,
+                    mask_rle=rle,
                 )
             )
 
