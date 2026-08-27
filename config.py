@@ -306,6 +306,64 @@ API_FILE_ROOTS: Final[tuple[Path, ...]] = tuple(
     )
 )
 
+
+def _parse_path_remap(raw: str) -> tuple[tuple[str, str], ...]:
+    """Read ``old=new`` rewrite rules from a semicolon-separated string.
+
+    Malformed entries are skipped rather than raising. This is start-up
+    configuration for a read-only service, and refusing to boot because one
+    rule of several has a typo would deny access to the rules that are fine.
+    The skip is logged by the caller's ``describe`` output instead.
+    """
+    rules: list[tuple[str, str]] = []
+    for part in raw.split(";"):
+        part = part.strip()
+        if not part or "=" not in part:
+            continue
+        old, _, new = part.partition("=")
+        old, new = old.strip(), new.strip()
+        if old and new:
+            rules.append((old.rstrip("/"), new.rstrip("/")))
+    return tuple(rules)
+
+
+# Path prefixes rewritten before a stored file path is opened.
+#
+# **Why this exists.** `images.path` and `heatmaps.path` are absolute and were
+# written on the machine that ran the diagnosis. Copy a database to a second
+# machine — a colleague's laptop, a CI runner, this machine after the source
+# directory moved — and every path in it points somewhere that does not exist,
+# so the tables render and every image 404s. Nothing in the schema is wrong;
+# the paths are simply someone else's.
+#
+# Rewriting at serve time rather than migrating the database keeps the record
+# of where a run was actually diagnosed intact. The database stays a true
+# statement about the machine that produced it, and relocation is the reader's
+# configuration rather than an edit to history.
+#
+# Format: ``MD_PATH_REMAP="/old/prefix=/new/prefix;/another=/somewhere"``.
+# The rewritten path is still checked against `API_FILE_ROOTS`, so this widens
+# nothing — a remap pointing outside the permitted roots is refused exactly as
+# an unremapped one would be.
+PATH_REMAP: Final[tuple[tuple[str, str], ...]] = _parse_path_remap(
+    os.getenv("MD_PATH_REMAP", "")
+)
+
+
+def remap_path(stored: str) -> str:
+    """Apply the first matching remap rule to a stored path.
+
+    First match wins, so a more specific prefix listed before a general one
+    takes precedence. Returns the input unchanged when no rule matches, which
+    is the common case and the one that must stay cheap.
+    """
+    for old, new in PATH_REMAP:
+        if stored == old:
+            return new
+        if stored.startswith(old + "/"):
+            return new + stored[len(old) :]
+    return stored
+
 # ---------------------------------------------------------------------------
 # Device selection
 # ---------------------------------------------------------------------------

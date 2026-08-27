@@ -638,3 +638,99 @@ def test_an_unknown_config_attribute_still_raises() -> None:
 
     with pytest.raises(AttributeError, match="no attribute"):
         _ = config_module.NOT_A_REAL_SETTING
+
+
+# ---------------------------------------------------------------------------
+# Path remapping
+# ---------------------------------------------------------------------------
+class TestPathRemap:
+    """Relocating a database written on another machine.
+
+    `images.path` and `heatmaps.path` are absolute and belong to whichever
+    machine ran the diagnosis. Copied elsewhere, every one of them points at
+    nothing, so the tables render and the images 404. `MD_PATH_REMAP` rewrites
+    the prefix at serve time rather than editing the database, which keeps the
+    record of where a run was actually diagnosed intact.
+    """
+
+    def test_parses_rules_and_ignores_malformed_entries(self) -> None:
+        """One typo must not discard the rules that are well formed."""
+        parsed = config._parse_path_remap("/a=/b; broken ;/c=/d;=/e;/f=")
+        assert parsed == (("/a", "/b"), ("/c", "/d"))
+
+    def test_trailing_slashes_do_not_change_the_meaning(self) -> None:
+        """`/a/` and `/a` name the same directory and must behave the same."""
+        assert config._parse_path_remap("/a/=/b/") == (("/a", "/b"),)
+
+    def test_rewrites_a_prefix(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The ordinary case: a stored prefix becomes a local one."""
+        monkeypatch.setattr(config, "PATH_REMAP", (("/old/root", "/new/root"),))
+        assert config.remap_path("/old/root/img/a.jpg") == "/new/root/img/a.jpg"
+
+    def test_leaves_unmatched_paths_alone(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A path no rule covers is returned untouched."""
+        monkeypatch.setattr(config, "PATH_REMAP", (("/old", "/new"),))
+        assert config.remap_path("/elsewhere/a.jpg") == "/elsewhere/a.jpg"
+
+    def test_matches_whole_segments_only(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """`/data` must not rewrite `/database`, which is a different directory."""
+        monkeypatch.setattr(config, "PATH_REMAP", (("/data", "/mnt"),))
+        assert config.remap_path("/database/a.jpg") == "/database/a.jpg"
+        assert config.remap_path("/data") == "/mnt"
+
+    def test_first_matching_rule_wins(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A specific prefix listed first takes precedence over a general one."""
+        monkeypatch.setattr(
+            config, "PATH_REMAP", (("/a/b", "/specific"), ("/a", "/general"))
+        )
+        assert config.remap_path("/a/b/x.jpg") == "/specific/x.jpg"
+        assert config.remap_path("/a/c/x.jpg") == "/general/c/x.jpg"
+
+    def test_serves_an_image_whose_stored_path_is_from_another_machine(
+        self, populated: Path, roots: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The whole point: a foreign absolute path resolves to a local file."""
+        with storage.connect(populated) as connection:
+            connection.execute(
+                "UPDATE images SET path = ? WHERE id = 1",
+                ("/somewhere/else/present.jpg",),
+            )
+            connection.commit()
+
+        monkeypatch.setattr(config, "DB_PATH", populated)
+        monkeypatch.setattr(
+            config, "PATH_REMAP", (("/somewhere/else", str(roots.resolve())),)
+        )
+        client = TestClient(create_app())
+        response = client.get("/images/1")
+        assert response.status_code == 200, response.text
+        assert response.headers["content-type"].startswith("image/")
+
+    def test_does_not_widen_what_the_service_may_read(
+        self, populated: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A remap is relocation, not permission.
+
+        Rewriting to somewhere outside the permitted roots must still be
+        refused — otherwise this option would quietly become a way to make the
+        API serve any file on the host.
+        """
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        Image.new("RGB", (8, 8)).save(outside / "present.jpg")
+
+        with storage.connect(populated) as connection:
+            connection.execute(
+                "UPDATE images SET path = ? WHERE id = 1",
+                ("/somewhere/else/present.jpg",),
+            )
+            connection.commit()
+
+        monkeypatch.setattr(config, "DB_PATH", populated)
+        monkeypatch.setattr(
+            config, "PATH_REMAP", (("/somewhere/else", str(outside.resolve())),)
+        )
+        client = TestClient(create_app())
+        assert client.get("/images/1").status_code == 403

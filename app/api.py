@@ -172,7 +172,11 @@ def verified_file(stored_path: str) -> Path:
     Raises:
         HTTPException: 403 or 404 as described.
     """
-    candidate = Path(stored_path).expanduser()
+    # Relocation happens before anything else, because every later step —
+    # the root check, the existence check, the error message — should speak
+    # about the file this machine will actually open, not the one the
+    # diagnosing machine recorded.
+    candidate = Path(config.remap_path(stored_path)).expanduser()
     try:
         resolved = candidate.resolve()
     except OSError as error:
@@ -189,7 +193,10 @@ def verified_file(stored_path: str) -> Path:
             detail=(
                 "That file is outside the directories this service may read. "
                 "Start the API with MD_DATASETS_DIR set to the location the "
-                "run was diagnosed from, or add it to MD_API_FILE_ROOTS."
+                "run was diagnosed from, or add it to MD_API_FILE_ROOTS. If "
+                "this database was copied from another machine, its stored "
+                "paths belong to that machine — set MD_PATH_REMAP to point "
+                "them at this one."
             ),
         )
     if not resolved.is_file():
