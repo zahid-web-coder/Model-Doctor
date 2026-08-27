@@ -21,10 +21,20 @@ export interface Tile {
  * have no attention map, and a grid of empty boxes would read as broken rather
  * than as partial coverage.
  */
-function HeatTile({ tile }: { tile: Tile }) {
+function HeatTile({ tile, available }: { tile: Tile; available: boolean }) {
   const [heatmapFailed, setHeatmapFailed] = useState(false);
   const { finding, mask } = tile;
-  const src = heatmapFailed ? api.imageUrl(finding.image_id) : api.heatmapUrl(finding.id);
+  // When the run has no explanations at all, go straight to the source image.
+  // Requesting sixty heatmaps that are all known to 404 wastes the round trips
+  // and, while they are in flight, labels every tile as a Grad-CAM it will
+  // never be.
+  const showingHeatmap = available && !heatmapFailed;
+  // The grid asks for the preview: a tile is a couple of hundred pixels wide
+  // and the full-resolution overlay is roughly twenty times the bytes. The
+  // detail view and the endpoint's default are both unchanged.
+  const src = showingHeatmap
+    ? api.heatmapUrl(finding.id, true)
+    : api.imageUrl(finding.image_id);
 
   return (
     <div className="bg-card border border-border/40 rounded-lg p-2 hover:border-brass/50 transition-colors">
@@ -32,12 +42,12 @@ function HeatTile({ tile }: { tile: Tile }) {
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img
           src={src}
-          alt={heatmapFailed ? `Source image for finding ${finding.id}` : `Grad-CAM for finding ${finding.id}`}
+          alt={showingHeatmap ? `Grad-CAM for finding ${finding.id}` : `Source image for finding ${finding.id}`}
           className="w-full h-full object-cover"
           loading="lazy"
           onError={() => setHeatmapFailed(true)}
         />
-        {heatmapFailed && (
+        {!showingHeatmap && (
           <span className="absolute bottom-1 left-1 text-[9px] px-1.5 py-0.5 rounded bg-black/55 text-white/90">
             source image
           </span>
@@ -57,11 +67,13 @@ function HeatTile({ tile }: { tile: Tile }) {
 }
 
 export function HeatmapGrid({
-  tiles, total, maskCount,
+  tiles, total, maskCount, explained,
 }: {
   tiles: Tile[];
   total: number;
   maskCount: number;
+  /** How many findings in this run actually have an explanation. */
+  explained: number;
 }) {
   const [outcome, setOutcome] = useState("All Outcomes");
   const [cls, setCls] = useState("All Classes");
@@ -104,6 +116,21 @@ export function HeatmapGrid({
           </button>
         </div>
       </div>
+      {explained === 0 && (
+        <div className="mb-4 shrink-0 rounded-md border border-brass/40 bg-brass/5 px-3 py-2.5">
+          <p className="text-[12px] text-ink font-medium">
+            Attention heatmaps are not available for this model.
+          </p>
+          <p className="text-[11px] text-slate mt-1 leading-relaxed">
+            The images below are the original source images — no attribution
+            overlay is being shown. Grad-CAM targets a convolutional detection
+            head, and this run was produced by a detector that predicts through
+            decoder queries instead, so no explanation is generated rather than
+            one that would not correspond to the prediction.
+          </p>
+        </div>
+      )}
+
 
       <div className="flex-1 overflow-y-auto custom-scrollbar pr-2 pb-2">
         <p className="text-[11px] text-slate mb-3">
@@ -113,7 +140,9 @@ export function HeatmapGrid({
             : ` ${maskCount} carry an outline measurement.`}
         </p>
         <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-6 gap-4">
-          {visible.map((t) => <HeatTile key={t.finding.id} tile={t} />)}
+          {visible.map((t) => (
+            <HeatTile key={t.finding.id} tile={t} available={explained > 0} />
+          ))}
         </div>
         {visible.length === 0 && (
           <p className="py-10 text-center text-slate text-[13px]">No findings match these filters.</p>

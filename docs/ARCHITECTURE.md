@@ -239,9 +239,49 @@ Converts a detector into structured, inspectable data.
 - `Detector`: lazy loading, idempotent `load()`, per-image error isolation.
 - `predict_many` is a generator, so memory stays flat and progress streams.
 - `validate()` wraps the detector's own metrics evaluation and normalises the
-  result, so no third-party object escapes this module.
+  result, so no third-party object escapes this module. **It is a convenience
+  for one model, not the project's evaluation path** — see `app/evaluation.py`
+  below. `RFDetrDetector.validate` refuses outright, because a second library's
+  validator would not be comparable with this one.
 - CLI entry point returning exit codes rather than calling `sys.exit`, so it is
   testable.
+
+### `app/detectors.py` / `app/rfdetr_adapter.py` — Completed
+
+A second detector family behind the same contract.
+
+- `detect_family()` reads the family from the **checkpoint**, so a saved run is
+  always re-opened with the detector that produced it. This is why no
+  `detector_family` column exists: the weights already carry the fact, and a
+  column could disagree with them.
+- `build_detector()` dispatches on family and imports `rfdetr` lazily, so a
+  checkout that only uses YOLO neither pays for the dependency nor fails without
+  it. YOLO remains the default.
+- The adapter converts RF-DETR's output into the same `Detection` objects
+  Ultralytics produces, so no analysis stage knows which family ran.
+- RF-DETR binds its device at construction rather than per call, so the adapter
+  passes it there; omitting it lets the library pick, which silently mislabels a
+  measurement.
+
+### `app/evaluation.py` — Completed
+
+**The authoritative evaluation path, for every detector family.**
+
+- One evaluator — `pycocotools` COCOeval, box and mask — against one ground
+  truth built from the dataset's own YOLO labels. Running each library's own
+  validator would produce two numbers that look alike and are not comparable:
+  different matching rules, NMS, area bands and score handling, with no way to
+  separate the evaluator's contribution from the model's.
+- Predictions are collected at a sweep confidence far below any operating point,
+  because mAP integrates over the whole precision/recall curve. It is therefore
+  **not** derivable from `findings`, which store only post-threshold,
+  post-matching survivors.
+- Segmentation is scored from each model's own multi-component raster, not from
+  the single-component polygon Model Doctor stores for display — that reduction
+  is right for drawing and would charge a model for a representation choice.
+- The settings that produced a result are persisted beside it, because an mAP
+  without its confidence sweep, IoU range and detection cap is not a
+  measurement.
 
 ---
 

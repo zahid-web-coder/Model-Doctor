@@ -349,11 +349,49 @@ def _finding_box(row: Any) -> tuple[float, float, float, float] | None:
     return None
 
 
+# A grid tile is a couple of hundred CSS pixels wide, so this is generous even
+# at twice the device pixel ratio. Wide enough that nothing is lost to a reader
+# scanning for a pattern; small enough that sixty of them are not a download.
+PREVIEW_WIDTH: int = 384
+PREVIEW_QUALITY: int = 92
+
+
+def preview_path(path: Path) -> Path:
+    """Return the preview companion for a heatmap image.
+
+    Derived from the stored path by convention rather than recorded in the
+    schema: a preview is a rendering of the heatmap, not a second measurement,
+    and giving it a column would invite the two getting out of step.
+    """
+    return path.with_suffix(".preview.jpg")
+
+
 def _write_image(path: Path, array: Any) -> None:
-    """Write an RGB array to disk as a PNG."""
+    """Write an RGB array as a full-resolution PNG, plus a small preview.
+
+    **The PNG is the artefact; the preview is only for showing many at once.**
+    A grid of sixty full-resolution overlays is ninety megabytes, and the tiles
+    are a couple of hundred pixels wide — so the page pays a thousandfold for
+    detail it cannot display. The preview is a downscaled JPEG beside it, and
+    lossy is acceptable there precisely because it is never the thing being
+    read closely: any view that matters still serves the PNG untouched.
+    """
     import cv2
 
-    cv2.imwrite(str(path), cv2.cvtColor(array, cv2.COLOR_RGB2BGR))
+    bgr = cv2.cvtColor(array, cv2.COLOR_RGB2BGR)
+    cv2.imwrite(str(path), bgr)
+
+    height, width = bgr.shape[:2]
+    if width > PREVIEW_WIDTH:
+        scale = PREVIEW_WIDTH / width
+        bgr = cv2.resize(
+            bgr,
+            (PREVIEW_WIDTH, max(1, int(round(height * scale)))),
+            interpolation=cv2.INTER_AREA,
+        )
+    cv2.imwrite(
+        str(preview_path(path)), bgr, [cv2.IMWRITE_JPEG_QUALITY, PREVIEW_QUALITY]
+    )
 
 
 def load_explainable_model(weights: Path | None = None) -> Any:
@@ -428,10 +466,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             logger.info("Using newest run %d", run_id)
 
         # Grad-CAM is the only explanation method implemented, and the only
-        # adapter for it targets YOLO26's feature pyramid. That does not carry
-        # across to RF-DETR: a DETR has no pyramid feeding a convolutional
-        # head, and what explains its predictions is decoder cross-attention —
-        # a different method rather than a different adapter.
+        # adapter for it targets YOLO26's feature pyramid and the anchor-indexed
+        # class logits that pyramid feeds. RF-DETR has neither: it predicts
+        # through a fixed set of decoder queries, so there is no anchor whose
+        # logit could be selected by position.
+        #
+        # What that rules out is *this adapter*, not explanation in general.
+        # Which attribution method suits a query-based detector is an open
+        # question the project has not answered yet, so nothing here should be
+        # read as prescribing one.
         #
         # The family comes from the run's own checkpoint, not from `--model`.
         # Checking the flag alone left a hole: asking for heatmaps on an
@@ -445,20 +488,29 @@ def main(argv: Sequence[str] | None = None) -> int:
         weights = args.model or (saved.model_path if saved else None)
         if weights and detect_family(weights) == "rfdetr":
             logger.error(
-                "Run %d was produced by RF-DETR (%s). Grad-CAM targets YOLO26's "
-                "feature pyramid and does not transfer to it: explaining a DETR "
-                "means decoder cross-attention, which is a different method, not "
-                "another CamAdapter. Heatmaps are YOLO-only for now; every other "
-                "stage of the pipeline supports both families.",
+                "Run %d was produced by RF-DETR (%s). The Grad-CAM adapter "
+                "implemented here targets YOLO26's feature pyramid and its "
+                "anchor-indexed class logits, neither of which RF-DETR has: it "
+                "predicts through decoder queries instead. That is a gap in "
+                "this implementation, not a statement that RF-DETR cannot be "
+                "explained — an architecture-appropriate attribution method is "
+                "open work. Heatmaps are YOLO-only for now; every other stage "
+                "of the pipeline supports both families.",
                 run_id,
                 Path(weights).name,
             )
             return 1
 
         try:
-            model = load_explainable_model(
-                Path(args.model) if args.model else None
-            )
+            # `weights` is the run's own checkpoint, already resolved above for
+            # the family check. Passing it here rather than `args.model` closes
+            # the same hole that check was written to close: without `--model`,
+            # loading fell through to weight *discovery*, which picks the newest
+            # file in the models directory. That is very often a different
+            # checkpoint from the one the run used, and the heatmaps it produces
+            # explain a model the findings did not come from — a wrong answer
+            # that looks entirely normal.
+            model = load_explainable_model(Path(weights) if weights else None)
             report = explain_run(
                 connection,
                 run_id,

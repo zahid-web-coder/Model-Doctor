@@ -3,7 +3,8 @@
 **This document is the project's source of truth.** Where any other document
 disagrees with it, this one wins and the other should be corrected.
 
-Last updated: 2026-08-18 (Milestone 7 closed — dashboard complete)
+Last updated: 2026-08-25 (Milestone 10 closed — evaluation and benchmark
+persistence complete). Schema version 9.
 
 ---
 
@@ -13,8 +14,11 @@ Model Doctor is a Vision AI **failure diagnosis** platform for object detection
 models. It explains *why* a model fails, rather than only reporting how much it
 fails. See [VISION.md](VISION.md) for the reasoning behind that goal.
 
-Version 1 targets YOLO. Support for other detector families is an explicit
-architectural concern but is **not implemented**.
+YOLO is the default detector family. RF-DETR is supported as an **optional**
+second family: detector-specific code is isolated behind `app/inference.py`,
+`app/detectors.py` and `app/rfdetr_adapter.py`, and every analysis stage runs
+unchanged on either. Explainability is the one stage that does not yet cover
+both — see *Current state* below.
 
 ---
 
@@ -49,7 +53,14 @@ architectural concern but is **not implemented**.
 | Similar-failure retrieval (nearest neighbour) | **Completed** — reads existing embeddings |
 | Developer dashboard | **Completed** — eight tabs, including recommendations and outline comparison |
 | Mask IoU / segmentation analysis | **Completed** — schema version 8; D-022 closed by D-036 |
-| Everything beyond error analysis | **Planned** — see [ROADMAP.md](ROADMAP.md) |
+| Second detector family (RF-DETR) | **Completed** — optional dependency; family read from the checkpoint, no schema change |
+| Web dashboard (Next.js, over the HTTP API) | **Completed** — overview, failures, root causes, clusters, heatmaps, comparison |
+| Model comparison | **Completed** — no new endpoint, no schema change |
+| Prediction and ground-truth overlays | **Completed** — drawn from stored geometry |
+| Shared COCO evaluation + persisted mAP | **Completed** — schema version 9; one evaluator for every family |
+| Persisted per-device benchmarks | **Completed** — schema version 9; device recorded per measurement |
+| RF-DETR explainability | **Not implemented** — Grad-CAM refuses rather than mis-applying; see [ROADMAP.md](ROADMAP.md) |
+| Everything beyond the above | **Planned** — see [ROADMAP.md](ROADMAP.md) |
 
 ### Verified by execution
 
@@ -79,6 +90,21 @@ architectural concern but is **not implemented**.
   `small_object` at 2.77x / 3.45x and `thin_structure` at 2.14x / 2.32x, all
   p < 0.001. Size shows a monotonic dose-response and holds within a single
   class, so it is not class in disguise (D-032).
+- Both detector families run the whole pipeline on the same dataset, and are
+  compared through one evaluator. RF-DETR is the more accurate model there and
+  markedly the more expensive: mAP@50 0.879 against 0.836 for boxes, at 1.80 FPS
+  against 21.57 on the CPU.
+- Box mAP from `app/evaluation.py` reproduces the standalone comparison script
+  exactly, which is what establishes the persisted pipeline as equivalent to the
+  one already validated.
+- Comparison alignment was checked against the API: 228 ground-truth objects
+  paired, none unmatched on either side, and every unpaired finding a false
+  positive — which is why false positives are counted per image rather than
+  paired to ground truth.
+- A benchmark records the device it actually ran on. RF-DETR binds its device at
+  construction rather than per call, and until that was passed through, CPU-
+  labelled measurements were running on MPS — 588 ms recorded as 162 ms. Found
+  by review, fixed, and covered by regression tests.
 
 ### Not yet verified by execution
 
@@ -92,8 +118,8 @@ The project depends on two resources it does not own and does not create:
 
 | Resource | Expected location | Status |
 | --- | --- | --- |
-| Trained detector weights | `models/` (any `*.pt`) | **Available** — a nano segmentation model |
-| Dataset + descriptor | `datasets/` incl. `data.yaml` | **Available** — a 2-class segmentation dataset |
+| Trained detector weights | `models/` (any `*.pt`) | **Available** — nano segmentation models for both families |
+| Dataset + descriptor | `datasets/` incl. `data.yaml` | **Available** — segmentation datasets; the current reference run is single-class |
 
 The codebase is written to operate in this state. Absence of a resource is a
 supported condition, reported through the health check, not an error state that
@@ -195,12 +221,18 @@ Both are correct answers to different questions. Do not compare them directly.
 
 ## Dashboard scope
 
-The current dashboard slice is deliberately limited to the stable Milestone 3
-schema: runs, images, and findings. It provides run provenance, outcome and
-per-class charts, filters for the four failure types, worst-image ranking, and
-prediction/ground-truth overlays. The viewer also renders a stored ground-truth
-polygon when present.
+There are two readers, both read-only, both rendering nothing but the tables
+published in [SCHEMA.md](SCHEMA.md).
 
-Grad-CAM and other visual explanation outputs are not represented in the
-schema yet, so the dashboard does not display an empty placeholder for them.
-They will be added when Milestone 4 publishes a contract for that data.
+The **web dashboard** (`web/`, Next.js) reads through the HTTP API and is where
+current work lands: overview, failures, root causes, clusters, heatmaps,
+reports, and model comparison. Comparison covers metric provenance, failure
+alignment, prediction overlays, persisted mAP and per-device compute.
+
+The **Streamlit explorer** (`app/dashboard.py`) predates it and opens a SQLite
+file directly, without needing the API running. It is kept for that reason.
+
+Every stage now has a schema contract, so nothing is withheld for lack of one.
+Where a figure genuinely is not available — a run never evaluated, or two runs
+benchmarked on different devices — it is labelled as unavailable with the
+reason, never rendered as zero.

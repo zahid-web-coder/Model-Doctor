@@ -903,3 +903,134 @@ needed.
 - 100 of 278 findings unmeasurable on the test split, all of them unpaired
   findings — every paired finding was measured.
 
+
+## Milestone 8 — Additional Detector Support · 2026-08-24
+
+A second detector family, added without touching a single analysis stage. The
+boundary D-005 established held.
+
+### Added
+
+- `app/detectors.py` — family dispatch. `detect_family()` reads the family from
+  the checkpoint itself, which is why no `detector_family` column was needed: a
+  run already records its weights, and the weights say what they are.
+- `app/rfdetr_adapter.py` — RF-DETR Nano Seg behind the existing `Detector`
+  contract. Its boolean raster masks are traced to the one polygon per object
+  Model Doctor's annotation model carries.
+- `requirements-rfdetr.txt` — optional. YOLO remains the default and nothing in
+  the core install depends on this.
+
+### Decided
+
+- **Grad-CAM refuses to run on RF-DETR** rather than being pointed at an
+  architecture it was not written for. Every other stage supports both families.
+
+### Measured
+
+RF-DETR is more accurate on this dataset and markedly more expensive. The
+numbers that matter for deployment are recorded per run from Milestone 10.
+
+---
+
+## Milestone 9 — Model Comparison · 2026-08-24
+
+Answers *which model do I ship, and why*, from data already stored. Five
+existing endpoints per run; no new route, no schema change.
+
+### Added
+
+- `/compare` — verdict, metric table, failure profile, root-cause comparison and
+  a side-by-side viewer. Selection lives in the URL, so a comparison is a link.
+- `web/src/lib/compare/align.ts` — pairing on `(filename, truth_box)`. Every run
+  inserts its own `images` rows, so `image_id` names different files in
+  different runs and cannot be the key.
+- `web/src/lib/compare/provenance.ts` — every figure tagged stored, derived, or
+  unavailable-with-a-reason, so the three can never be confused for each other.
+
+### Decided
+
+- **False positives are never paired to ground truth.** They have no truth box;
+  pairing them by proximity would fabricate a relationship the data does not
+  contain. They are counted per image instead.
+- **No composite score.** Weighting accuracy against compute belongs to a
+  deployment, not to a page, so the verdict is decided per dimension and the
+  trade-off is stated rather than resolved.
+- Runs over different datasets, splits, or ground truth are **blocked**, not
+  footnoted. Matching filenames are not accepted as proof of matching objects.
+
+---
+
+## Milestone 9.5 — Prediction Overlays · 2026-08-24
+
+The comparison could say a run missed an object; now it shows it.
+
+### Added
+
+- Ground truth and each run's prediction drawn over the image the prediction was
+  made on, with fit/zoom and mask/context toggles.
+- `web/src/lib/compare/geometry.ts` — stored geometry to SVG without leaving the
+  image's own pixel space.
+
+### Decided
+
+- The photograph is placed **inside** the SVG rather than behind it. An `<img>`
+  with an overlay on top must keep a CSS-laid-out box and a `viewBox` agreed,
+  and they drift as soon as aspect ratio or zoom differs; as an `<image>`
+  element the bitmap and every shape share one coordinate system.
+- **Ground truth is solid, predictions are dashed, without exception.** Colour
+  alone fails a colour-blind reader, so stroke style carries the distinction.
+
+### Fixed
+
+- Aligned pairs now sort by file *and* pair key. Filename alone left ties on any
+  image holding several objects, so object *n* was a different object depending
+  on which run sat on the left.
+
+---
+
+## Milestone 10 — Evaluation and Benchmark Persistence · 2026-08-25
+
+Real mAP and real compute cost, per run. Schema version 9.
+
+### Added
+
+- `app/evaluation.py` — `pycocotools` COCOeval as the canonical evaluator for
+  **every** detector family, box and mask. `pycocotools` moves to the core
+  requirements to say exactly that; `rfdetr` itself stays optional.
+- `run_evaluations` and `run_benchmarks` — separate tables because they are
+  separate kinds of measurement. mAP is a property of a model on a dataset and
+  travels between machines; latency and memory are properties of a model on one
+  device and do not.
+- `scripts/evaluate_run.py`, `scripts/benchmark_run.py`. Both re-hash the
+  checkpoint and refuse to record anything if it no longer matches the run's SHA.
+- `Detection.mask_rle`, populated only under `keep_raw_masks`, so segmentation is
+  scored from the model's own multi-component raster rather than the stored
+  single-component polygon.
+
+### Decided
+
+- **mAP is not derived from `findings`.** They hold only detections that already
+  passed the run's confidence threshold and were already matched to ground
+  truth — on this data, 252 of 5,454 predictions for one model. Scoring the
+  survivors would measure the operating point, not the model.
+- **`device` is part of the benchmark key**, because `runs` records none. A
+  latency without its device cannot be compared, and the comparison page refuses
+  to declare a winner across two devices.
+
+### Fixed
+
+- RF-DETR never received the requested device. Unlike Ultralytics it binds its
+  device at construction, so `--device cpu` measurements were actually running
+  on MPS — 588 ms recorded as 162 ms. Corrected, with regression tests.
+
+### Measured
+
+| Model | Device | Latency | FPS | mAP@50 (box) |
+| --- | --- | --- | --- | --- |
+| RF-DETR @480 | `cpu` | 556.8 ms | 1.80 | 0.879 |
+| RF-DETR @480 | `mps` | 161.1 ms | 6.21 | — |
+| YOLO26 @672 | `cpu` | 46.4 ms | 21.57 | 0.836 |
+| YOLO26 @672 | `mps` | 28.7 ms | 34.89 | — |
+
+RF-DETR is the more accurate model on this dataset and roughly twelve times the
+CPU cost. Box scores reproduce the standalone comparison script exactly.

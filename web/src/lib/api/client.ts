@@ -1,6 +1,6 @@
 import type {
   Run, Outcomes, Finding, Page, FactorRate, Group, GroupMember,
-  MaskFinding, ImageRow, Evaluation, Benchmark,
+  MaskFinding, ImageRow, Evaluation, Benchmark, HeatmapRow,
 } from "./rows";
 import { normaliseOutcomes } from "./rows";
 
@@ -102,7 +102,17 @@ export const api = {
   benchmarks: (id: string | number) =>
     getOptional<Benchmark[]>(`/runs/${id}/benchmarks`, []),
 
+  /** Which findings in a run have an explanation. Empty is a real answer. */
+  heatmaps: (id: string | number) =>
+    getOptional<HeatmapRow[]>(`/runs/${id}/heatmaps`, []),
+
   /** Image and heatmap bytes are served by id; these are `src` values. */
   imageUrl: (imageId: number) => `${API_BASE}/images/${imageId}`,
-  heatmapUrl: (findingId: number) => `${API_BASE}/findings/${findingId}/heatmap`,
+  /**
+   * `preview` asks for the downscaled companion, which is what a grid of
+   * tiles should request: the full-resolution overlay is around twenty times
+   * larger and a tile cannot show the difference. Any close view omits it.
+   */
+  heatmapUrl: (findingId: number, preview = false) =>
+    `${API_BASE}/findings/${findingId}/heatmap${preview ? "?preview=true" : ""}`,
 };

@@ -209,6 +209,17 @@ export interface Benchmark {
   measurements: Record<string, number | string | null>;
 }
 
+/** One stored explanation, joined to the finding it explains. */
+export interface HeatmapRow {
+  finding_id: number;
+  run_id: number;
+  outcome: Outcome;
+  class_name: string | null;
+  path: string;
+  method: string;
+  target_layers: string;
+}
+
 export interface ImageRow {
   id: number;
   run_id: number;
