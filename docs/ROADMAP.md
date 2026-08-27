@@ -360,13 +360,106 @@ not widen the surface each of them must handle.
 
 ---
 
-## Milestone 8 — Additional detector support · **Planned**
+## Milestone 8 — Additional detector support · **Completed**
 
 Extend beyond the initial detector family. The architecture already isolates
 detector-specific code behind the `Detection` type (see
 [DECISIONS.md](DECISIONS.md) D-005); this milestone exercises that boundary.
 
-Depends on: Milestone 3 at minimum.
+**Delivered.** RF-DETR Nano Seg runs through the whole pipeline beside YOLO26.
+The boundary held: `app/rfdetr_adapter.py` and `app/detectors.py` were added and
+no analysis stage changed. A saved run's family is read back from its own
+checkpoint, so no schema column was needed to record it.
+
+Scope:
+
+| Item | Status |
+| --- | --- |
+| `app/detectors.py` — family dispatch, family detected from the checkpoint | Completed |
+| `app/rfdetr_adapter.py` — RF-DETR behind the `Detector` contract | Completed |
+| Optional dependency (`requirements-rfdetr.txt`), YOLO still the default | Completed |
+| Verified end to end on the same dataset as YOLO | Completed |
+| Grad-CAM explicitly refused for RF-DETR rather than mis-applied | Completed |
+
+**Explainability is the one stage that does not yet cover both families.**
+Grad-CAM targets YOLO26's feature pyramid; pointing it at RF-DETR would produce
+a picture with no defensible relationship to the prediction, so it refuses. That
+gap is open work, not a closed decision.
+
+---
+
+## Milestone 9 — Model comparison · **Completed**
+
+Answer the question the rest of the pipeline sets up: *I trained two models,
+which do I ship and why?*
+
+**Delivered.** `/compare` puts two runs side by side — verdict, metric table,
+failure profile, root causes, and a side-by-side viewer — built entirely on
+endpoints that already existed. No new API route and no schema change.
+
+Scope:
+
+| Item | Status |
+| --- | --- |
+| Alignment on `(filename, truth_box)`, never on `image_id` | Completed |
+| False positives kept image-level, never paired to ground truth | Completed |
+| Compatibility gate on dataset, split, and ground truth | Completed |
+| Every figure labelled stored / derived / unavailable | Completed |
+| Per-dimension verdict, with no composite score | Completed |
+
+The verdict deliberately computes no single number: weighting accuracy against
+compute belongs to a deployment, not to a page.
+
+---
+
+## Milestone 9.5 — Prediction overlays · **Completed**
+
+Show the disagreement, not just count it.
+
+**Delivered.** Each aligned ground-truth object is drawn on the image it was
+annotated in, with each run's prediction over it — same region, same zoom on
+both sides, so any on-screen difference is a difference between the models.
+
+Scope:
+
+| Item | Status |
+| --- | --- |
+| Boxes and masks drawn from stored geometry, in original-image pixels | Completed |
+| Ground truth solid, predictions dashed — never confusable | Completed |
+| Fit / zoom, mask and context-object toggles | Completed |
+| Extra detections drawn only on the pane that produced them | Completed |
+
+No backend change: every box and polygon was already stored and served.
+
+---
+
+## Milestone 10 — Evaluation and benchmark persistence · **Completed**
+
+Replace "not available" with measurement, for accuracy and for compute.
+
+**Delivered.** Schema version 9 adds two tables. `run_evaluations` holds COCO
+mAP and AR for boxes and masks; `run_benchmarks` holds latency, throughput,
+memory and checkpoint size per device. Both carry the settings that produced
+them, because a figure without its protocol is not a measurement.
+
+Scope:
+
+| Item | Status |
+| --- | --- |
+| `app/evaluation.py` — one COCOeval for every detector family | Completed |
+| Segmentation scored from the model's own multi-component raster | Completed |
+| `scripts/evaluate_run.py`, `scripts/benchmark_run.py` | Completed |
+| Schema version 9: `run_evaluations`, `run_benchmarks` | Completed |
+| Checkpoint SHA re-verified before anything is recorded | Completed |
+| Device recorded per benchmark; cross-device comparison refused | Completed |
+
+**One evaluator, deliberately.** A library's own validator disagrees with
+another's on matching, NMS and score handling, so the two numbers are not
+comparable. `RFDetrDetector.validate` refuses for that reason and points here.
+
+mAP is **not** derived from stored findings, which hold only detections that
+already passed the run's threshold and were already matched — a fraction of the
+precision/recall curve. The evaluation pass re-runs inference unthresholded.
 
 ---
 

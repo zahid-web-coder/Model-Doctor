@@ -74,8 +74,13 @@ db/*
 # Generated output
 # ---------------------------------------------------------------------------
 # Recreated by config.ensure_output_dirs() and by any inference run.
-results/
-runs/
+# Anchored with a leading slash: these name directories at the repository root,
+# and unanchored they match at any depth. `runs/` was silently claiming
+# `web/src/app/runs/`, the dashboard's per-run routes, so a new page added
+# there would never have been offered by `git add` and would have been lost
+# without a warning.
+/results/
+/runs/
 
 # ---------------------------------------------------------------------------
 # Python

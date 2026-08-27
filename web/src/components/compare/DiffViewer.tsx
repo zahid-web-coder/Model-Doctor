@@ -6,6 +6,28 @@ import type { AlignedPair, Alignment } from "@/lib/compare/align";
 import { fitViewport, isBox, zoomViewport } from "@/lib/compare/geometry";
 import { api } from "@/lib/api/client";
 import { Overlay, OverlayLegend, type Prediction, type Shape } from "./Overlay";
+import { Lightbox } from "@/components/shared/Lightbox";
+import type { Viewport } from "@/lib/compare/geometry";
+
+/**
+ * Everything one pane needs to redraw itself at full size.
+ *
+ * The pane assembles this rather than the modal reassembling it: the geometry
+ * has already been resolved once, and deriving it twice from the same inputs
+ * is how the two copies eventually disagree. The viewport travels with it, so
+ * "Zoom to object" carries into the modal instead of silently resetting.
+ */
+interface ZoomView {
+  title: string;
+  imageId: number;
+  width: number;
+  height: number;
+  viewport: Viewport;
+  truth: Shape;
+  prediction: Prediction | null;
+  siblings: Shape[];
+  extras: Shape[];
+}
 
 /**
  * One ground-truth object, as each run saw it.
@@ -68,6 +90,7 @@ function Side({
   zoomed,
   showMasks,
   showContext,
+  onOpen,
 }: {
   model: SideModel;
   truth: Shape;
@@ -75,6 +98,7 @@ function Side({
   zoomed: boolean;
   showMasks: boolean;
   showContext: boolean;
+  onOpen: (view: ZoomView) => void;
 }) {
   const { finding, image, mask } = model;
 
@@ -118,18 +142,37 @@ function Side({
         }
       >
         {viewport && image ? (
-          <Overlay
-            imageId={image.id}
-            width={image.width as number}
-            height={image.height as number}
-            viewport={viewport}
-            truth={truth}
-            prediction={prediction}
-            siblings={siblings}
-            extras={model.extras}
-            showMasks={showMasks}
-            showContext={showContext}
-          />
+          <button
+            type="button"
+            title="Open full size"
+            onClick={() =>
+              onOpen({
+                title: model.title,
+                imageId: image.id,
+                width: image.width as number,
+                height: image.height as number,
+                viewport,
+                truth,
+                prediction,
+                siblings,
+                extras: model.extras,
+              })
+            }
+            className="absolute inset-0 w-full h-full cursor-zoom-in"
+          >
+            <Overlay
+              imageId={image.id}
+              width={image.width as number}
+              height={image.height as number}
+              viewport={viewport}
+              truth={truth}
+              prediction={prediction}
+              siblings={siblings}
+              extras={model.extras}
+              showMasks={showMasks}
+              showContext={showContext}
+            />
+          </button>
         ) : (
           <>
             {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -195,6 +238,7 @@ export function DiffViewer({
   const [zoomed, setZoomed] = useState(true);
   const [showMasks, setShowMasks] = useState(true);
   const [showContext, setShowContext] = useState(true);
+  const [zoom, setZoom] = useState<ZoomView | null>(null);
 
   const visible = useMemo(
     () => (differingOnly ? alignment.pairs.filter((p) => p.differs) : alignment.pairs),
@@ -361,6 +405,7 @@ export function DiffViewer({
                   }}
                   truth={{ box: pair.truthBox, polygon: pair.truthPolygon }}
                   siblings={siblings}
+                  onOpen={setZoom}
                   zoomed={zoomed}
                   showMasks={showMasks}
                   showContext={showContext}
@@ -375,6 +420,7 @@ export function DiffViewer({
                   }}
                   truth={{ box: pair.truthBox, polygon: pair.truthPolygon }}
                   siblings={siblings}
+                  onOpen={setZoom}
                   zoomed={zoomed}
                   showMasks={showMasks}
                   showContext={showContext}
@@ -406,6 +452,34 @@ export function DiffViewer({
           )}
         </>
       )}
+
+      <Lightbox
+        open={zoom !== null}
+        onClose={() => setZoom(null)}
+        title={zoom?.title ?? ""}
+        subtitle="Ground truth and prediction drawn in the coordinates they were stored in."
+        footer={<OverlayLegend hasContext={showContext && zoom !== null && zoom.siblings.length > 0} />}
+      >
+        {zoom && (
+          <div
+            className="w-full"
+            style={{ aspectRatio: `${zoom.width} / ${zoom.height}`, maxHeight: "72vh" }}
+          >
+            <Overlay
+              imageId={zoom.imageId}
+              width={zoom.width}
+              height={zoom.height}
+              viewport={zoom.viewport}
+              truth={zoom.truth}
+              prediction={zoom.prediction}
+              siblings={zoom.siblings}
+              extras={zoom.extras}
+              showMasks={showMasks}
+              showContext={showContext}
+            />
+          </div>
+        )}
+      </Lightbox>
     </section>
   );
 }

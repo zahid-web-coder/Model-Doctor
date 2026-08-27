@@ -2,9 +2,10 @@
 
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Download } from "lucide-react";
 import { StatCard } from "@/components/shared/StatCard";
 import { Pagination } from "@/components/shared/Pagination";
+import { ExportButton } from "@/components/shared/ExportButton";
+import { Lightbox } from "@/components/shared/Lightbox";
 import { FilterSelect } from "@/components/shared/FilterSelect";
 import { api } from "@/lib/api/client";
 import {
@@ -38,6 +39,7 @@ export function FailuresTable({
   const [outcomeFilter, setOutcomeFilter] = useState("All Types");
   const [classFilter, setClassFilter] = useState("All Classes");
   const [selected, setSelected] = useState<Finding | null>(findings.items[0] ?? null);
+  const [zoomed, setZoomed] = useState<Finding | null>(null);
 
   const classes = useMemo(
     () => ["All Classes", ...Array.from(new Set(findings.items.map((f) => f.class_name).filter((c): c is string => Boolean(c))))],
@@ -68,9 +70,12 @@ export function FailuresTable({
           <h3 className="text-[17px] font-heading text-ink">Failures</h3>
           <p className="text-[13px] text-slate">Browse and analyse failed predictions.</p>
         </div>
-        <button type="button" className="flex items-center gap-2 px-3 py-1.5 rounded-md border border-border/60 bg-card text-[13px] text-ink hover:border-brass/50 transition-colors">
-          <Download size={13} className="text-slate" /> Export
-        </button>
+        <ExportButton
+          rows={rows}
+          columns={["id", "image_id", "outcome", "class_name", "confidence", "iou"]}
+          filename={`run-${runId}-findings-page-${page}`}
+          scope={`the ${rows.length} rows on this page`}
+        />
       </div>
 
       <div className="flex items-center gap-3 mb-4 shrink-0">
@@ -160,7 +165,8 @@ export function FailuresTable({
           <div className="px-4 border-t border-border/40">
             <Pagination
               page={page} pageCount={pageCount} total={findings.total} pageSize={pageSize}
-              onChange={(next) => router.push(`/runs/${runId}/failures?page=${next}`)}
+              onChange={(next) => router.push(`/runs/${runId}/failures?page=${next}&size=${pageSize}`)}
+              onPageSizeChange={(size) => router.push(`/runs/${runId}/failures?page=1&size=${size}`)}
             />
           </div>
         </div>
@@ -169,8 +175,15 @@ export function FailuresTable({
           {selected ? (
             <>
               <p className="font-mono text-[13px] text-ink mb-3">Finding #{selected.id}</p>
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={api.imageUrl(selected.image_id)} alt="" className="w-full aspect-square rounded object-cover bg-black/10 mb-4" />
+              <button
+                type="button"
+                onClick={() => setZoomed(selected)}
+                title="Open full size"
+                className="block w-full mb-4 rounded overflow-hidden ring-offset-2 hover:ring-2 hover:ring-brass/50 transition-shadow cursor-zoom-in"
+              >
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={api.imageUrl(selected.image_id)} alt="" className="w-full aspect-square rounded object-cover bg-black/10" />
+              </button>
               <Detail label="Outcome" value={OUTCOME_LABEL[selected.outcome] ?? selected.outcome} />
               <Detail label="Class" value={selected.class_name ?? NOT_MEASURED} mono muted={!selected.class_name} />
               <Detail label="Confidence" value={pct(selected.confidence, 2)} muted={selected.confidence === null} />
@@ -189,6 +202,26 @@ export function FailuresTable({
           )}
         </aside>
       </div>
+
+      <Lightbox
+        open={zoomed !== null}
+        onClose={() => setZoomed(null)}
+        title={zoomed ? `Finding #${zoomed.id}` : ""}
+        subtitle={
+          zoomed
+            ? `${zoomed.class_name ?? NOT_MEASURED} • ${OUTCOME_LABEL[zoomed.outcome] ?? zoomed.outcome}`
+            : undefined
+        }
+      >
+        {zoomed && (
+          /* eslint-disable-next-line @next/next/no-img-element */
+          <img
+            src={api.imageUrl(zoomed.image_id)}
+            alt={`Source image for finding ${zoomed.id}`}
+            className="max-w-full max-h-[75vh] object-contain rounded"
+          />
+        )}
+      </Lightbox>
     </div>
   );
 }

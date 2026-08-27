@@ -12,9 +12,13 @@ import { HeatmapGrid } from "@/components/dashboard/HeatmapGrid";
  */
 export default async function HeatmapsPage({ params }: { params: Promise<{ runId: string }> }) {
   const { runId } = await params;
-  const [page, masks] = await Promise.all([
+  const [page, masks, heatmaps] = await Promise.all([
     api.findings(runId, 60, 0),
     api.maskFindings(runId),
+    // Asked for explicitly rather than inferred from a tile failing to load:
+    // "this model has no explanation" and "this image is missing" look the
+    // same to an <img>, and only one of them is worth telling the reader.
+    api.heatmaps(runId),
   ]);
 
   const byFinding = new Map(masks.map((m) => [m.finding_id, m]));
@@ -23,5 +27,12 @@ export default async function HeatmapsPage({ params }: { params: Promise<{ runId
     mask: byFinding.get(finding.id) ?? null,
   }));
 
-  return <HeatmapGrid tiles={tiles} total={page.total} maskCount={masks.length} />;
+  return (
+    <HeatmapGrid
+      tiles={tiles}
+      total={page.total}
+      maskCount={masks.length}
+      explained={heatmaps.length}
+    />
+  );
 }

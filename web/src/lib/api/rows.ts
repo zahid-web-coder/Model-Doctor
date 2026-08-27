@@ -63,6 +63,44 @@ export interface Outcomes {
 
 export type Outcome = keyof Outcomes;
 
+/** Every outcome the analysis pass can record, in a fixed order. */
+export const ALL_OUTCOMES: Outcome[] = [
+  "correct",
+  "false_negative",
+  "false_positive",
+  "poor_localization",
+  "wrong_class",
+];
+
+/**
+ * Fill in outcomes the API omitted.
+ *
+ * `/runs/{id}/outcomes` groups by outcome, so an outcome that never occurred is
+ * **absent from the payload entirely** rather than present as zero — despite
+ * :type:`Outcomes` declaring all five keys as required. On a single-class
+ * dataset there are no `wrong_class` findings, so that key simply does not
+ * arrive, and arithmetic over it yields `NaN` rather than a wrong number.
+ *
+ * A missing outcome genuinely means none occurred, so zero is the correct
+ * reading here — unlike an absent *metric*, which means not measured and must
+ * never be shown as zero. That distinction is why this repair belongs to the
+ * outcome type and nothing else: it is safe precisely because the API's
+ * omission carries a known meaning.
+ *
+ * Applied once at the client boundary, so every consumer receives the shape
+ * `Outcomes` already promises and no screen has to remember to repair it.
+ * Idempotent, so calling it again costs nothing but a copy.
+ */
+export function normaliseOutcomes(outcomes: Partial<Outcomes>): Outcomes {
+  return {
+    correct: outcomes.correct ?? 0,
+    false_negative: outcomes.false_negative ?? 0,
+    false_positive: outcomes.false_positive ?? 0,
+    poor_localization: outcomes.poor_localization ?? 0,
+    wrong_class: outcomes.wrong_class ?? 0,
+  };
+}
+
 export interface Finding {
   id: number;
   run_id: number;
@@ -169,6 +207,17 @@ export interface Benchmark {
   image_size: number;
   created_at: string;
   measurements: Record<string, number | string | null>;
+}
+
+/** One stored explanation, joined to the finding it explains. */
+export interface HeatmapRow {
+  finding_id: number;
+  run_id: number;
+  outcome: Outcome;
+  class_name: string | null;
+  path: string;
+  method: string;
+  target_layers: string;
 }
 
 export interface ImageRow {

@@ -34,6 +34,10 @@ export default async function Home() {
     api.factorRates(run.id),
   ]);
 
+  // `outcomes` is null only when the request failed. The client fills in
+  // buckets the endpoint omitted, so a successful response always carries all
+  // five keys and these sums are numbers — a run with nothing to report gives
+  // zero, which is a finding, not a gap.
   const totalFailures = outcomes ? FAILURE_OUTCOMES.reduce((s, k) => s + outcomes[k], 0) : null;
   const totalFindings = outcomes ? Object.values(outcomes).reduce((s, n) => s + n, 0) : null;
   const tones: Record<string, string> = {
@@ -71,7 +75,19 @@ export default async function Home() {
         <div className="grid grid-cols-1 xl:grid-cols-3 gap-5 shrink-0">
           <section className="bg-card border border-border/40 rounded-lg p-4">
             <h4 className="text-[13px] font-medium text-ink mb-3">Failure Distribution</h4>
-            {outcomes && totalFailures ? (
+            {/* Three distinct states, deliberately not collapsed into two. A
+                failed request is not the same as a run with no failures, and
+                showing "no outcomes recorded" for a clean run would report an
+                absence of data where there is an absence of *failures*. The
+                old guard tested `totalFailures` for truthiness, which made
+                both zero and NaN read as missing data. */}
+            {outcomes === null || totalFailures === null ? (
+              <p className="text-[12px] text-slate">Outcomes could not be read for this run.</p>
+            ) : totalFailures === 0 ? (
+              <p className="text-[12px] text-slate">
+                No failures in this run — all {num(outcomes.correct)} findings were correct.
+              </p>
+            ) : (
               <>
                 <div className="flex h-2 rounded-full overflow-hidden mb-4">
                   {FAILURE_OUTCOMES.map((k) => (
@@ -90,8 +106,6 @@ export default async function Home() {
                   {num(outcomes.correct)} correct detections are excluded from this split.
                 </p>
               </>
-            ) : (
-              <p className="text-[12px] text-slate">No outcomes recorded for this run.</p>
             )}
           </section>
 

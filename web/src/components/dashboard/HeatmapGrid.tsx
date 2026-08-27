@@ -1,8 +1,9 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { Download } from "lucide-react";
 import { FilterSelect } from "@/components/shared/FilterSelect";
+import { ExportButton } from "@/components/shared/ExportButton";
+import { Lightbox } from "@/components/shared/Lightbox";
 import { api } from "@/lib/api/client";
 import { OUTCOME_LABEL, type Finding, type MaskFinding } from "@/lib/api/rows";
 import { NOT_MEASURED } from "@/lib/format";
@@ -21,28 +22,49 @@ export interface Tile {
  * have no attention map, and a grid of empty boxes would read as broken rather
  * than as partial coverage.
  */
-function HeatTile({ tile }: { tile: Tile }) {
+function HeatTile({
+  tile, available, onOpen,
+}: {
+  tile: Tile;
+  available: boolean;
+  onOpen: (tile: Tile, showingHeatmap: boolean) => void;
+}) {
   const [heatmapFailed, setHeatmapFailed] = useState(false);
   const { finding, mask } = tile;
-  const src = heatmapFailed ? api.imageUrl(finding.image_id) : api.heatmapUrl(finding.id);
+  // When the run has no explanations at all, go straight to the source image.
+  // Requesting sixty heatmaps that are all known to 404 wastes the round trips
+  // and, while they are in flight, labels every tile as a Grad-CAM it will
+  // never be.
+  const showingHeatmap = available && !heatmapFailed;
+  // The grid asks for the preview: a tile is a couple of hundred pixels wide
+  // and the full-resolution overlay is roughly twenty times the bytes. The
+  // detail view and the endpoint's default are both unchanged.
+  const src = showingHeatmap
+    ? api.heatmapUrl(finding.id, true)
+    : api.imageUrl(finding.image_id);
 
   return (
     <div className="bg-card border border-border/40 rounded-lg p-2 hover:border-brass/50 transition-colors">
-      <div className="w-full aspect-square rounded mb-2 overflow-hidden bg-black/10 relative">
+      <button
+        type="button"
+        onClick={() => onOpen(tile, showingHeatmap)}
+        title="Open full size"
+        className="block w-full aspect-square rounded mb-2 overflow-hidden bg-black/10 relative cursor-zoom-in"
+      >
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img
           src={src}
-          alt={heatmapFailed ? `Source image for finding ${finding.id}` : `Grad-CAM for finding ${finding.id}`}
+          alt={showingHeatmap ? `Grad-CAM for finding ${finding.id}` : `Source image for finding ${finding.id}`}
           className="w-full h-full object-cover"
           loading="lazy"
           onError={() => setHeatmapFailed(true)}
         />
-        {heatmapFailed && (
+        {!showingHeatmap && (
           <span className="absolute bottom-1 left-1 text-[9px] px-1.5 py-0.5 rounded bg-black/55 text-white/90">
             source image
           </span>
         )}
-      </div>
+      </button>
       <div className="flex items-center justify-between">
         <span className="font-mono text-[11px] text-ink">#{finding.id}</span>
         <span className={`font-mono text-[10px] ${mask?.mask_iou == null ? "text-slate italic" : "text-slate"}`}>
@@ -57,15 +79,20 @@ function HeatTile({ tile }: { tile: Tile }) {
 }
 
 export function HeatmapGrid({
-  tiles, total, maskCount,
+  tiles, total, maskCount, explained,
 }: {
   tiles: Tile[];
   total: number;
   maskCount: number;
+  /** How many findings in this run actually have an explanation. */
+  explained: number;
 }) {
   const [outcome, setOutcome] = useState("All Outcomes");
   const [cls, setCls] = useState("All Classes");
   const [agreement, setAgreement] = useState("All");
+  // Which tile is open, and whether its tile was showing an attribution map —
+  // the modal must not claim a heatmap the grid already fell back from.
+  const [open, setOpen] = useState<{ tile: Tile; heatmap: boolean } | null>(null);
 
   const outcomes = useMemo(
     () => ["All Outcomes", ...Array.from(new Set(tiles.map((t) => OUTCOME_LABEL[t.finding.outcome] ?? t.finding.outcome)))],
@@ -99,11 +126,37 @@ export function HeatmapGrid({
           <FilterSelect value={outcome} options={outcomes} onChange={setOutcome} width="w-[175px]" />
           <FilterSelect value={cls} options={classes} onChange={setCls} width="w-[140px]" />
           <FilterSelect value={agreement} options={["All", "Box correct, outline not"]} onChange={setAgreement} width="w-[200px]" />
-          <button type="button" className="flex items-center gap-2 px-3 py-1.5 rounded-md border border-border/60 bg-card text-[13px] text-ink hover:border-brass/50 transition-colors">
-            <Download size={13} className="text-slate" /> Export
-          </button>
+          <ExportButton
+            rows={visible.map((t) => ({
+              finding_id: t.finding.id,
+              image_id: t.finding.image_id,
+              outcome: t.finding.outcome,
+              class_name: t.finding.class_name,
+              confidence: t.finding.confidence,
+              box_iou: t.mask?.box_iou ?? null,
+              mask_iou: t.mask?.mask_iou ?? null,
+            }))}
+            columns={["finding_id", "image_id", "outcome", "class_name", "confidence", "box_iou", "mask_iou"]}
+            filename="heatmap-findings"
+            scope={`the ${visible.length} tiles shown`}
+          />
         </div>
       </div>
+      {explained === 0 && (
+        <div className="mb-4 shrink-0 rounded-md border border-brass/40 bg-brass/5 px-3 py-2.5">
+          <p className="text-[12px] text-ink font-medium">
+            Attention heatmaps are not available for this model.
+          </p>
+          <p className="text-[11px] text-slate mt-1 leading-relaxed">
+            The images below are the original source images — no attribution
+            overlay is being shown. Grad-CAM targets a convolutional detection
+            head, and this run was produced by a detector that predicts through
+            decoder queries instead, so no explanation is generated rather than
+            one that would not correspond to the prediction.
+          </p>
+        </div>
+      )}
+
 
       <div className="flex-1 overflow-y-auto custom-scrollbar pr-2 pb-2">
         <p className="text-[11px] text-slate mb-3">
@@ -113,12 +166,77 @@ export function HeatmapGrid({
             : ` ${maskCount} carry an outline measurement.`}
         </p>
         <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-6 gap-4">
-          {visible.map((t) => <HeatTile key={t.finding.id} tile={t} />)}
+          {visible.map((t) => (
+            <HeatTile
+              key={t.finding.id}
+              tile={t}
+              available={explained > 0}
+              onOpen={(tile, heatmap) => setOpen({ tile, heatmap })}
+            />
+          ))}
         </div>
         {visible.length === 0 && (
           <p className="py-10 text-center text-slate text-[13px]">No findings match these filters.</p>
         )}
       </div>
+
+      <Lightbox
+        open={open !== null}
+        onClose={() => setOpen(null)}
+        title={open ? `Finding #${open.tile.finding.id}` : ""}
+        subtitle={
+          open
+            ? `${open.tile.finding.class_name ?? NOT_MEASURED} • ${
+                OUTCOME_LABEL[open.tile.finding.outcome] ?? open.tile.finding.outcome
+              } • ${open.heatmap ? "Grad-CAM overlay" : "source image — no attribution overlay"}`
+            : undefined
+        }
+        footer={
+          open && (
+            <div className="flex items-center gap-6 text-[12px] text-slate">
+              <span>
+                Mask IoU{" "}
+                <span className={open.tile.mask?.mask_iou == null ? "italic" : "text-ink font-mono"}>
+                  {open.tile.mask?.mask_iou == null ? NOT_MEASURED : open.tile.mask.mask_iou.toFixed(3)}
+                </span>
+              </span>
+              <span>
+                Box IoU{" "}
+                <span className={open.tile.mask?.box_iou == null ? "italic" : "text-ink font-mono"}>
+                  {open.tile.mask?.box_iou == null ? NOT_MEASURED : open.tile.mask.box_iou.toFixed(3)}
+                </span>
+              </span>
+              <span>
+                Confidence{" "}
+                <span className={open.tile.finding.confidence == null ? "italic" : "text-ink font-mono"}>
+                  {open.tile.finding.confidence == null
+                    ? NOT_MEASURED
+                    : `${(open.tile.finding.confidence * 100).toFixed(1)}%`}
+                </span>
+              </span>
+            </div>
+          )
+        }
+      >
+        {open && (
+          /* Full resolution here, not the preview the tile requested — the
+             detail view is the one place the extra bytes buy something. */
+          /* eslint-disable-next-line @next/next/no-img-element */
+          <img
+            src={
+              open.heatmap
+                ? api.heatmapUrl(open.tile.finding.id)
+                : api.imageUrl(open.tile.finding.image_id)
+            }
+            alt={
+              open.heatmap
+                ? `Grad-CAM for finding ${open.tile.finding.id}`
+                : `Source image for finding ${open.tile.finding.id}`
+            }
+            className="max-w-full max-h-[72vh] object-contain rounded"
+          />
+        )}
+      </Lightbox>
     </div>
   );
 }

@@ -1,4 +1,5 @@
 import type { Evaluation, Finding, MaskFinding, Outcomes } from "@/lib/api/rows";
+import { normaliseOutcomes } from "@/lib/api/rows";
 import { REASONS, derived, stored, unavailable, type Value } from "./provenance";
 
 /**
@@ -12,28 +13,6 @@ import { REASONS, derived, stored, unavailable, type Value } from "./provenance"
  * in this file.
  */
 
-/**
- * Fill in outcomes the API omitted.
- *
- * `/runs/{id}/outcomes` groups by outcome, so an outcome that never occurred is
- * **absent from the payload entirely** rather than present as zero — despite
- * the `Outcomes` type declaring all five keys as required. On a single-class
- * dataset there are no `wrong_class` findings, so that key simply does not
- * arrive, and arithmetic over it yields `NaN` rather than a wrong number.
- *
- * A missing outcome genuinely means none occurred, so zero is the correct
- * reading here — unlike an absent *metric*, which means not measured and must
- * never be shown as zero.
- */
-export function normaliseOutcomes(outcomes: Partial<Outcomes>): Outcomes {
-  return {
-    correct: outcomes.correct ?? 0,
-    false_negative: outcomes.false_negative ?? 0,
-    false_positive: outcomes.false_positive ?? 0,
-    poor_localization: outcomes.poor_localization ?? 0,
-    wrong_class: outcomes.wrong_class ?? 0,
-  };
-}
 
 /**
  * How the five outcomes map onto true/false positives and negatives.
@@ -58,6 +37,8 @@ export function confusion(raw: Partial<Outcomes>) {
     outcomes.false_negative + outcomes.poor_localization + outcomes.wrong_class;
   return { truePositives, falsePositives, falseNegatives };
 }
+
+export { normaliseOutcomes };
 
 const ratio = (numerator: number, denominator: number): number | null =>
   denominator > 0 ? numerator / denominator : null;

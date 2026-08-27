@@ -1,7 +1,8 @@
 import type {
   Run, Outcomes, Finding, Page, FactorRate, Group, GroupMember,
-  MaskFinding, ImageRow, Evaluation, Benchmark,
+  MaskFinding, ImageRow, Evaluation, Benchmark, HeatmapRow,
 } from "./rows";
+import { normaliseOutcomes } from "./rows";
 
 /**
  * The one place the frontend talks to the backend.
@@ -63,7 +64,17 @@ export const api = {
 
   runs: () => get<Run[]>("/runs"),
   run: (id: string | number) => get<Run>(`/runs/${id}`),
-  outcomes: (id: string | number) => get<Outcomes>(`/runs/${id}/outcomes`),
+  /**
+   * Outcome counts, with the buckets the API omitted filled in as zero.
+   *
+   * The endpoint groups by outcome, so an outcome that never occurred does not
+   * appear at all. Repairing it here rather than in each screen is what makes
+   * the `Outcomes` type honest: every caller downstream can rely on all five
+   * keys existing, which is what the type says. A rejected request still
+   * rejects — this fills gaps in a payload, it never invents one.
+   */
+  outcomes: async (id: string | number): Promise<Outcomes> =>
+    normaliseOutcomes(await get<Partial<Outcomes>>(`/runs/${id}/outcomes`)),
 
   findings: (id: string | number, limit = 50, offset = 0) =>
     get<Page<Finding>>(`/runs/${id}/findings?limit=${limit}&offset=${offset}`),
@@ -91,7 +102,17 @@ export const api = {
   benchmarks: (id: string | number) =>
     getOptional<Benchmark[]>(`/runs/${id}/benchmarks`, []),
 
+  /** Which findings in a run have an explanation. Empty is a real answer. */
+  heatmaps: (id: string | number) =>
+    getOptional<HeatmapRow[]>(`/runs/${id}/heatmaps`, []),
+
   /** Image and heatmap bytes are served by id; these are `src` values. */
   imageUrl: (imageId: number) => `${API_BASE}/images/${imageId}`,
-  heatmapUrl: (findingId: number) => `${API_BASE}/findings/${findingId}/heatmap`,
+  /**
+   * `preview` asks for the downscaled companion, which is what a grid of
+   * tiles should request: the full-resolution overlay is around twenty times
+   * larger and a tile cannot show the difference. Any close view omits it.
+   */
+  heatmapUrl: (findingId: number, preview = false) =>
+    `${API_BASE}/findings/${findingId}/heatmap${preview ? "?preview=true" : ""}`,
 };

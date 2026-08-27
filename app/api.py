@@ -42,6 +42,7 @@ from fastapi.responses import FileResponse
 import config
 from app import storage
 from app.clustering import DISCRIMINATING_METHOD
+from app.explainability import preview_path
 from app.similarity import SimilarityError, nearest_neighbours
 from utils.logging_utils import get_logger
 
@@ -471,9 +472,34 @@ def create_app() -> FastAPI:
             filename=str(row["filename"]),
         )
 
+    @application.get("/runs/{run_id}/heatmaps")
+    def get_heatmaps(run_id: int, method: str = "grad-cam") -> list[dict[str, Any]]:
+        """Every heatmap recorded for a run, joined to the finding it explains.
+
+        Empty is a meaningful answer, not a fault: explanation is implemented
+        for some detector families and not others, so a run can be complete and
+        still have none. A caller showing heatmaps needs to tell that apart
+        from "this run was never explained", and both from a broken image.
+        """
+        with read_only() as connection:
+            resolve_run(connection, run_id)
+            if not has_table(connection, "heatmaps"):
+                return []
+            return serialise(storage.load_heatmaps(connection, run_id, method))
+
     @application.get("/findings/{finding_id}/heatmap")
-    def get_heatmap(finding_id: int, method: str = "grad-cam") -> FileResponse:
-        """The Grad-CAM overlay explaining one finding, if one was generated."""
+    def get_heatmap(
+        finding_id: int, method: str = "grad-cam", preview: bool = False
+    ) -> FileResponse:
+        """The Grad-CAM overlay explaining one finding, if one was generated.
+
+        ``preview=true`` serves a downscaled companion image instead, for
+        callers rendering many at once — a grid of tiles a few hundred pixels
+        wide otherwise downloads full-resolution overlays it cannot display.
+        The full-resolution image remains the default and is what any close
+        reading gets. A run explained before previews existed has none on disk,
+        so the request falls back to the original rather than failing.
+        """
         with read_only() as connection:
             if not has_table(connection, "heatmaps"):
                 raise HTTPException(
@@ -489,8 +515,14 @@ def create_app() -> FastAPI:
                 detail=f"No {method} heatmap for finding {finding_id}.",
             )
 
-        resolved = verified_file(str(row["path"]))
-        return FileResponse(resolved, media_type="image/png")
+        stored = Path(str(row["path"]))
+        if preview:
+            companion = preview_path(stored)
+            if companion.is_file():
+                return FileResponse(
+                    verified_file(str(companion)), media_type="image/jpeg"
+                )
+        return FileResponse(verified_file(str(stored)), media_type="image/png")
 
     return application
 
