@@ -1,5 +1,6 @@
-import { Download } from "lucide-react";
 import { api } from "@/lib/api/client";
+import { ExportButton } from "@/components/shared/ExportButton";
+import { factorNote } from "@/lib/factors";
 import { failureRate, correctRate, reading, impact } from "@/lib/derive";
 import { pct, lift as fmtLift, pValue as fmtP, NOT_MEASURED } from "@/lib/format";
 
@@ -29,9 +30,22 @@ export default async function RootCausesPage({ params }: { params: Promise<{ run
           <h3 className="text-[17px] font-heading text-ink">Root Causes</h3>
           <p className="text-[13px] text-slate">Factors statistically correlated with model failures.</p>
         </div>
-        <button type="button" className="flex items-center gap-2 px-3 py-1.5 rounded-md border border-border/60 bg-card text-[13px] text-ink hover:border-brass/50 transition-colors">
-          <Download size={13} className="text-slate" /> Export
-        </button>
+        <ExportButton
+          rows={factors.map((f) => ({
+            factor: f.factor,
+            means: factorNote(f.factor)?.rule ?? "",
+            failure_count: f.failure_count,
+            failure_total: f.failure_total,
+            correct_count: f.correct_count,
+            correct_total: f.correct_total,
+            lift: f.lift,
+            p_value: f.p_value,
+            reading: reading(f),
+          }))}
+          columns={["factor", "means", "failure_count", "failure_total", "correct_count", "correct_total", "lift", "p_value", "reading"]}
+          filename={`run-${runId}-root-causes`}
+          scope={`all ${factors.length} factors`}
+        />
       </div>
 
       {factors.length === 0 ? (
@@ -106,12 +120,32 @@ export default async function RootCausesPage({ params }: { params: Promise<{ run
                 <div key={f.factor} className="bg-card border border-border/40 rounded-lg px-4 py-3">
                   <div className="flex items-baseline gap-3 flex-wrap">
                     <span className="font-mono text-[12px] text-ink">{f.factor}</span>
+                    {factorNote(f.factor)?.calibrated && (
+                      <span className="text-[9px] uppercase tracking-wider text-brass border border-brass/40 rounded px-1 py-0.5">
+                        threshold calibrated per dataset
+                      </span>
+                    )}
                     <span className="text-[11px] text-slate">
                       {f.failure_count} of {f.failure_total} failures ({pct(failureRate(f))}) carry this factor,
                       against {f.correct_count} of {f.correct_total} correct detections ({pct(correctRate(f))}) —{" "}
                       {reading(f)}.
                     </span>
                   </div>
+                  {/* What the detector measures, so the statistics above can be
+                      read without opening the backend. Unknown factors fall
+                      through silently rather than being given an invented rule. */}
+                  {factorNote(f.factor) && (
+                    <div className="mt-2 pt-2 border-t border-border/30 flex flex-col gap-1">
+                      <p className="text-[11px] text-ink leading-relaxed">
+                        <span className="text-slate">Fires when: </span>
+                        {factorNote(f.factor)!.rule}
+                      </p>
+                      <p className="text-[11px] text-slate leading-relaxed">
+                        <span className="text-slate/70">Why it matters: </span>
+                        {factorNote(f.factor)!.why}
+                      </p>
+                    </div>
+                  )}
                   {impact(f) === null && f.lift !== null && (
                     <p className="text-[11px] text-slate mt-1.5 leading-relaxed">
                       Common in failures, but no more common than in correct detections. It describes

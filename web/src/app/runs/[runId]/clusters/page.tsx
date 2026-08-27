@@ -1,8 +1,9 @@
-import { Download } from "lucide-react";
 import { api } from "@/lib/api/client";
 import { StatCard } from "@/components/shared/StatCard";
+import { ExportButton } from "@/components/shared/ExportButton";
 import { OUTCOME_LABEL } from "@/lib/api/rows";
 import { pct, num } from "@/lib/format";
+import { factorNote, factorsInSignature, signatureSummary, UNEXPLAINED } from "@/lib/factors";
 
 /**
  * Failure groups from `/runs/{id}/groups`, with members from
@@ -31,7 +32,7 @@ export default async function ClustersPage({ params }: { params: Promise<{ runId
     ? outcomes.false_negative + outcomes.false_positive + outcomes.poor_localization + outcomes.wrong_class
     : null;
   const grouped = groups.reduce((sum, g) => sum + g.size, 0);
-  const named = groups.filter((g) => g.label !== "unexplained").length;
+  const named = groups.filter((g) => g.label !== UNEXPLAINED).length;
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
@@ -40,9 +41,19 @@ export default async function ClustersPage({ params }: { params: Promise<{ runId
           <h3 className="text-[17px] font-heading text-ink">Clusters</h3>
           <p className="text-[13px] text-slate">Failures grouped by their root-cause signature.</p>
         </div>
-        <button type="button" className="flex items-center gap-2 px-3 py-1.5 rounded-md border border-border/60 bg-card text-[13px] text-ink hover:border-brass/50 transition-colors">
-          <Download size={13} className="text-slate" /> Export
-        </button>
+        <ExportButton
+          rows={groups.map((g, i) => ({
+            cluster_id: g.id,
+            label: g.label,
+            size: g.size,
+            method: g.method,
+            means: signatureSummary(g.label),
+            members: (members[i] ?? []).map((m) => m.finding_id).join(" "),
+          }))}
+          columns={["cluster_id", "label", "size", "method", "means", "members"]}
+          filename={`run-${runId}-clusters`}
+          scope={`all ${groups.length} clusters`}
+        />
       </div>
 
       <div className="flex gap-3 mb-5 shrink-0">
@@ -69,7 +80,7 @@ export default async function ClustersPage({ params }: { params: Promise<{ runId
             {groups.map((group, i) => {
               const list = members[i] ?? [];
               const share = totalFailures ? group.size / totalFailures : null;
-              const unexplained = group.label === "unexplained";
+              const unexplained = group.label === UNEXPLAINED;
               return (
                 <div key={group.id} className="bg-card border border-border/40 rounded-lg p-4 flex flex-col">
                   <div className="flex items-start justify-between gap-2 mb-1">
@@ -80,9 +91,39 @@ export default async function ClustersPage({ params }: { params: Promise<{ runId
                       <span className="text-[10px] px-1.5 py-0.5 rounded bg-[#B3452F]/10 text-[#B3452F] shrink-0">signature</span>
                     )}
                   </div>
-                  <p className="text-[12px] text-slate mb-3">
+                  <p className="text-[12px] text-slate mb-2">
                     {num(group.size)} findings{share !== null ? ` (${pct(share)})` : ""}
                   </p>
+
+                  {/* What the signature means, assembled from its parts. A
+                      combined label is a conjunction, so it is explained as
+                      one rather than treated as a category of its own. */}
+                  <p className="text-[11px] text-slate leading-relaxed mb-3">
+                    {signatureSummary(group.label)}
+                  </p>
+
+                  {!unexplained && (
+                    <dl className="mb-3 flex flex-col gap-2 border-l-2 border-brass/30 pl-2.5">
+                      {factorsInSignature(group.label).map((name) => {
+                        const note = factorNote(name);
+                        return (
+                          <div key={name}>
+                            <dt className="text-[11px] text-ink font-medium">
+                              {note?.title ?? name}
+                              {note?.calibrated && (
+                                <span className="ml-1.5 text-[9px] uppercase tracking-wider text-brass">
+                                  per-dataset
+                                </span>
+                              )}
+                            </dt>
+                            <dd className="text-[10.5px] text-slate leading-relaxed">
+                              {note?.rule ?? "This build has no description for this factor."}
+                            </dd>
+                          </div>
+                        );
+                      })}
+                    </dl>
+                  )}
 
                   <div className="flex flex-col gap-1">
                     {list.slice(0, 4).map((m) => (
@@ -99,7 +140,9 @@ export default async function ClustersPage({ params }: { params: Promise<{ runId
 
                   {unexplained && (
                     <p className="text-[11px] text-slate mt-3 leading-relaxed border-t border-border/40 pt-2">
-                      No discriminating factor accounts for these. Listed rather than hidden.
+                      Worth reading as a gap in the detectors rather than a property of the
+                      failures: something made these fail, and none of the measured
+                      conditions caught it.
                     </p>
                   )}
                 </div>
