@@ -56,7 +56,10 @@ from __future__ import annotations
 import argparse
 import os
 import platform
-import resource
+try:
+    import resource
+except ImportError:
+    resource = None  # Windows — peak_rss_mb() uses ctypes fallback
 import statistics
 import sys
 import time
@@ -100,10 +103,38 @@ def peak_rss_mb() -> float:
     """Return peak resident set size in MB.
 
     ``ru_maxrss`` is bytes on macOS and kilobytes on Linux — a difference that
-    silently produces a 1000x error if assumed either way.
+    silently produces a 1000x error if assumed either way.  On Windows the
+    ``resource`` module is unavailable, so peak working set size is read via
+    the Win32 ``K32GetProcessMemoryInfo`` API instead.
     """
-    raw = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-    return raw / (1024 * 1024) if sys.platform == "darwin" else raw / 1024
+    if resource is not None:
+        raw = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        return raw / (1024 * 1024) if sys.platform == "darwin" else raw / 1024
+    # Windows fallback
+    import ctypes
+    import ctypes.wintypes
+
+    class PROCESS_MEMORY_COUNTERS(ctypes.Structure):
+        _fields_ = [
+            ("cb", ctypes.wintypes.DWORD),
+            ("PageFaultCount", ctypes.wintypes.DWORD),
+            ("PeakWorkingSetSize", ctypes.c_size_t),
+            ("WorkingSetSize", ctypes.c_size_t),
+            ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+            ("QuotaPagedPoolUsage", ctypes.c_size_t),
+            ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+            ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+            ("PagefileUsage", ctypes.c_size_t),
+            ("PeakPagefileUsage", ctypes.c_size_t),
+        ]
+
+    pmc = PROCESS_MEMORY_COUNTERS()
+    pmc.cb = ctypes.sizeof(pmc)
+    handle = ctypes.windll.kernel32.GetCurrentProcess()
+    ctypes.windll.psapi.GetProcessMemoryInfo(
+        handle, ctypes.byref(pmc), pmc.cb
+    )
+    return pmc.PeakWorkingSetSize / (1024 * 1024)
 
 
 def gpu_memory_mb(device: str) -> tuple[float | None, float | None]:

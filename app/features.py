@@ -365,7 +365,7 @@ def extract_run_embeddings(
             no_region += 1
             continue
         try:
-            with Image.open(row["path"]) as image:
+            with Image.open(config.remap_path(row["path"])) as image:
                 crop = image.convert("RGB").crop(box)
         except Exception as exc:
             # One unreadable image must not abandon the pass. The same

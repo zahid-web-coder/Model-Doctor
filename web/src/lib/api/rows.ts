@@ -142,10 +142,11 @@ export interface Group {
   size: number;
 }
 
-/** Members carry the image path but no image_id, so a member thumbnail cannot
- *  be requested from `/images/{id}`. See the note in the clusters screen. */
+/** Members carry the image path and image_id, so a member thumbnail can
+ *  be requested from `/images/{id}`. */
 export interface GroupMember {
   finding_id: number;
+  image_id: number;
   outcome: Outcome;
   class_name: string | null;
   confidence: number | null;

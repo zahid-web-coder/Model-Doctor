@@ -69,6 +69,7 @@ def to_annotations(
 
 def truths_for(gt: dict[str, Any]) -> dict[str, list[ObjectAnnotation]]:
     """Group the canonical ground truth by file name."""
+    cat_names = {c["id"]: c["name"] for c in gt.get("categories", [])}
     by_id: dict[int, list[dict[str, Any]]] = defaultdict(list)
     for ann in gt["annotations"]:
         by_id[ann["image_id"]].append(ann)
@@ -82,7 +83,7 @@ def truths_for(gt: dict[str, Any]) -> dict[str, list[ObjectAnnotation]]:
             polygon = [[seg[i], seg[i + 1]] for i in range(0, len(seg), 2)]
             anns.append(ObjectAnnotation(
                 class_id=int(a["category_id"]),
-                class_name="column",
+                class_name=cat_names.get(int(a["category_id"]), f"id:{a['category_id']}"),
                 confidence=None,
                 x1=float(x), y1=float(y), x2=float(x + w), y2=float(y + h),
                 polygon=polygon,

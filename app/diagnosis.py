@@ -555,6 +555,7 @@ def diagnose_split(
     dataset: DatasetConfig,
     split: str,
     limit: int | None = None,
+    match_iou: float | None = None,
 ) -> DatasetDiagnosis:
     """Run inference and diagnosis across every image in a dataset split.
 
@@ -605,6 +606,7 @@ def diagnose_split(
             image_path,
             prediction.detections,
             truths,
+            match_threshold=match_iou,
             image_width=prediction.image_width,
             image_height=prediction.image_height,
         )
@@ -706,7 +708,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         image_size=args.imgsz,
     )
     try:
-        summary = diagnose_split(detector, dataset, args.split, limit=args.limit)
+        summary = diagnose_split(
+            detector, dataset, args.split, limit=args.limit, match_iou=args.match_iou
+        )
     except (ResourceNotFoundError, ModelLoadError) as exc:
         logger.error("%s", exc)
         return 1
@@ -722,7 +726,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             dataset_yaml=dataset.source_path,
             split=args.split,
             confidence=detector.confidence,
-            match_iou=config.MATCH_IOU_THRESHOLD,
+            match_iou=args.match_iou if args.match_iou is not None else config.MATCH_IOU_THRESHOLD,
             localization_floor=config.LOCALIZATION_IOU_FLOOR,
             image_size=detector.image_size,
         )

@@ -356,12 +356,19 @@ def remap_path(stored: str) -> str:
     First match wins, so a more specific prefix listed before a general one
     takes precedence. Returns the input unchanged when no rule matches, which
     is the common case and the one that must stay cheap.
+
+    Both the stored path and the rule prefixes are normalised to forward
+    slashes before comparison so that databases created on one OS can be
+    remapped on another (e.g. Windows backslashes vs POSIX forward slashes).
     """
+    stored_posix = stored.replace("\\", "/")
     for old, new in PATH_REMAP:
-        if stored == old:
-            return new
-        if stored.startswith(old + "/"):
-            return new + stored[len(old) :]
+        old_posix = old.replace("\\", "/")
+        new_posix = new.replace("\\", "/")
+        if stored_posix == old_posix:
+            return new_posix
+        if stored_posix.startswith(old_posix + "/"):
+            return new_posix + stored_posix[len(old_posix) :]
     return stored
 
 # ---------------------------------------------------------------------------

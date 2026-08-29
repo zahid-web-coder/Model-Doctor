@@ -298,9 +298,9 @@ def create_app() -> FastAPI:
             total = connection.execute(
                 "SELECT COUNT(*) AS n FROM findings WHERE run_id = ?", (run_id,)
             ).fetchone()["n"]
-            rows = storage.load_findings(connection, run_id)
+            rows = storage.load_findings_page(connection, run_id, limit, offset)
         return {
-            "items": serialise(rows[offset : offset + limit]),
+            "items": serialise(rows),
             "total": total,
             "limit": limit,
             "offset": offset,
@@ -522,7 +522,7 @@ def create_app() -> FastAPI:
                 detail=f"No {method} heatmap for finding {finding_id}.",
             )
 
-        stored = Path(str(row["path"]))
+        stored = Path(config.remap_path(str(row["path"])))
         if preview:
             companion = preview_path(stored)
             if companion.is_file():
