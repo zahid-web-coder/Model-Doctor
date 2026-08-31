@@ -196,6 +196,7 @@ class JobRunner:
                         "The diagnosis stage finished without saving a run. "
                         "Its output is in the log below."
                     )
+                self._verify_usable(request.database, run_id)
                 self._record(request.token, run_id=run_id, stage=name)
 
             for name, command in stage_commands(request, run_id):
@@ -258,6 +259,52 @@ class JobRunner:
                 storage.update_job(connection, token, **fields)
         except Exception:  # noqa: BLE001 - progress reporting is not the work
             logger.exception("Could not update job %s", token)
+
+    @staticmethod
+    def _verify_usable(database: Path, run_id: int) -> None:
+        """Fail the job when the run that was saved is not worth analysing.
+
+        The diagnosis pass records a per-image failure and keeps going, which
+        is right when one image is unreadable and wrong when *none* of them
+        could be processed. A checkpoint that will not load produces exactly
+        that: every image errors identically, no findings are written, and the
+        stage still exits zero. Without this check the job runs on, and the
+        first thing to actually fail is a later stage — reporting the wrong
+        culprit three steps from the real one — while the dashboard gains an
+        empty run that looks like a real result.
+
+        The underlying error is lifted out of the images table so the operator
+        is told what went wrong ("could not load the checkpoint") rather than
+        what went wrong downstream of it.
+
+        Raises:
+            RuntimeError: Every image failed, carrying the reason they gave.
+        """
+        with storage.connect(database) as connection:
+            row = connection.execute(
+                """
+                SELECT COUNT(*) AS total,
+                       SUM(CASE WHEN error IS NOT NULL THEN 1 ELSE 0 END) AS failed,
+                       MAX(error) AS reason
+                FROM images WHERE run_id = ?
+                """,
+                (run_id,),
+            ).fetchone()
+
+        total = int(row["total"] or 0)
+        failed = int(row["failed"] or 0)
+        if total == 0:
+            raise RuntimeError(
+                "The run recorded no images at all. Check that the split you "
+                "chose contains readable image files."
+            )
+        if failed == total:
+            reason = (row["reason"] or "no reason was recorded").strip()
+            raise RuntimeError(
+                f"Every one of the {total} image(s) failed to process, so the "
+                f"run holds no usable results. The first reason given was: "
+                f"{reason}"
+            )
 
     @staticmethod
     def _max_run_id(database: Path) -> int | None:

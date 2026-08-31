@@ -2207,3 +2207,40 @@ def _job_record(row: sqlite3.Row) -> JobRecord:
         started_at=row["started_at"],
         finished_at=row["finished_at"],
     )
+
+
+def reconcile_stale_jobs(connection: sqlite3.Connection) -> int:
+    """Fail jobs left mid-flight by a service that stopped, and say how many.
+
+    A job's status lives in the database while the work runs in this process.
+    If the process ends — a restart, a crash, a laptop closing — the row stays
+    ``running`` and nothing will ever move it, so the UI polls a job that no
+    longer exists for as long as anyone leaves the tab open.
+
+    Called at start-up, when no job can legitimately be in flight yet: this
+    process has just begun and the queue is empty, so anything already marked
+    running belongs to a previous life and is known to be dead.
+
+    Returns:
+        How many jobs were closed out.
+    """
+    stale = connection.execute(
+        "SELECT token FROM jobs WHERE status IN ('queued', 'running')"
+    ).fetchall()
+    for row in stale:
+        update_job(
+            connection,
+            row["token"],
+            status="failed",
+            error=(
+                "The analysis service stopped while this job was running, so "
+                "it did not finish. Any results it had already written are "
+                "kept. Start the analysis again to complete it."
+            ),
+            finished_at=_timestamp(),
+        )
+    if stale:
+        logger.warning(
+            "Closed %d job(s) left running by a previous process", len(stale)
+        )
+    return len(stale)

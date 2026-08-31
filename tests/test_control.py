@@ -15,7 +15,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import config
-from app import jobs, storage
+from app import jobs, storage, workspace
 from app.control import create_app
 
 
@@ -340,3 +340,165 @@ class TestJobRecords:
             )
             with pytest.raises(ValueError, match="Not writable"):
                 storage.update_job(connection, "tok", workspace="/elsewhere")
+
+
+class TestAuditRegressions:
+    """Defects found by the production-readiness audit, each with its bug."""
+
+    def test_a_run_where_every_image_failed_is_not_treated_as_success(
+        self, isolated: Path
+    ) -> None:
+        """A checkpoint that will not load must fail the stage that used it.
+
+        The diagnosis pass records a per-image failure and continues, which is
+        right for one unreadable image and wrong when none of them worked. A
+        checkpoint that will not load produces exactly that: every image errors,
+        no findings are written, and the stage exits zero.
+
+        Before this check the job carried on and the *next* stage failed, so the
+        operator was told mask-diagnosis was broken when the real problem was
+        the file they uploaded — and an empty run appeared in the dashboard
+        looking like a genuine result.
+        """
+        database = isolated.parent / "empty.db"
+        with storage.connect(database) as connection:
+            run_id = connection.execute(
+                """
+                INSERT INTO runs (
+                    model_path, model_sha256, dataset_yaml, split,
+                    confidence_threshold, match_iou_threshold,
+                    localization_iou_floor, image_size, created_at
+                ) VALUES ('m.pt','sha','d.yaml','test',0.25,0.5,0.1,640,'now')
+                """
+            ).lastrowid
+            for name in ("a.jpg", "b.jpg"):
+                connection.execute(
+                    """
+                    INSERT INTO images (run_id, path, filename, prediction_count,
+                                        truth_count, error)
+                    VALUES (?, ?, ?, 0, 0, 'Could not load the checkpoint')
+                    """,
+                    (run_id, f"/x/{name}", name),
+                )
+
+        with pytest.raises(RuntimeError, match="Every one of the 2 image"):
+            jobs.JobRunner._verify_usable(database, int(run_id or 0))
+
+    def test_a_run_with_some_failures_is_still_usable(self, isolated: Path) -> None:
+        """One unreadable image must not abandon an otherwise good run."""
+        database = isolated.parent / "partial.db"
+        with storage.connect(database) as connection:
+            run_id = connection.execute(
+                """
+                INSERT INTO runs (
+                    model_path, model_sha256, dataset_yaml, split,
+                    confidence_threshold, match_iou_threshold,
+                    localization_iou_floor, image_size, created_at
+                ) VALUES ('m.pt','sha','d.yaml','test',0.25,0.5,0.1,640,'now')
+                """
+            ).lastrowid
+            connection.execute(
+                "INSERT INTO images (run_id, path, filename, prediction_count,"
+                " truth_count, error) VALUES (?,'/x/a.jpg','a.jpg',2,2,NULL)",
+                (run_id,),
+            )
+            connection.execute(
+                "INSERT INTO images (run_id, path, filename, prediction_count,"
+                " truth_count, error) VALUES (?,'/x/b.jpg','b.jpg',0,0,'unreadable')",
+                (run_id,),
+            )
+        jobs.JobRunner._verify_usable(database, int(run_id or 0))  # must not raise
+
+    def test_a_job_left_running_by_a_dead_process_is_closed_out(
+        self, isolated: Path
+    ) -> None:
+        """A restart must not leave the UI polling a job that cannot finish.
+
+        Job status lives in the database while the work lives in a process. When
+        the process ends, nothing moves the row, so the browser polls `running`
+        for as long as the tab is open.
+        """
+        with storage.connect() as connection:
+            for token, status in (("alive", "running"), ("waiting", "queued")):
+                storage.create_job(
+                    connection, token=token, detector="yolo", split="test",
+                    model_name="m.pt", dataset_name="ds", workspace=str(isolated),
+                    image_size=640, confidence=0.25,
+                )
+                storage.update_job(connection, token, status=status)
+
+            closed = storage.reconcile_stale_jobs(connection)
+            assert closed == 2
+            for token in ("alive", "waiting"):
+                record = storage.load_job(connection, token)
+                assert record is not None
+                assert record.status == "failed"
+                assert "stopped while this job was running" in (record.error or "")
+
+    def test_reconciliation_leaves_finished_jobs_alone(self, isolated: Path) -> None:
+        """Only in-flight jobs are dead; a finished one is a record."""
+        with storage.connect() as connection:
+            storage.create_job(
+                connection, token="done", detector="yolo", split="test",
+                model_name="m.pt", dataset_name="ds", workspace=str(isolated),
+                image_size=640, confidence=0.25,
+            )
+            # No run_id: the foreign key correctly refuses one that does not
+            # exist, which this test has no reason to create.
+            storage.update_job(connection, "done", status="succeeded")
+            assert storage.reconcile_stale_jobs(connection) == 0
+            record = storage.load_job(connection, "done")
+            assert record is not None and record.status == "succeeded"
+
+    def test_old_workspaces_are_pruned_so_the_disk_does_not_fill(
+        self, isolated: Path
+    ) -> None:
+        """Each analysis keeps a full dataset copy; without a bound they stack up."""
+        import os
+        import time
+
+        spaces = []
+        for _ in range(4):
+            space = workspace.create()
+            (space.dataset / "payload.bin").write_bytes(b"x" * 1000)
+            spaces.append(space)
+            time.sleep(0.01)
+        # Make the ordering unambiguous regardless of filesystem timestamp
+        # granularity, which is what this test would otherwise be at the mercy of.
+        for index, space in enumerate(spaces):
+            stamp = time.time() + index
+            os.utime(space.root, (stamp, stamp))
+
+        assert workspace.prune(keep=2) == 2
+        surviving = {p.name for p in isolated.iterdir() if p.is_dir()}
+        assert surviving == {spaces[-1].token, spaces[-2].token}
+
+    def test_pruning_keeps_everything_when_asked_to(self, isolated: Path) -> None:
+        """A generous retention must not delete anything."""
+        for _ in range(3):
+            workspace.create()
+        assert workspace.prune(keep=10) == 0
+        assert len(list(isolated.iterdir())) == 3
+
+    def test_the_reader_may_serve_images_from_the_upload_workspace(self) -> None:
+        """A self-service run keeps its images in the workspace, not datasets/.
+
+        Found by driving the UI: the run rendered a complete diagnosis in which
+        every single image was a broken box. `API_FILE_ROOTS` listed only
+        `datasets/` and `results/`, so the reader answered **403** for every
+        image belonging to a browser-created run — thumbnails, prediction
+        overlays and heatmap tiles alike.
+
+        The numbers were all correct, which is what made it easy to miss: the
+        failure is entirely visual and invisible to an API-level test that
+        checks findings and metrics.
+        """
+        assert config.WORKSPACE_DIR.resolve() in config.API_FILE_ROOTS, (
+            "the reader cannot serve images from runs started in the browser"
+        )
+
+    def test_permitted_roots_do_not_include_the_whole_home_directory(self) -> None:
+        """Widening the roots must stay narrow: the workspace, not its parent."""
+        for root in config.API_FILE_ROOTS:
+            assert root != Path.home(), "API_FILE_ROOTS must not contain $HOME"
+            assert root != Path("/"), "API_FILE_ROOTS must not contain /"

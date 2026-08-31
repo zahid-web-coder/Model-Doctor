@@ -182,3 +182,45 @@ class TestModelValidation:
         result = validation.validate_model(weights, declared_family="yolo")
         assert not result.ok
         assert any("looks like 'rfdetr'" in c.detail for c in result.failures())
+
+
+class TestUnidentifiableCheckpoints:
+    """A file that cannot be identified must not report itself as validated."""
+
+    def test_an_unidentifiable_file_fails_validation(self, tmp_path: Path) -> None:
+        """Found by driving the UI: every check showed a green tick.
+
+        With a declared family, an unidentifiable checkpoint fell through to
+        the branch that records a *pass*, so the panel read "Declared family
+        matches the file" beside an explanation saying it could not be
+        identified at all. `ok` was therefore true, and once a valid dataset
+        was added the Run button would enable and start a run that could only
+        fail during inference.
+        """
+        weights = tmp_path / "notamodel.pt"
+        weights.write_bytes(b"this is not a checkpoint")
+
+        result = validation.validate_model(weights, declared_family="yolo")
+
+        assert not result.ok, "an unidentifiable checkpoint reported as valid"
+        failed = [c.name for c in result.failures()]
+        assert "Declared family matches the file" in failed
+
+    def test_an_identified_matching_file_still_passes(self, tmp_path: Path) -> None:
+        """The fix must not make every declared family fail."""
+        weights = tmp_path / "m.pt"
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as bundle:
+            bundle.writestr("m/data.pkl", b"ultralytics.nn.tasks")
+        weights.write_bytes(buffer.getvalue())
+
+        result = validation.validate_model(weights, declared_family="yolo")
+        assert result.ok, [c.detail for c in result.failures()]
+
+    def test_the_same_file_without_a_declared_family_also_fails(
+        self, tmp_path: Path
+    ) -> None:
+        """Both paths through this function must agree about an unknown file."""
+        weights = tmp_path / "notamodel.pt"
+        weights.write_bytes(b"this is not a checkpoint")
+        assert not validation.validate_model(weights).ok

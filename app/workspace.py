@@ -118,6 +118,42 @@ def destroy(workspace: Workspace) -> None:
     shutil.rmtree(root, ignore_errors=True)
 
 
+def prune(keep: int) -> int:
+    """Delete all but the newest ``keep`` workspaces, and say how many went.
+
+    **Uploads are copies, and copies accumulate.** Each analysis keeps its own
+    dataset — the demo dataset alone is hundreds of megabytes — so without a
+    bound the workspace root grows by the size of a dataset per run until the
+    disk fills. Nothing downstream needs the upload once the run is saved: the
+    findings, heatmaps and metrics are in the database and the results
+    directory, and the images are read during the run, not after it.
+
+    Newest-first rather than oldest-first, and by modification time, so a
+    workspace still being uploaded into is never the one chosen for deletion.
+
+    Args:
+        keep: How many workspaces to retain. Zero removes all of them.
+
+    Returns:
+        The number of workspaces removed.
+    """
+    root = config.WORKSPACE_DIR
+    if not root.is_dir():
+        return 0
+    spaces = sorted(
+        (p for p in root.iterdir() if p.is_dir()),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    removed = 0
+    for stale in spaces[max(0, keep) :]:
+        shutil.rmtree(stale, ignore_errors=True)
+        removed += 1
+    if removed:
+        logger.info("Pruned %d old workspace(s) from %s", removed, root)
+    return removed
+
+
 def _within(base: Path, candidate: Path) -> bool:
     """Report whether ``candidate`` resolves inside ``base``."""
     try:

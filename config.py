@@ -286,6 +286,38 @@ CORS_ORIGINS: Final[tuple[str, ...]] = tuple(
     if origin.strip()
 )
 
+# ---------------------------------------------------------------------------
+# Self-service workspace
+# ---------------------------------------------------------------------------
+# Where files uploaded through the web UI are stored.
+#
+# **Deliberately outside the source tree.** An upload is untrusted input, and
+# the default must not put it anywhere a mistake could reach `app/`, `models/`,
+# `datasets/` or the database. Under the user's home by default; redirect it at
+# a mounted volume in a container.
+WORKSPACE_DIR: Final[Path] = _path_from_env(
+    "MD_WORKSPACE_DIR", Path.home() / ".model-doctor" / "workspace"
+)
+
+# Upload ceilings. Generous enough for a real detection dataset, bounded
+# enough that one request cannot fill the disk.
+MAX_MODEL_BYTES: Final[int] = int(os.getenv("MD_MAX_MODEL_MB", "2048")) * 1_000_000
+MAX_DATASET_BYTES: Final[int] = int(os.getenv("MD_MAX_DATASET_MB", "8192")) * 1_000_000
+
+# How many upload workspaces to keep. Each holds a full copy of the dataset it
+# was run with, so without a bound the disk fills at one dataset per analysis.
+# The most recent are kept so a just-finished job's inputs are still there to
+# look at; everything older is removed once a new analysis is queued.
+WORKSPACE_KEEP: Final[int] = int(os.getenv("MD_WORKSPACE_KEEP", "5"))
+
+# How much of a failed stage's output to keep for the operator. The tail, not
+# the head: a traceback ends with the reason.
+LOG_TAIL_CHARS: Final[int] = int(os.getenv("MD_LOG_TAIL", "4000"))
+
+# Seconds a single pipeline stage may run before the worker abandons it. A
+# stuck stage must not hold the queue forever.
+STAGE_TIMEOUT_S: Final[int] = int(os.getenv("MD_STAGE_TIMEOUT", "10800"))
+
 # Directories the API may read image and heatmap files from. A stored path is
 # resolved and checked against these before it is opened, so a database
 # containing a path to somewhere else cannot make the API serve it (D-037).
@@ -303,6 +335,11 @@ API_FILE_ROOTS: Final[tuple[Path, ...]] = tuple(
         ),
         str(DATASETS_DIR),
         str(RESULTS_DIR),
+        # Runs started from the browser read their images out of the upload
+        # workspace, not out of `datasets/`. Without this the API refuses every
+        # image in every self-service run with a 403, and the dashboard renders
+        # a complete diagnosis in which no picture loads.
+        str(WORKSPACE_DIR),
     )
 )
 
@@ -370,32 +407,6 @@ def remap_path(stored: str) -> str:
         if stored_posix.startswith(old_posix + "/"):
             return new_posix + stored_posix[len(old_posix) :]
     return stored
-
-# ---------------------------------------------------------------------------
-# Self-service workspace
-# ---------------------------------------------------------------------------
-# Where files uploaded through the web UI are stored.
-#
-# **Deliberately outside the source tree.** An upload is untrusted input, and
-# the default must not put it anywhere a mistake could reach `app/`, `models/`,
-# `datasets/` or the database. Under the user's home by default; redirect it at
-# a mounted volume in a container.
-WORKSPACE_DIR: Final[Path] = _path_from_env(
-    "MD_WORKSPACE_DIR", Path.home() / ".model-doctor" / "workspace"
-)
-
-# Upload ceilings. Generous enough for a real detection dataset, bounded
-# enough that one request cannot fill the disk.
-MAX_MODEL_BYTES: Final[int] = int(os.getenv("MD_MAX_MODEL_MB", "2048")) * 1_000_000
-MAX_DATASET_BYTES: Final[int] = int(os.getenv("MD_MAX_DATASET_MB", "8192")) * 1_000_000
-
-# How much of a failed stage's output to keep for the operator. The tail, not
-# the head: a traceback ends with the reason.
-LOG_TAIL_CHARS: Final[int] = int(os.getenv("MD_LOG_TAIL", "4000"))
-
-# Seconds a single pipeline stage may run before the worker abandons it. A
-# stuck stage must not hold the queue forever.
-STAGE_TIMEOUT_S: Final[int] = int(os.getenv("MD_STAGE_TIMEOUT", "10800"))
 
 # ---------------------------------------------------------------------------
 # Device selection

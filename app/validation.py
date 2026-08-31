@@ -196,7 +196,18 @@ def validate_model(
                 f"{', '.join(SUPPORTED_FAMILIES)}."
             ),
         )
-        if detected and detected != family:
+        if detected is None:
+            # An unidentifiable file is not a match — it is an unknown, and
+            # passing it here told the operator a garbage checkpoint had been
+            # validated. The run would then be started and fail during
+            # inference, having wasted their time to reach the same verdict
+            # this check could have given immediately.
+            result.add(
+                "Declared family matches the file",
+                False,
+                explanation,
+            )
+        elif detected != family:
             result.add(
                 "Declared family matches the file",
                 False,
