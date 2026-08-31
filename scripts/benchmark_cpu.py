@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+
 try:
     import resource
 except ImportError:
@@ -58,7 +59,9 @@ def peak_rss_mb() -> float:
     import ctypes
     import ctypes.wintypes
 
-    class PROCESS_MEMORY_COUNTERS(ctypes.Structure):
+    # Named for the Win32 struct it binds to, so it can be checked
+    # against Microsoft's documentation rather than a local rename.
+    class PROCESS_MEMORY_COUNTERS(ctypes.Structure):  # noqa: N801
         _fields_ = [
             ("cb", ctypes.wintypes.DWORD),
             ("PageFaultCount", ctypes.wintypes.DWORD),

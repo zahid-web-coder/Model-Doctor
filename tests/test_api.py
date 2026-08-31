@@ -734,3 +734,53 @@ class TestPathRemap:
         )
         client = TestClient(create_app())
         assert client.get("/images/1").status_code == 403
+
+    def test_preview_is_still_a_preview_after_relocation(
+        self, populated: Path, roots: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A remapped run must serve the small companion, not the full image.
+
+        The preview companion is found by convention from the stored path. When
+        that path belongs to another machine, checking it for the companion
+        looks in a directory that does not exist, the check fails, and the
+        endpoint quietly falls back to the full-resolution overlay.
+
+        The failure is invisible to a status code — it answers **200**, with the
+        wrong file. A grid asking for sixty previews then downloads sixty
+        full-resolution images, which is precisely the cost the preview exists
+        to avoid, on precisely the machines that most need it avoided. So this
+        asserts the media type, not the status.
+        """
+        heatmap = roots / "heat.png"
+        Image.new("RGB", (8, 8), (255, 0, 0)).save(heatmap.with_suffix(".preview.jpg"))
+
+        with storage.connect(populated) as connection:
+            connection.execute(
+                "UPDATE heatmaps SET path = ?",
+                ("/machine-that-is-not-this-one/heat.png",),
+            )
+            connection.commit()
+
+        monkeypatch.setattr(config, "DB_PATH", populated)
+        monkeypatch.setattr(
+            config,
+            "PATH_REMAP",
+            (("/machine-that-is-not-this-one", str(roots.resolve())),),
+        )
+        client = TestClient(create_app())
+
+        finding_id = 1
+        response = client.get(
+            f"/findings/{finding_id}/heatmap", params={"preview": True}
+        )
+        assert response.status_code == 200, response.text
+        assert response.headers["content-type"] == "image/jpeg", (
+            "served the full-resolution overlay instead of the preview companion"
+        )
+
+    def test_remap_normalises_separators_from_another_os(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A database written on Windows must be readable on POSIX."""
+        monkeypatch.setattr(config, "PATH_REMAP", ((r"C:\data", "/mnt/data"),))
+        assert config.remap_path(r"C:\data\images\a.jpg") == "/mnt/data/images/a.jpg"
