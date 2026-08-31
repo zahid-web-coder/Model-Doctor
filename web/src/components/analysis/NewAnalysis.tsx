@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Check, X, Loader2, ArrowRight, Upload, AlertTriangle } from "lucide-react";
+import { AnalysisHistory } from "./AnalysisHistory";
 import {
   control,
   progressOf,
@@ -176,6 +177,27 @@ export function NewAnalysis() {
 
   const ready = Boolean(token && model?.ok && dataset?.ok);
 
+  /** Adopt a job from the history list so the existing poller follows it. */
+  const resume = (existing: Job) => {
+    setToken(existing.token);
+    setJob(existing);
+    setPhase(
+      existing.status === "succeeded" || existing.status === "failed"
+        ? "done"
+        : "running"
+    );
+  };
+
+  /** Return to an empty form, keeping nothing from the finished analysis. */
+  const startAnother = () => {
+    setToken(null);
+    setModel(null);
+    setDataset(null);
+    setJob(null);
+    setError(null);
+    setPhase("compose");
+  };
+
   const start = async () => {
     if (!ready || !token || !model || !dataset) return;
     setBusy("start");
@@ -328,7 +350,18 @@ export function NewAnalysis() {
               Compare with another run
             </button>
           )}
+          {(done || failed) && (
+            <button
+              type="button"
+              onClick={startAnother}
+              className="px-4 py-2 rounded-md border border-border/60 text-[13px] text-ink hover:border-brass/50 transition-colors"
+            >
+              Run another
+            </button>
+          )}
         </div>
+
+        <AnalysisHistory onResume={resume} />
       </div>
     );
   }
@@ -456,6 +489,8 @@ export function NewAnalysis() {
             : "Upload a checkpoint and a dataset that both pass validation."}
         </span>
       </div>
+
+      <AnalysisHistory onResume={resume} />
     </div>
   );
 }

@@ -16,6 +16,43 @@ separately; neither knows about the other.
 happens in :mod:`app.jobs`, on a worker thread, in subprocesses. A request that
 started inference inline would hold a connection open for the length of an
 inference run and time out in every proxy between the browser and the server.
+
+.. warning::
+
+   **This service has no authentication and must not be exposed to a network.**
+
+   Anyone who can reach it can upload a checkpoint and cause this process to
+   execute it. That is not a flaw in the validation — identifying a file can be
+   done safely, but *running* a model means constructing it, and for
+   Ultralytics that is a full unpickle of attacker-supplied data. No amount of
+   checking upstream changes that.
+
+   Bind it to a loopback address. It is a local tool, and adding a token here
+   would create the appearance of a security boundary without the substance of
+   one: a bearer token in front of arbitrary code execution buys very little,
+   and it would invite exactly the network exposure this warning exists to
+   prevent. If it ever needs to serve more than one machine, the answer is a
+   sandboxed execution environment and a real identity system — not a header
+   check bolted onto this module.
+
+.. warning::
+
+   **Run exactly one worker process.** The job queue lives in this process, and
+   start-up closes out any job still marked running as belonging to a dead
+   process. A second worker would therefore mark the first worker's live job as
+   failed the moment it booted, while that job carried on writing results. Use
+   ``uvicorn app.control:app`` without ``--workers``; the queue is serial by
+   design and a second worker would not make anything finish sooner.
+
+**Benchmarking is deliberately not one of the stages.** Latency, throughput and
+memory are properties of a model *on a device under controlled conditions*, and
+a figure measured on a shared machine while other work is running is not a
+measurement — it is a number that looks like one. The worker cannot promise
+those conditions: it runs wherever the service runs, possibly beside a browser
+and a dev server. So benchmarking stays in ``scripts/benchmark_run.py``, run
+deliberately on a quiet machine, and a browser-started run has no
+``run_benchmarks`` row rather than an unreliable one. The Compare screen
+already renders that absence as "not measured".
 """
 
 from __future__ import annotations
@@ -85,7 +122,18 @@ def _job_payload(record: storage.JobRecord) -> dict[str, Any]:
 
 
 def create_app() -> FastAPI:
-    """Build the control application."""
+    """Build the control application.
+
+    Reconciles jobs left behind by a previous process before serving anything.
+    Doing it here rather than on first request means a restarted service tells
+    the truth immediately, instead of only once somebody happens to ask.
+    """
+    try:
+        with storage.connect() as connection:
+            storage.reconcile_stale_jobs(connection)
+    except Exception:  # noqa: BLE001 - never block start-up on bookkeeping
+        logger.exception("Could not reconcile jobs from a previous process")
+
     application = FastAPI(
         title="Model Doctor control API",
         description=(
@@ -273,6 +321,15 @@ def create_app() -> FastAPI:
                 image_size=image_size,
                 confidence=confidence,
             )
+
+        # Bound the disk before adding to it. Done here rather than after a job
+        # finishes so that a crashed or abandoned session is still eventually
+        # collected, and never while an upload into an older workspace is in
+        # flight — by this point every upload for this analysis is complete.
+        try:
+            workspace.prune(config.WORKSPACE_KEEP)
+        except OSError:
+            logger.warning("Could not prune old workspaces", exc_info=True)
 
         jobs.RUNNER.submit(
             jobs.JobRequest(

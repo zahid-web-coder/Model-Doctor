@@ -108,3 +108,29 @@ describe("a run without explainability", () => {
     assert.equal(progressOf({ ...rfdetr, status: "succeeded" }), 1);
   });
 });
+
+describe("a failed job is never presented as finished", () => {
+  test("the bar does not fill on failure", () => {
+    // Audit item 10. A failed job carries the stage index it died on, and a
+    // naive `index / length` would render a job that failed on the last stage
+    // as complete.
+    const stages = job().stages;
+    const lastStage = stages.length - 1;
+    assert.ok(progressOf(job({ status: "failed", stage_index: lastStage })) < 1);
+  });
+
+  test("no status other than succeeded reaches completion", () => {
+    for (const status of ["queued", "running", "failed", "cancelled"] as const) {
+      for (let i = 0; i <= job().stages.length; i += 1) {
+        assert.ok(
+          progressOf(job({ status, stage_index: i })) < 1,
+          `${status} at stage ${i} claimed to be complete`
+        );
+      }
+    }
+  });
+
+  test("a job that failed before any stage reports no progress at all", () => {
+    assert.equal(progressOf(job({ status: "failed", stage_index: null })), 0);
+  });
+});
