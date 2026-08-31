@@ -257,8 +257,8 @@ def render_overlay(
     import numpy as np
 
     height, width = original.shape[:2]
-    top = int(round(letterbox.pad_y))
-    left = int(round(letterbox.pad_x))
+    top = int(letterbox.pad_y)
+    left = int(letterbox.pad_x)
     bottom = letterbox.size - top
     right = letterbox.size - left
     cropped = cam[top:bottom, left:right]

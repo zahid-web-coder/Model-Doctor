@@ -663,7 +663,7 @@ def build_contexts(
                 import numpy as np
                 from PIL import Image
 
-                with Image.open(path) as handle:
+                with Image.open(config.remap_path(path)) as handle:
                     greyscale = cv2.cvtColor(
                         np.array(handle.convert("RGB")), cv2.COLOR_RGB2GRAY
                     )

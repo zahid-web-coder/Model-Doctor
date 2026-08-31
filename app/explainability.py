@@ -152,6 +152,9 @@ def _anchor_centres(total: int, device: Any) -> Any:
     are derived from the total rather than hardcoded — a different input size
     or a different number of levels stays correct without configuration.
 
+    The image size is now solved algebraically from the anchor count rather
+    than tested against a static list, so any valid resolution works.
+
     Args:
         total: Number of anchors the head produced.
         device: Device the result should live on.
@@ -162,29 +165,43 @@ def _anchor_centres(total: int, device: Any) -> Any:
     Raises:
         ExplainabilityError: If the anchor count matches no known layout.
     """
+    import math
+
     import torch
 
     for strides in ((8, 16, 32), (8, 16, 32, 64)):
-        for size in (config.IMAGE_SIZE, 640, 672, 1280):
-            grids = [size // s for s in strides]
-            if sum(g * g for g in grids) != total:
-                continue
-            points = []
-            for grid, stride in zip(grids, strides, strict=True):
-                ys, xs = torch.meshgrid(
-                    torch.arange(grid, device=device),
-                    torch.arange(grid, device=device),
-                    indexing="ij",
-                )
-                # +0.5 puts the point at the cell centre, matching how the head
-                # decodes positions.
-                points.append(
-                    torch.stack(
-                        ((xs.flatten() + 0.5) * stride, (ys.flatten() + 0.5) * stride),
-                        dim=1,
-                    ).float()
-                )
-            return torch.cat(points, dim=0)
+        # Solve: sum((size // s)^2 for s in strides) == total
+        # For a valid size, size is a multiple of max(strides), so
+        # size // s == size / s exactly and the equation becomes
+        # size^2 * sum(1/s^2) == total.
+        divisor_sum = sum(1.0 / (s * s) for s in strides)
+        candidate_sq = total / divisor_sum
+        size = int(round(math.sqrt(candidate_sq)))
+
+        # Verify: the rounding must reproduce the exact anchor count,
+        # and the size must be divisible by every stride.
+        grids = [size // s for s in strides]
+        if sum(g * g for g in grids) != total:
+            continue
+        if any(size % s != 0 for s in strides):
+            continue
+
+        points = []
+        for grid, stride in zip(grids, strides, strict=True):
+            ys, xs = torch.meshgrid(
+                torch.arange(grid, device=device),
+                torch.arange(grid, device=device),
+                indexing="ij",
+            )
+            # +0.5 puts the point at the cell centre, matching how the head
+            # decodes positions.
+            points.append(
+                torch.stack(
+                    ((xs.flatten() + 0.5) * stride, (ys.flatten() + 0.5) * stride),
+                    dim=1,
+                ).float()
+            )
+        return torch.cat(points, dim=0)
 
     raise ExplainabilityError(
         f"Could not infer the anchor grid layout for {total} anchors."

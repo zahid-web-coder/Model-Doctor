@@ -14,11 +14,11 @@ import { factorNote, factorsInSignature, signatureSummary, UNEXPLAINED } from "@
  * findings carrying both. There is nothing to describe beyond that, which is
  * why the mock's prose descriptions are gone.
  *
- * **No thumbnails.** `/groups/{id}/members` returns `filename` and `path` but
- * no `image_id`, and `/images/{id}` only accepts an id. A member image cannot
- * be requested without one, so the cards show the member list instead of
- * guessing. Adding `image_id` to that endpoint is a backend change and is not
- * made here.
+ * **No thumbnails yet, though they are now possible.** `/groups/{id}/members`
+ * returns `image_id` as of the backend fix that added it, so a member image
+ * could be requested from `/images/{id}`. The cards still show the member list:
+ * adding a thumbnail grid is a design change rather than a data one, and is
+ * left for whoever decides what a cluster card should lead with.
  */
 export default async function ClustersPage({ params }: { params: Promise<{ runId: string }> }) {
   const { runId } = await params;

@@ -373,3 +373,52 @@ def test_benchmark_counts_are_read_back(tmp_path):
         row = storage.load_benchmarks(connection, run_id)[0]
         assert row.warmup_images == 3
         assert row.measured_images == 30
+
+
+def test_ground_truth_keeps_detection_format_boxes(tmp_path):
+    """A box-only label is an annotation, not a line to skip.
+
+    YOLO writes two label formats. A segmentation line carries a polygon
+    (``class x1 y1 x2 y2 ...``); a detection line carries a box as
+    ``class x_centre y_centre width height`` — exactly five fields.
+
+    Skipping the five-field form drops those objects from the ground truth
+    entirely, and every metric computed against it is then measured on a
+    dataset missing objects the model is nonetheless penalised for finding.
+    Nothing errors and nothing warns: the mAP is simply wrong, and wrong in the
+    flattering direction for recall.
+    """
+    from PIL import Image
+
+    images = tmp_path / "images"
+    labels = tmp_path / "labels"
+    images.mkdir(parents=True)
+    labels.mkdir(parents=True)
+    Image.new("RGB", (100, 50)).save(images / "a.jpg")
+    # Centre (0.5, 0.5), half the width, half the height, in a 100x50 image.
+    (labels / "a.txt").write_text("0 0.5 0.5 0.5 0.5\n")
+
+    gt = evaluation.build_ground_truth(images, {0: "column"})
+
+    assert len(gt["annotations"]) == 1, "a detection-format label was dropped"
+    annotation = gt["annotations"][0]
+    # x = (0.5 - 0.25) * 100, y = (0.5 - 0.25) * 50, w = 50, h = 25.
+    assert annotation["bbox"] == pytest.approx([25.0, 12.5, 50.0, 25.0])
+    assert annotation["area"] == pytest.approx(1250.0)
+
+
+def test_ground_truth_reads_both_label_formats_in_one_split(tmp_path):
+    """Mixed splits exist; neither format may shadow the other."""
+    from PIL import Image
+
+    images = tmp_path / "images"
+    labels = tmp_path / "labels"
+    images.mkdir(parents=True)
+    labels.mkdir(parents=True)
+    for name in ("a", "b"):
+        Image.new("RGB", (100, 50)).save(images / f"{name}.jpg")
+    (labels / "a.txt").write_text("0 0.5 0.5 0.5 0.5\n")          # box
+    (labels / "b.txt").write_text("0 0.1 0.1 0.5 0.1 0.3 0.6\n")  # polygon
+
+    gt = evaluation.build_ground_truth(images, {0: "column"})
+    assert len(gt["annotations"]) == 2

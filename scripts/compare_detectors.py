@@ -95,18 +95,28 @@ class ImageRecord:
 # ---------------------------------------------------------------------------
 # Ground truth — one canonical set, built from the YOLO labels
 # ---------------------------------------------------------------------------
-def load_ground_truth(images_dir: Path, labels_dir: Path) -> dict[str, Any]:
+def load_ground_truth(
+    images_dir: Path, labels_dir: Path,
+    class_names: dict[int, str] | None = None,
+) -> dict[str, Any]:
     """Build a COCO-format ground truth from the YOLO test labels.
 
     The YOLO export is the canonical ground truth for both models (see the
     module docstring). Converting it into COCO's structure here means the
     evaluator sees one set of annotations, not two.
+
+    Args:
+        images_dir: Directory containing test images.
+        labels_dir: Directory containing YOLO-format label text files.
+        class_names: Mapping from class ID to name. When ``None``, names
+            are derived from class IDs seen in the annotations.
     """
     from PIL import Image
 
     images: list[dict[str, Any]] = []
     annotations: list[dict[str, Any]] = []
     ann_id = 1
+    seen_class_ids: set[int] = set()
 
     for image_id, image_path in enumerate(list_images(images_dir), start=1):
         with Image.open(image_path) as handle:
@@ -127,6 +137,7 @@ def load_ground_truth(images_dir: Path, labels_dir: Path) -> dict[str, Any]:
             if len(parts) <= 5:
                 continue  # a box-only line; this dataset is fully segmented
             class_id = int(parts[0])
+            seen_class_ids.add(class_id)
             coords = [float(v) for v in parts[1:]]
             xs = [coords[i] * width for i in range(0, len(coords), 2)]
             ys = [coords[i + 1] * height for i in range(0, len(coords), 2)]
@@ -146,10 +157,23 @@ def load_ground_truth(images_dir: Path, labels_dir: Path) -> dict[str, Any]:
             })
             ann_id += 1
 
+    # Build categories from the dataset descriptor when available;
+    # fall back to the class IDs observed in the annotations.
+    if class_names is not None:
+        categories = [
+            {"id": cid, "name": name, "supercategory": "none"}
+            for cid, name in sorted(class_names.items())
+        ]
+    else:
+        categories = [
+            {"id": cid, "name": f"class_{cid}", "supercategory": "none"}
+            for cid in sorted(seen_class_ids)
+        ]
+
     return {
         "images": images,
         "annotations": annotations,
-        "categories": [{"id": 0, "name": "column", "supercategory": "none"}],
+        "categories": categories,
     }
 
 
@@ -361,7 +385,14 @@ def main(argv: list[str] | None = None) -> int:
             run_inference(spec, images_dir, out_dir / f"{spec.key}.json")
         return 0
 
-    gt = load_ground_truth(images_dir, labels_dir)
+    # Read class names from data.yaml so categories are built dynamically.
+    try:
+        from utils.dataset import load_dataset_config
+        dataset = load_dataset_config(root / "data.yaml")
+        class_names = dataset.class_names
+    except Exception:
+        class_names = None  # fall back to class IDs from annotations
+    gt = load_ground_truth(images_dir, labels_dir, class_names=class_names)
     (out_dir / "ground_truth.json").write_text(json.dumps(gt))
     logger.info("ground truth: %d images, %d annotations",
                 len(gt["images"]), len(gt["annotations"]))

@@ -797,6 +797,66 @@ def load_findings(
     return records
 
 
+def load_findings_page(
+    connection: sqlite3.Connection,
+    run_id: int,
+    limit: int,
+    offset: int,
+    outcome: Outcome | None = None,
+) -> list[FindingRecord]:
+    """Return a page of findings using SQL-level pagination.
+
+    Unlike :func:`load_findings`, only the requested slice leaves SQLite,
+    which is critical for the API endpoint where loading tens of thousands of
+    rows per page request would blow the memory budget.
+
+    Args:
+        connection: An open connection.
+        run_id: Which run to read.
+        limit: Maximum number of rows to return.
+        offset: Number of rows to skip.
+        outcome: When given, only findings of this outcome are returned.
+
+    Returns:
+        At most *limit* findings, starting from *offset*, in insertion order.
+    """
+    if outcome is None:
+        rows = connection.execute(
+            "SELECT * FROM findings WHERE run_id = ? ORDER BY id LIMIT ? OFFSET ?",
+            (run_id, limit, offset),
+        ).fetchall()
+    else:
+        rows = connection.execute(
+            "SELECT * FROM findings WHERE run_id = ? AND outcome = ? "
+            "ORDER BY id LIMIT ? OFFSET ?",
+            (run_id, outcome.value, limit, offset),
+        ).fetchall()
+
+    def box(prefix: str) -> tuple[float, float, float, float] | None:
+        values = [row[f"{prefix}_{axis}"] for axis in ("x1", "y1", "x2", "y2")]
+        return tuple(values) if values[0] is not None else None  # type: ignore[return-value]
+
+    records = []
+    for row in rows:
+        polygon = json.loads(row["truth_polygon"]) if row["truth_polygon"] else None
+        records.append(
+            FindingRecord(
+                id=row["id"],
+                run_id=row["run_id"],
+                image_id=row["image_id"],
+                outcome=row["outcome"],
+                class_id=row["class_id"],
+                class_name=row["class_name"],
+                confidence=row["confidence"],
+                iou=row["iou"],
+                pred_box=box("pred"),
+                truth_box=box("truth"),
+                truth_polygon=polygon,
+            )
+        )
+    return records
+
+
 def outcome_counts(connection: sqlite3.Connection, run_id: int) -> dict[str, int]:
     """Return finding counts by outcome for one run.
 
@@ -1308,7 +1368,7 @@ def load_cluster_members(
     return connection.execute(
         """
         SELECT f.id AS finding_id, f.outcome, f.class_name, f.confidence, f.iou,
-               i.filename, i.path
+               i.id AS image_id, i.filename, i.path
         FROM cluster_members cm
         JOIN findings f ON f.id = cm.finding_id
         JOIN images i ON i.id = f.image_id

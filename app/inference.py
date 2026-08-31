@@ -991,7 +991,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.validate:
         try:
-            metrics = detector.validate()
+            metrics = detector.validate(split=args.split)
         except (ResourceNotFoundError, ModelLoadError) as exc:
             logger.error("%s", exc)
             return 1

@@ -233,6 +233,14 @@ def diagnose_masks(
                 unmeasurable += 1
             continue
 
+        if prediction.error is not None:
+            unreadable += 1
+            logger.warning("Image unreadable: %s — %s", path, prediction.error)
+            for row in findings:
+                entries.append((int(row["finding_id"]), None, None, None))
+                unmeasurable += 1
+            continue
+
         outlines_seen = outlines_seen or any(
             d.polygon is not None for d in prediction.detections
         )

@@ -327,3 +327,41 @@ def test_file_sha256_is_stable(tmp_path: Path) -> None:
 def test_format_run_summary_handles_empty() -> None:
     """The run listing renders when nothing has been saved."""
     assert "No runs recorded" in storage.format_run_summary([])
+
+
+def test_findings_page_matches_slicing_the_whole_run(tmp_path: Path) -> None:
+    """Paging in SQL must return exactly what paging in Python returned.
+
+    The endpoint used to load every finding and slice the list. That is correct
+    and unaffordable: the cost of one page grew with the size of the run rather
+    than the size of the page. Moving the window into SQL is only safe if the
+    two agree on order as well as content, so this compares them directly
+    rather than asserting a hand-written expectation.
+    """
+    with storage.connect(tmp_path / "d.db") as conn:
+        run_id = storage.save_dataset_diagnosis(conn, _context(), _sample())
+        every = storage.load_findings(conn, run_id)
+
+        for size in (1, 2, len(every), len(every) + 5):
+            paged = []
+            for offset in range(0, len(every), max(1, size)):
+                paged.extend(storage.load_findings_page(conn, run_id, size, offset))
+            assert [r.id for r in paged] == [r.id for r in every], (
+                f"page size {size} did not reproduce the full ordering"
+            )
+
+        # Past the end is empty, not an error and not a wrapped-around page.
+        assert storage.load_findings_page(conn, run_id, 10, len(every) + 1) == []
+
+
+def test_findings_page_respects_the_outcome_filter(tmp_path: Path) -> None:
+    """Filtering and paging together must not drop or duplicate rows."""
+    with storage.connect(tmp_path / "d.db") as conn:
+        run_id = storage.save_dataset_diagnosis(conn, _context(), _sample())
+        expected = storage.load_findings(conn, run_id, Outcome.CORRECT)
+        paged = storage.load_findings_page(
+            conn, run_id, 100, 0, outcome=Outcome.CORRECT
+        )
+
+    assert [r.id for r in paged] == [r.id for r in expected]
+    assert all(r.outcome == Outcome.CORRECT.value for r in paged)

@@ -137,27 +137,46 @@ def build_ground_truth(
 
         for line in label_path.read_text().splitlines():
             parts = line.split()
-            if len(parts) <= 5:
-                continue  # a box-only line; segmentation needs a polygon
+            if not parts:
+                continue
             class_id = int(parts[0])
-            coords = [float(value) for value in parts[1:]]
-            xs = [coords[i] * width for i in range(0, len(coords), 2)]
-            ys = [coords[i + 1] * height for i in range(0, len(coords), 2)]
-            polygon: list[float] = []
-            for x, y in zip(xs, ys, strict=True):
-                polygon.extend([x, y])
 
-            x1, y1, x2, y2 = min(xs), min(ys), max(xs), max(ys)
-            annotations.append({
-                "id": annotation_id,
-                "image_id": image_id,
-                "category_id": class_id,
-                "bbox": [x1, y1, x2 - x1, y2 - y1],
-                "area": float((x2 - x1) * (y2 - y1)),
-                "iscrowd": 0,
-                "segmentation": [polygon],
-            })
-            annotation_id += 1
+            if len(parts) == 5:
+                # Detection box: class_id x_center y_center w h (normalized)
+                x_c, y_c, w, h = (float(v) for v in parts[1:])
+                x1 = (x_c - w / 2) * width
+                y1 = (y_c - h / 2) * height
+                box_w = w * width
+                box_h = h * height
+                annotations.append({
+                    "id": annotation_id,
+                    "image_id": image_id,
+                    "category_id": class_id,
+                    "bbox": [x1, y1, box_w, box_h],
+                    "area": float(box_w * box_h),
+                    "iscrowd": 0,
+                    "segmentation": [],
+                })
+                annotation_id += 1
+            elif len(parts) > 5:
+                coords = [float(value) for value in parts[1:]]
+                xs = [coords[i] * width for i in range(0, len(coords), 2)]
+                ys = [coords[i + 1] * height for i in range(0, len(coords), 2)]
+                polygon: list[float] = []
+                for x, y in zip(xs, ys, strict=True):
+                    polygon.extend([x, y])
+
+                x1, y1, x2, y2 = min(xs), min(ys), max(xs), max(ys)
+                annotations.append({
+                    "id": annotation_id,
+                    "image_id": image_id,
+                    "category_id": class_id,
+                    "bbox": [x1, y1, x2 - x1, y2 - y1],
+                    "area": float((x2 - x1) * (y2 - y1)),
+                    "iscrowd": 0,
+                    "segmentation": [polygon],
+                })
+                annotation_id += 1
 
     return {
         "images": images,
