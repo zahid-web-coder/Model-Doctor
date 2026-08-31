@@ -372,6 +372,32 @@ def remap_path(stored: str) -> str:
     return stored
 
 # ---------------------------------------------------------------------------
+# Self-service workspace
+# ---------------------------------------------------------------------------
+# Where files uploaded through the web UI are stored.
+#
+# **Deliberately outside the source tree.** An upload is untrusted input, and
+# the default must not put it anywhere a mistake could reach `app/`, `models/`,
+# `datasets/` or the database. Under the user's home by default; redirect it at
+# a mounted volume in a container.
+WORKSPACE_DIR: Final[Path] = _path_from_env(
+    "MD_WORKSPACE_DIR", Path.home() / ".model-doctor" / "workspace"
+)
+
+# Upload ceilings. Generous enough for a real detection dataset, bounded
+# enough that one request cannot fill the disk.
+MAX_MODEL_BYTES: Final[int] = int(os.getenv("MD_MAX_MODEL_MB", "2048")) * 1_000_000
+MAX_DATASET_BYTES: Final[int] = int(os.getenv("MD_MAX_DATASET_MB", "8192")) * 1_000_000
+
+# How much of a failed stage's output to keep for the operator. The tail, not
+# the head: a traceback ends with the reason.
+LOG_TAIL_CHARS: Final[int] = int(os.getenv("MD_LOG_TAIL", "4000"))
+
+# Seconds a single pipeline stage may run before the worker abandons it. A
+# stuck stage must not hold the queue forever.
+STAGE_TIMEOUT_S: Final[int] = int(os.getenv("MD_STAGE_TIMEOUT", "10800"))
+
+# ---------------------------------------------------------------------------
 # Device selection
 # ---------------------------------------------------------------------------
 DEVICE_OVERRIDE: Final[str] = os.getenv("MD_DEVICE", "").strip()

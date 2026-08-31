@@ -1,0 +1,315 @@
+"""The write half of Model Doctor: uploads, validation, and starting analyses.
+
+**A separate application from :mod:`app.api`, deliberately.** That module is
+read-only in a way that is structural rather than promised: it opens SQLite
+through the ``mode=ro`` URI, so a write fails at the driver, and it declares no
+non-GET route. D-037 gives the reason — a reader that ever began writing would
+silently mutate analysis history instead of failing loudly.
+
+Adding upload endpoints there would have dissolved that guarantee, turning a
+property of the code into a convention about which handlers are careful. So
+writes live here, in their own app with its own connections, and the reader
+keeps its guarantee unchanged. The two can be mounted on one process or run
+separately; neither knows about the other.
+
+**Nothing here runs a model.** Requests validate, store, and enqueue. The work
+happens in :mod:`app.jobs`, on a worker thread, in subprocesses. A request that
+started inference inline would hold a connection open for the length of an
+inference run and time out in every proxy between the browser and the server.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
+
+import config
+from app import jobs, storage, validation, workspace
+from app.detectors import SUPPORTED_FAMILIES
+from utils.logging_utils import get_logger
+
+logger = get_logger(__name__)
+
+# FastAPI declares uploads and form fields through call expressions in the
+# signature. Hoisting them to module level is what satisfies B008 without
+# departing from the framework's documented idiom.
+_UPLOADED_FILE = File(...)
+_OPTIONAL_FAMILY = Form(default=None)
+_SPLIT_FIELD = Form(default="test")
+
+
+def _checks(result: validation.ValidationResult) -> dict[str, Any]:
+    """Render a validation result as the shape the UI consumes."""
+    return {
+        "ok": result.ok,
+        "checks": [
+            {"name": c.name, "ok": c.ok, "detail": c.detail} for c in result.checks
+        ],
+        "facts": result.facts,
+    }
+
+
+def _job_payload(record: storage.JobRecord) -> dict[str, Any]:
+    """Render a job for the browser, including where it is in the pipeline."""
+    stages = list(storage.JOB_STAGES)
+    if record.detector not in jobs.EXPLAINABLE_FAMILIES:
+        # Never advertise a stage this run will not perform. RF-DETR has no
+        # validated attribution here, and showing a pending "explainability"
+        # step that silently never happens would be a lie told by a progress
+        # bar.
+        stages = [s for s in stages if s != "explainability"]
+
+    return {
+        "token": record.token,
+        "status": record.status,
+        "stage": record.stage,
+        "stages": stages,
+        "stage_index": stages.index(record.stage) if record.stage in stages else None,
+        "run_id": record.run_id,
+        "detector": record.detector,
+        "split": record.split,
+        "model_name": record.model_name,
+        "dataset_name": record.dataset_name,
+        "image_size": record.image_size,
+        "confidence": record.confidence,
+        "error": record.error,
+        "log_tail": record.log_tail,
+        "created_at": record.created_at,
+        "started_at": record.started_at,
+        "finished_at": record.finished_at,
+        "explainability_supported": record.detector in jobs.EXPLAINABLE_FAMILIES,
+    }
+
+
+def create_app() -> FastAPI:
+    """Build the control application."""
+    application = FastAPI(
+        title="Model Doctor control API",
+        description=(
+            "Uploads, validation and analysis execution. The read-only "
+            "projection of results lives in app.api and is unaffected by this."
+        ),
+        version=str(storage.SCHEMA_VERSION),
+    )
+    application.add_middleware(
+        CORSMiddleware,
+        allow_origins=list(config.CORS_ORIGINS),
+        allow_credentials=False,
+        allow_methods=["GET", "POST"],
+        allow_headers=["*"],
+    )
+
+    # -----------------------------------------------------------------------
+    @application.get("/capabilities")
+    def capabilities() -> dict[str, Any]:
+        """What this installation can actually accept and do.
+
+        The UI reads this rather than hardcoding a detector list, so adding an
+        adapter makes it selectable without a frontend change — and, more
+        importantly, so the UI can never offer a family this build does not
+        implement.
+        """
+        return {
+            "detectors": [
+                {
+                    "family": family,
+                    "explainability": family in jobs.EXPLAINABLE_FAMILIES,
+                    "explainability_note": (
+                        "Grad-CAM is validated for this family."
+                        if family in jobs.EXPLAINABLE_FAMILIES
+                        else (
+                            "No validated attribution method for this family, "
+                            "so heatmaps are not generated. An attribution "
+                            "method was tested and did not meet the "
+                            "faithfulness criteria set for it."
+                        )
+                    ),
+                }
+                for family in SUPPORTED_FAMILIES
+            ],
+            "dataset_format": {
+                "name": "YOLO",
+                "detail": (
+                    "A data.yaml naming the classes, beside split directories "
+                    "each holding images/ and labels/. Annotations are "
+                    "normalised YOLO text, box or polygon."
+                ),
+                "archives": sorted(workspace.ARCHIVE_SUFFIXES),
+            },
+            "limits": {
+                "model_mb": config.MAX_MODEL_BYTES // 1_000_000,
+                "dataset_mb": config.MAX_DATASET_BYTES // 1_000_000,
+            },
+            "queue_depth": jobs.RUNNER.pending(),
+        }
+
+    # -----------------------------------------------------------------------
+    @application.post("/uploads")
+    async def create_upload() -> dict[str, str]:
+        """Open a workspace for one analysis and return its token."""
+        space = workspace.create()
+        return {"token": space.token, "workspace": str(space.root)}
+
+    def _space(token: str) -> workspace.Workspace:
+        """Resolve a token to a workspace, refusing anything invented."""
+        safe = workspace.safe_name(token, fallback="")
+        candidate = (config.WORKSPACE_DIR / safe).resolve()
+        if safe != token or not candidate.is_dir():
+            raise HTTPException(status_code=404, detail="No such upload session.")
+        return workspace.Workspace(token=token, root=candidate)
+
+    @application.post("/uploads/{token}/model")
+    async def upload_model(
+        token: str,
+        file: UploadFile = _UPLOADED_FILE,
+        family: str | None = _OPTIONAL_FAMILY,
+    ) -> dict[str, Any]:
+        """Store a checkpoint and report whether it can actually be run."""
+        space = _space(token)
+        try:
+            stored = workspace.store_upload(
+                space.models,
+                file.filename or "model.pt",
+                await file.read(),
+                allowed_suffixes=workspace.MODEL_SUFFIXES,
+                max_bytes=config.MAX_MODEL_BYTES,
+            )
+        except workspace.WorkspaceError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+
+        result = validation.validate_model(stored, family)
+        return {"path": str(stored), "name": stored.name, **_checks(result)}
+
+    @application.post("/uploads/{token}/dataset")
+    async def upload_dataset(
+        token: str,
+        file: UploadFile = _UPLOADED_FILE,
+        split: str = _SPLIT_FIELD,
+    ) -> dict[str, Any]:
+        """Unpack a dataset archive and report whether it can be diagnosed."""
+        space = _space(token)
+        try:
+            archive = workspace.store_upload(
+                space.dataset,
+                file.filename or "dataset.zip",
+                await file.read(),
+                allowed_suffixes=workspace.ARCHIVE_SUFFIXES,
+                max_bytes=config.MAX_DATASET_BYTES,
+            )
+            root = workspace.extract_archive(
+                archive, space.dataset / "unpacked", max_bytes=config.MAX_DATASET_BYTES
+            )
+            archive.unlink(missing_ok=True)  # the copy on disk is what matters now
+        except workspace.WorkspaceError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+
+        result = validation.validate_dataset(root, require_split=split)
+        return {"root": str(root), "name": root.name, **_checks(result)}
+
+    # -----------------------------------------------------------------------
+    @application.post("/analyses")
+    def start_analysis(payload: dict[str, Any]) -> dict[str, Any]:
+        """Validate one more time, record a job, and queue it.
+
+        Revalidating here is not redundant. The upload endpoints validated what
+        was uploaded; this validates what is about to run, and between the two
+        a caller could have changed the split, the family, or which files it
+        points at. The check that matters is the one immediately before the
+        work.
+        """
+        token = str(payload.get("token", ""))
+        space = _space(token)
+
+        detector = str(payload.get("detector", "")).strip().lower()
+        if detector not in SUPPORTED_FAMILIES:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"{detector!r} is not a detector family this build "
+                    f"implements. Supported: {', '.join(SUPPORTED_FAMILIES)}."
+                ),
+            )
+
+        model_path = Path(str(payload.get("model_path", "")))
+        data_yaml = Path(str(payload.get("data_yaml", "")))
+        for label, path in (("model", model_path), ("dataset", data_yaml)):
+            resolved = path.resolve()
+            if space.root not in resolved.parents or not resolved.exists():
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"The {label} path is not part of this upload session.",
+                )
+
+        split = str(payload.get("split", "test"))
+        model_check = validation.validate_model(model_path, detector)
+        dataset_check = validation.validate_dataset(
+            data_yaml.parent, require_split=split
+        )
+        if not (model_check.ok and dataset_check.ok):
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "message": "The inputs did not pass validation.",
+                    "model": _checks(model_check),
+                    "dataset": _checks(dataset_check),
+                },
+            )
+
+        image_size = int(payload.get("image_size") or config.IMAGE_SIZE)
+        confidence = float(payload.get("confidence") or config.CONFIDENCE_THRESHOLD)
+
+        with storage.connect() as connection:
+            storage.create_job(
+                connection,
+                token=token,
+                detector=detector,
+                split=split,
+                model_name=model_path.name,
+                dataset_name=data_yaml.parent.name,
+                workspace=str(space.root),
+                image_size=image_size,
+                confidence=confidence,
+            )
+
+        jobs.RUNNER.submit(
+            jobs.JobRequest(
+                token=token,
+                detector=detector,
+                model_path=model_path.resolve(),
+                data_yaml=data_yaml.resolve(),
+                split=split,
+                image_size=image_size,
+                confidence=confidence,
+                database=config.DB_PATH,
+                workspace=space.root,
+            )
+        )
+        logger.info("Queued analysis %s (%s, %s)", token, detector, split)
+
+        with storage.connect() as connection:
+            record = storage.load_job(connection, token)
+        assert record is not None  # noqa: S101 - just written in this request
+        return _job_payload(record)
+
+    @application.get("/analyses/{token}")
+    def analysis_status(token: str) -> dict[str, Any]:
+        """Where one analysis has got to, and why it stopped if it did."""
+        with storage.connect() as connection:
+            record = storage.load_job(connection, token)
+        if record is None:
+            raise HTTPException(status_code=404, detail="No such analysis.")
+        return _job_payload(record)
+
+    @application.get("/analyses")
+    def list_analyses(limit: int = 25) -> list[dict[str, Any]]:
+        """Recent analyses, newest first."""
+        with storage.connect() as connection:
+            return [_job_payload(r) for r in storage.load_jobs(connection, limit)]
+
+    return application
+
+
+app = create_app()
