@@ -258,3 +258,109 @@ def test_empty_dataset_renders_safely() -> None:
     """A dataset with nothing in it still produces a valid report."""
     text = format_dataset_diagnosis(DatasetDiagnosis())
     assert "Images diagnosed   : 0" in text
+
+
+# ---------------------------------------------------------------------------
+# An unlabelled image is not the same thing as a false positive
+# ---------------------------------------------------------------------------
+class TestFalsePositivesVersusUnlabelledImages:
+    """Two different facts that a bare "n/a" in the UI once conflated.
+
+    * A **false positive** is a prediction that matched no ground-truth
+      object. It says nothing about the rest of the image.
+    * An **unlabelled image** carries no annotations at all.
+
+    An unlabelled image produces false positives; a false positive does not
+    imply an unlabelled image. Reading the first as the second invites
+    excluding those findings from the metrics, which would inflate precision by
+    hiding the model's mistakes. These assert the data keeps them apart.
+    """
+
+    def test_a_false_positive_can_occur_on_a_fully_annotated_image(self) -> None:
+        """The case that prompted this: one matched object, one spurious box."""
+        result = diagnose_image(
+            Path("a.jpg"),
+            [_pred(0, 0, 10, 10), _pred(500, 500, 510, 510)],
+            [_truth(0, 0, 10, 10)],
+            image_width=640,
+            image_height=480,
+        )
+        outcomes = [f.outcome for f in result.findings]
+        assert Outcome.CORRECT in outcomes
+        assert Outcome.FALSE_POSITIVE in outcomes
+        # The image is annotated, and the false positive coexists with a match.
+        assert len(result.truths) == 1
+
+    def test_an_unlabelled_image_is_recorded_with_no_ground_truth(self) -> None:
+        """Every prediction on it is a false positive, and truth_count is zero."""
+        result = diagnose_image(
+            Path("empty.jpg"),
+            [_pred(0, 0, 10, 10)],
+            [],
+            image_width=640,
+            image_height=480,
+        )
+        assert len(result.truths) == 0
+        assert [f.outcome for f in result.findings] == [Outcome.FALSE_POSITIVE]
+
+    def test_the_two_are_distinguishable_after_persistence(
+        self, tmp_path: Path
+    ) -> None:
+        """`truth_count` is what tells them apart, and it survives the round trip.
+
+        Without this, a reader with only the findings table cannot tell whether
+        a false positive sits on an annotated image or an empty one — and the
+        response to each is different.
+        """
+        from app import storage
+        from app.diagnosis import DatasetDiagnosis
+
+        annotated = diagnose_image(
+            Path("annotated.jpg"),
+            [_pred(0, 0, 10, 10), _pred(500, 500, 510, 510)],
+            [_truth(0, 0, 10, 10)],
+            image_width=640,
+            image_height=480,
+        )
+        unlabelled = diagnose_image(
+            Path("unlabelled.jpg"),
+            [_pred(0, 0, 10, 10)],
+            [],
+            image_width=640,
+            image_height=480,
+        )
+
+        context = storage.RunContext(
+            model_path="m.pt",
+            model_sha256="sha-absence-test",
+            dataset_yaml="d.yaml",
+            split="test",
+            confidence_threshold=0.25,
+            match_iou_threshold=0.5,
+            localization_iou_floor=0.1,
+            image_size=640,
+        )
+        with storage.connect(tmp_path / "d.db") as connection:
+            run_id = storage.save_dataset_diagnosis(
+                connection,
+                context,
+                DatasetDiagnosis(diagnoses=[annotated, unlabelled]),
+            )
+            rows = {
+                row["filename"]: row
+                for row in connection.execute(
+                    "SELECT filename, truth_count, prediction_count FROM images "
+                    "WHERE run_id = ?",
+                    (run_id,),
+                )
+            }
+            false_positives = connection.execute(
+                "SELECT COUNT(*) FROM findings WHERE run_id = ? AND outcome = ?",
+                (run_id, Outcome.FALSE_POSITIVE.value),
+            ).fetchone()[0]
+
+        assert rows["annotated.jpg"]["truth_count"] == 1
+        assert rows["unlabelled.jpg"]["truth_count"] == 0
+        # Both images produced a false positive, so the outcome alone cannot
+        # distinguish them — only `truth_count` can.
+        assert false_positives == 2

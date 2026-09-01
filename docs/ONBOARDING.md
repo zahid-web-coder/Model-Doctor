@@ -144,3 +144,60 @@ cd web && npx tsc --noEmit          # types
 ```
 
 These need no data bundle — the suites build their own fixtures.
+
+---
+
+## Running a new analysis from the browser
+
+The dashboard can run the whole pipeline itself — upload a checkpoint and a
+dataset, and it performs inference, evaluation, diagnosis, clustering,
+recommendations and (for YOLO) heatmaps without a terminal.
+
+It needs a second service, the control API:
+
+```bash
+uvicorn app.control:app --host 127.0.0.1 --port 8001
+```
+
+Then open **New Analysis** in the sidebar.
+
+> **Run one worker, and do not expose port 8001 to a network.**
+>
+> Start it exactly as shown above — no `--workers`. The job queue lives in the
+> process, and a second worker would mark the first one's running job as failed.
+> The control API has no authentication, and by design it executes the model
+> you upload. Anyone who can reach it can run code in this process. Bind it to
+> `127.0.0.1`, which is the default above. This is a local tool.
+
+If the dashboard runs on a different host or port from the default, set
+`NEXT_PUBLIC_CONTROL_BASE` before starting it.
+
+### What it accepts
+
+| | |
+|---|---|
+| Model | `.pt` / `.pth`, up to `MD_MAX_MODEL_MB` (2048 by default) |
+| Dataset | `.zip` / `.tar` / `.tar.gz`, up to `MD_MAX_DATASET_MB` (8192 by default) |
+| Layout | YOLO: a `data.yaml` naming the classes, beside splits holding `images/` and `labels/` |
+| Detectors | Whatever `app.detectors.SUPPORTED_FAMILIES` lists — currently YOLO and RF-DETR |
+
+The family is read from the checkpoint itself. A file that matches no
+supported family is refused by name rather than half-run.
+
+### What it does not do
+
+* **No compute benchmarking.** Latency and memory are only meaningful under
+  controlled conditions, which a service running beside other work cannot
+  promise. Use `scripts/benchmark_run.py` on a quiet machine.
+* **No heatmaps for RF-DETR.** No attribution method has been validated for it
+  in this project, so the stage is skipped and the UI says so rather than
+  producing a map that would not correspond to the prediction.
+* **No cancellation.** A queued or running analysis runs to completion or
+  failure. Restarting the service closes out anything in flight.
+
+### Housekeeping
+
+Uploads are kept in `MD_WORKSPACE_DIR` (default `~/.model-doctor/workspace`),
+outside the repository. Each analysis keeps its own copy of the dataset, so the
+newest `MD_WORKSPACE_KEEP` workspaces (5 by default) are retained and older
+ones are removed when a new analysis starts.

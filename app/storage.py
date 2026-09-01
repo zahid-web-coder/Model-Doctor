@@ -38,6 +38,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import config
 from app.diagnosis import DatasetDiagnosis, Finding, ImageDiagnosis, Outcome
@@ -48,7 +49,7 @@ logger = get_logger(__name__)
 # Bumped when the schema changes in a way that existing readers must know
 # about. Recorded in the database so a consumer can detect a mismatch instead
 # of failing on a missing column.
-SCHEMA_VERSION: int = 9
+SCHEMA_VERSION: int = 10
 
 SCHEMA_STATEMENTS: tuple[str, ...] = (
     """
@@ -329,6 +330,35 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
         UNIQUE (run_id, device, image_size)
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS jobs (
+        id             INTEGER PRIMARY KEY AUTOINCREMENT,
+        -- Opaque to callers and unguessable, because a job id is handed to a
+        -- browser and used to address an upload workspace.
+        token          TEXT    NOT NULL UNIQUE,
+        -- queued | running | succeeded | failed | cancelled
+        status         TEXT    NOT NULL,
+        -- Which pipeline stage is executing, or the one that failed.
+        stage          TEXT,
+        -- The run this job produced. Null until diagnosis has saved one, which
+        -- is what makes a job observable before it has any results to show.
+        run_id         INTEGER REFERENCES runs(id) ON DELETE SET NULL,
+        detector       TEXT    NOT NULL,
+        split          TEXT    NOT NULL,
+        model_name     TEXT    NOT NULL,
+        dataset_name   TEXT    NOT NULL,
+        workspace      TEXT    NOT NULL,
+        image_size     INTEGER NOT NULL,
+        confidence     REAL    NOT NULL,
+        -- Operator-facing failure text. Kept separate from the log tail so a
+        -- reader gets the reason without reading output meant for a developer.
+        error          TEXT,
+        log_tail       TEXT,
+        created_at     TEXT    NOT NULL,
+        started_at     TEXT,
+        finished_at    TEXT
+    )
+    """,
     # Indexes chosen for the queries a dashboard actually issues: filter by
     # run, then by outcome or class. Without them every filter is a full scan.
     "CREATE INDEX IF NOT EXISTS idx_images_run ON images(run_id)",
@@ -348,6 +378,8 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
     "ON cluster_members(finding_id)",
     "CREATE INDEX IF NOT EXISTS idx_run_evaluations_run ON run_evaluations(run_id)",
     "CREATE INDEX IF NOT EXISTS idx_run_benchmarks_run ON run_benchmarks(run_id)",
+    "CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status, created_at)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_token ON jobs(token)",
 )
 
 
@@ -438,6 +470,15 @@ def connect(path: Path | None = None):
     connection = sqlite3.connect(db_path)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON")
+    # Write-ahead logging so a reader is not blocked by a writer. Without it
+    # the read-only API returns "database is locked" for the duration of an
+    # analysis — precisely while a user is watching the job they just started
+    # and clicking into the dashboard. The pragma is persistent, so setting it
+    # here applies to every later connection, including read-only ones.
+    connection.execute("PRAGMA journal_mode = WAL")
+    # Wait rather than fail the moment two writers overlap. Jobs are
+    # serialised, but a CLI run and a job can still coincide.
+    connection.execute("PRAGMA busy_timeout = 10000")
     try:
         initialise_database(connection)
         yield connection
@@ -2025,3 +2066,181 @@ def load_benchmarks(
         )
         for row in rows
     ]
+
+
+# ---------------------------------------------------------------------------
+# Jobs
+# ---------------------------------------------------------------------------
+#: Pipeline stages, in the order the worker runs them. The first is the only
+#: one that creates a run; every later stage enriches it, which is why a job
+#: becomes viewable in the dashboard before it has finished.
+JOB_STAGES: tuple[str, ...] = (
+    "inference+diagnosis",
+    "evaluation",
+    "mask-diagnosis",
+    "root-cause",
+    "clustering",
+    "recommendations",
+    "explainability",
+)
+
+#: Terminal states. A job in any of these will not change again.
+JOB_TERMINAL: frozenset[str] = frozenset({"succeeded", "failed", "cancelled"})
+
+
+@dataclass(frozen=True)
+class JobRecord:
+    """One self-service analysis, as stored."""
+
+    id: int
+    token: str
+    status: str
+    stage: str | None
+    run_id: int | None
+    detector: str
+    split: str
+    model_name: str
+    dataset_name: str
+    workspace: str
+    image_size: int
+    confidence: float
+    error: str | None
+    log_tail: str | None
+    created_at: str
+    started_at: str | None
+    finished_at: str | None
+
+
+def create_job(
+    connection: sqlite3.Connection,
+    *,
+    token: str,
+    detector: str,
+    split: str,
+    model_name: str,
+    dataset_name: str,
+    workspace: str,
+    image_size: int,
+    confidence: float,
+) -> int:
+    """Record a queued job and return its row id.
+
+    The job exists before any work starts so that a caller always has
+    something to poll. A job that fails in its first second is still a job with
+    a status and a reason, not a request that vanished.
+    """
+    cursor = connection.execute(
+        """
+        INSERT INTO jobs (
+            token, status, stage, run_id, detector, split, model_name,
+            dataset_name, workspace, image_size, confidence, created_at
+        ) VALUES (?, 'queued', NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            token, detector, split, model_name, dataset_name, workspace,
+            image_size, confidence, _timestamp(),
+        ),
+    )
+    return int(cursor.lastrowid or 0)
+
+
+def update_job(
+    connection: sqlite3.Connection,
+    token: str,
+    **fields: Any,
+) -> None:
+    """Patch one job's mutable columns.
+
+    Only the columns a running job legitimately changes are writable here. A
+    caller cannot rewrite the workspace or the detector through this, because
+    those describe what was *asked for* and rewriting them would make the
+    record disagree with what actually ran.
+    """
+    writable = {
+        "status", "stage", "run_id", "error", "log_tail",
+        "started_at", "finished_at",
+    }
+    unknown = set(fields) - writable
+    if unknown:
+        raise ValueError(f"Not writable on a job: {', '.join(sorted(unknown))}")
+    if not fields:
+        return
+    assignments = ", ".join(f"{name} = ?" for name in fields)
+    connection.execute(
+        f"UPDATE jobs SET {assignments} WHERE token = ?",
+        (*fields.values(), token),
+    )
+
+
+def load_job(connection: sqlite3.Connection, token: str) -> JobRecord | None:
+    """Return one job by token, or None if there is no such job."""
+    row = connection.execute("SELECT * FROM jobs WHERE token = ?", (token,)).fetchone()
+    return _job_record(row) if row is not None else None
+
+
+def load_jobs(connection: sqlite3.Connection, limit: int = 50) -> list[JobRecord]:
+    """Return recent jobs, newest first."""
+    rows = connection.execute(
+        "SELECT * FROM jobs ORDER BY id DESC LIMIT ?", (limit,)
+    ).fetchall()
+    return [_job_record(row) for row in rows]
+
+
+def _job_record(row: sqlite3.Row) -> JobRecord:
+    """Build a :class:`JobRecord` from a row."""
+    return JobRecord(
+        id=row["id"],
+        token=row["token"],
+        status=row["status"],
+        stage=row["stage"],
+        run_id=row["run_id"],
+        detector=row["detector"],
+        split=row["split"],
+        model_name=row["model_name"],
+        dataset_name=row["dataset_name"],
+        workspace=row["workspace"],
+        image_size=row["image_size"],
+        confidence=row["confidence"],
+        error=row["error"],
+        log_tail=row["log_tail"],
+        created_at=row["created_at"],
+        started_at=row["started_at"],
+        finished_at=row["finished_at"],
+    )
+
+
+def reconcile_stale_jobs(connection: sqlite3.Connection) -> int:
+    """Fail jobs left mid-flight by a service that stopped, and say how many.
+
+    A job's status lives in the database while the work runs in this process.
+    If the process ends — a restart, a crash, a laptop closing — the row stays
+    ``running`` and nothing will ever move it, so the UI polls a job that no
+    longer exists for as long as anyone leaves the tab open.
+
+    Called at start-up, when no job can legitimately be in flight yet: this
+    process has just begun and the queue is empty, so anything already marked
+    running belongs to a previous life and is known to be dead.
+
+    Returns:
+        How many jobs were closed out.
+    """
+    stale = connection.execute(
+        "SELECT token FROM jobs WHERE status IN ('queued', 'running')"
+    ).fetchall()
+    for row in stale:
+        update_job(
+            connection,
+            row["token"],
+            status="failed",
+            error=(
+                "The analysis service stopped while this job was running, so "
+                "it did not finish. Any results it had already written are "
+                "kept. Start the analysis again to complete it."
+            ),
+            finished_at=_timestamp(),
+        )
+    if stale:
+        logger.warning(
+            "Closed %d job(s) left running by a previous process", len(stale)
+        )
+    return len(stale)

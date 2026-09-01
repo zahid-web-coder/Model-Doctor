@@ -13,15 +13,19 @@ import {
   type Finding, type Outcomes, type Page,
 } from "@/lib/api/rows";
 import { pct, num, NOT_MEASURED } from "@/lib/format";
+import { absence, hasPrediction, hasTruth } from "@/lib/absence";
 
 /**
  * The findings table.
  *
- * Two columns render absence rather than a guess. A false negative has no
- * prediction and therefore no confidence. And `findings` stores one
- * `class_name` per row — for a wrong_class finding that is the ground truth;
- * the predicted class is not recoverable, so it shows n/a. SCHEMA.md is
- * explicit that inferring it is not possible.
+ * **An empty cell says why it is empty.** A false positive has no ground-truth
+ * class because nothing was there to match; a false negative has no confidence
+ * because nothing was predicted; a wrong_class finding cannot show its
+ * predicted class because the schema stores one class per row and for that
+ * outcome it is the ground truth. Rendering all three as a bare "n/a" invited
+ * the reading that data was missing — and for a false positive, that the image
+ * had never been annotated, which is a different thing entirely. See
+ * `lib/absence.ts`, where the distinction lives and is tested.
  *
  * Paging is in the URL because the API pages server-side: the page is part of
  * what is being viewed, so it survives a reload and can be linked.
@@ -119,10 +123,13 @@ export function FailuresTable({
               </thead>
               <tbody>
                 {rows.map((f) => {
-                  // `class_name` is the predicted class only when there is a
-                  // prediction to speak of.
-                  const hasPrediction = f.outcome === "false_positive" || f.outcome === "correct" || f.outcome === "poor_localization";
-                  const hasTruth = f.outcome !== "false_positive";
+                  // Each empty cell says *why* it is empty. A bare "n/a" reads
+                  // as missing data, which for a false positive wrongly
+                  // suggests the image was never annotated.
+                  const noPrediction = absence(f.outcome, "prediction");
+                  const noTruth = absence(f.outcome, "truth");
+                  const noConfidence = absence(f.outcome, "confidence");
+                  const noIou = absence(f.outcome, "iou");
                   return (
                     <tr
                       key={f.id}
@@ -136,17 +143,35 @@ export function FailuresTable({
                         <img src={api.imageUrl(f.image_id)} alt="" className="w-9 h-9 rounded object-cover bg-black/10" loading="lazy" />
                       </td>
                       <td className="px-3 py-2 font-mono text-[12px] text-ink">#{f.id}</td>
-                      <td className={`px-3 py-2 ${hasPrediction ? "text-ink" : "text-slate italic"}`}>
-                        {hasPrediction ? f.class_name ?? NOT_MEASURED : NOT_MEASURED}
+                      <td className={`px-3 py-2 ${noPrediction ? "text-slate italic" : "text-ink"}`}>
+                        {noPrediction ? (
+                          <span title={noPrediction.long}>{noPrediction.short}</span>
+                        ) : (
+                          (hasPrediction(f.outcome) && f.class_name) || NOT_MEASURED
+                        )}
                       </td>
-                      <td className={`px-3 py-2 ${hasTruth ? "text-ink" : "text-slate italic"}`}>
-                        {hasTruth ? f.class_name ?? NOT_MEASURED : NOT_MEASURED}
+                      <td className={`px-3 py-2 ${noTruth ? "text-slate italic" : "text-ink"}`}>
+                        {noTruth ? (
+                          <span title={noTruth.long}>{noTruth.short}</span>
+                        ) : (
+                          (hasTruth(f.outcome) && f.class_name) || NOT_MEASURED
+                        )}
                       </td>
                       <td className={`px-3 py-2 text-right font-mono text-[12px] ${f.confidence === null ? "text-slate italic" : "text-ink"}`}>
-                        {pct(f.confidence)}
+                        {noConfidence ? (
+                          <span title={noConfidence.long}>{noConfidence.short}</span>
+                        ) : (
+                          pct(f.confidence)
+                        )}
                       </td>
                       <td className={`px-3 py-2 text-right font-mono text-[12px] ${f.iou === null ? "text-slate italic" : "text-ink"}`}>
-                        {f.iou === null ? NOT_MEASURED : f.iou.toFixed(3)}
+                        {noIou ? (
+                          <span title={noIou.long}>{noIou.short}</span>
+                        ) : f.iou === null ? (
+                          NOT_MEASURED
+                        ) : (
+                          f.iou.toFixed(3)
+                        )}
                       </td>
                       <td className="px-3 py-2">
                         <span className="text-[11px] px-2 py-0.5 rounded bg-black/5 text-slate whitespace-nowrap">
@@ -185,17 +210,45 @@ export function FailuresTable({
                 <img src={api.imageUrl(selected.image_id)} alt="" className="w-full aspect-square rounded object-cover bg-black/10" />
               </button>
               <Detail label="Outcome" value={OUTCOME_LABEL[selected.outcome] ?? selected.outcome} />
-              <Detail label="Class" value={selected.class_name ?? NOT_MEASURED} mono muted={!selected.class_name} />
-              <Detail label="Confidence" value={pct(selected.confidence, 2)} muted={selected.confidence === null} />
-              <Detail label="Box IoU" value={selected.iou === null ? NOT_MEASURED : selected.iou.toFixed(4)} muted={selected.iou === null} />
+              <Detail
+                label={hasTruth(selected.outcome) ? "Ground-truth class" : "Predicted class"}
+                value={selected.class_name ?? NOT_MEASURED}
+                mono
+                muted={!selected.class_name}
+              />
+              <Detail
+                label="Confidence"
+                value={
+                  absence(selected.outcome, "confidence")?.short ??
+                  pct(selected.confidence, 2)
+                }
+                muted={selected.confidence === null}
+              />
+              <Detail
+                label="Box IoU"
+                value={
+                  absence(selected.outcome, "iou")?.short ??
+                  (selected.iou === null ? NOT_MEASURED : selected.iou.toFixed(4))
+                }
+                muted={selected.iou === null}
+              />
               <Detail label="Image" value={`#${selected.image_id}`} mono />
-              {selected.outcome === "wrong_class" && (
-                <p className="mt-4 text-[11px] leading-relaxed text-slate border-t border-border/40 pt-3">
-                  The predicted class is not recoverable for a wrong_class finding — the
-                  schema stores one class per row, and for this outcome that is the ground
-                  truth. It is shown as {NOT_MEASURED} rather than inferred.
-                </p>
-              )}
+
+              {/* The full reason an outcome has empty fields, rather than the
+                  terse form the table cell has room for. Shown for every
+                  outcome that has one, so a reader never has to infer whether
+                  a blank means "expected" or "missing". */}
+              {(["prediction", "truth", "confidence", "iou"] as const)
+                .map((field) => absence(selected.outcome, field))
+                .filter((entry, index, all) => entry && all.indexOf(entry) === index)
+                .map((entry) => (
+                  <p
+                    key={entry!.long}
+                    className="mt-4 text-[11px] leading-relaxed text-slate border-t border-border/40 pt-3"
+                  >
+                    {entry!.long}
+                  </p>
+                ))}
             </>
           ) : (
             <p className="text-[13px] text-slate">Select a finding.</p>
