@@ -10,9 +10,10 @@ import { FilterSelect } from "@/components/shared/FilterSelect";
 import { api } from "@/lib/api/client";
 import {
   OUTCOME_LABEL, FAILURE_OUTCOMES,
-  type Finding, type Outcomes, type Page,
+  type Finding, type Outcomes, type Page, type RootCause,
 } from "@/lib/api/rows";
 import { pct, num, NOT_MEASURED } from "@/lib/format";
+import { strongestFirst, noCausesReason } from "@/lib/rootCauses";
 import { absence, hasPrediction, hasTruth } from "@/lib/absence";
 
 /**
@@ -31,19 +32,34 @@ import { absence, hasPrediction, hasTruth } from "@/lib/absence";
  * what is being viewed, so it survives a reload and can be linked.
  */
 export function FailuresTable({
-  runId, page, pageSize, findings, outcomes,
+  runId, page, pageSize, findings, outcomes, rootCauses,
 }: {
   runId: string;
   page: number;
   pageSize: number;
   findings: Page<Finding>;
   outcomes: Outcomes | null;
+  /**
+   * Attributed factors keyed by finding id, indexed on the server.
+   *
+   * A plain object rather than a Map because this crosses the server/client
+   * boundary, and a Map does not survive it. Findings with no attributed
+   * factor are simply absent — which is a real state, not an error, and the
+   * panel says so rather than leaving a blank.
+   */
+  rootCauses: Record<number, RootCause[]>;
 }) {
   const router = useRouter();
   const [outcomeFilter, setOutcomeFilter] = useState("All Types");
   const [classFilter, setClassFilter] = useState("All Classes");
   const [selected, setSelected] = useState<Finding | null>(findings.items[0] ?? null);
   const [zoomed, setZoomed] = useState<Finding | null>(null);
+
+  const causes = useMemo(
+    () => strongestFirst(selected ? rootCauses[selected.id] : undefined),
+    [selected, rootCauses]
+  );
+  const hasCauses = causes.length > 0;
 
   const classes = useMemo(
     () => ["All Classes", ...Array.from(new Set(findings.items.map((f) => f.class_name).filter((c): c is string => Boolean(c))))],
@@ -233,6 +249,41 @@ export function FailuresTable({
                 muted={selected.iou === null}
               />
               <Detail label="Image" value={`#${selected.image_id}`} mono />
+
+              {/* What the root-cause pass attributed this failure to.
+                  Strongest score first, with the evidence beside it — a factor
+                  named without its evidence is an assertion, and the evidence
+                  is the part an engineer can check against the image above.
+                  Scores are attribution strength, not probabilities. */}
+              {hasCauses ? (
+                <div className="mt-4 border-t border-border/40 pt-3">
+                  <p className="text-[10px] uppercase tracking-wide text-slate mb-2">
+                    Attributed factors
+                  </p>
+                  {causes.map((cause, index) => (
+                    // A finding carries each factor at most once, so the factor
+                    // names the row; the index only guards a malformed payload
+                    // from collapsing two rows into one.
+                    <div key={`${cause.factor}-${index}`} className="mb-2.5 last:mb-0">
+                      <div className="flex items-baseline justify-between gap-2">
+                        <span className="font-mono text-[12px] text-ink">{cause.factor}</span>
+                        <span className="font-mono text-[11px] text-brass shrink-0">
+                          {cause.score.toFixed(2)}
+                        </span>
+                      </div>
+                      {cause.evidence && (
+                        <p className="text-[11px] text-slate leading-snug mt-0.5">
+                          {cause.evidence}
+                        </p>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="mt-4 text-[11px] leading-relaxed text-slate border-t border-border/40 pt-3">
+                  {noCausesReason(selected.outcome)}
+                </p>
+              )}
 
               {/* The full reason an outcome has empty fields, rather than the
                   terse form the table cell has room for. Shown for every

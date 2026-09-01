@@ -221,6 +221,54 @@ export interface HeatmapRow {
   target_layers: string;
 }
 
+/**
+ * One suggested investigation, derived from a failure group.
+ *
+ * `actionable` is the field that matters: a recommendation the evidence does
+ * not yet support is still shown, marked, rather than hidden — a reader who
+ * only sees the confident ones cannot tell whether the quiet groups were
+ * examined and dismissed or never examined at all.
+ */
+export interface Recommendation {
+  id: number;
+  run_id: number;
+  cluster_id: number | null;
+  cluster_label: string | null;
+  /** Which rule produced this, e.g. `recall_on_factor`. */
+  rule: string;
+  action: string;
+  rationale: string;
+  /** e.g. `replicated` when another run agreed. */
+  status: string | null;
+  actionable: boolean;
+  /** How many failures the group holds. */
+  affected: number;
+  priority: number;
+}
+
+/**
+ * One factor attributed to one finding, with the measurement behind it.
+ *
+ * Distinct from `FactorRate`, which aggregates across a run. This is the
+ * per-object attribution: which conditions *this* failure carried, and what
+ * was measured to decide that.
+ */
+export interface RootCause {
+  finding_id: number;
+  run_id: number;
+  outcome: Outcome;
+  class_name: string | null;
+  factor: string;
+  /**
+   * Attribution strength in [0, 1] — the detectors clamp to that range. It is
+   * not a probability, and the panel presents it as a score rather than a
+   * likelihood.
+   */
+  score: number;
+  /** The measurement in words, e.g. "3.7:1 wide, above 1.8:1". */
+  evidence: string | null;
+}
+
 export interface ImageRow {
   id: number;
   run_id: number;
