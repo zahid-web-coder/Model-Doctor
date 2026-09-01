@@ -1,6 +1,7 @@
 import type {
   Run, Outcomes, Finding, Page, FactorRate, Group, GroupMember,
   MaskFinding, ImageRow, Evaluation, Benchmark, HeatmapRow,
+  Recommendation, RootCause,
 } from "./rows";
 import { normaliseOutcomes } from "./rows";
 
@@ -101,6 +102,16 @@ export const api = {
     getOptional<Evaluation[]>(`/runs/${id}/evaluation`, []),
   benchmarks: (id: string | number) =>
     getOptional<Benchmark[]>(`/runs/${id}/benchmarks`, []),
+
+  /**
+   * Suggested investigations for a run, and the per-object attribution behind
+   * them. Both default to empty: a run analysed before those passes existed
+   * legitimately has neither.
+   */
+  recommendations: (id: string | number) =>
+    getOptional<Recommendation[]>(`/runs/${id}/recommendations`, []),
+  rootCauses: (id: string | number) =>
+    getOptional<RootCause[]>(`/runs/${id}/root-causes`, []),
 
   /** Which findings in a run have an explanation. Empty is a real answer. */
   heatmaps: (id: string | number) =>

@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import { api } from "@/lib/api/client";
 import { FailuresTable } from "@/components/dashboard/FailuresTable";
 import { resolvePageSize } from "@/lib/paging";
+import { indexByFinding } from "@/lib/rootCauses";
 
 /**
  * Findings from `/runs/{id}/findings`, which pages server-side and returns the
@@ -24,9 +25,16 @@ export default async function FailuresPage({
   const current = Math.max(1, Number(page ?? 1) || 1);
   const pageSize = resolvePageSize(size);
 
-  const [findings, outcomes] = await Promise.all([
+  const [findings, outcomes, rootCauses] = await Promise.all([
     api.findings(runId, pageSize, (current - 1) * pageSize),
     api.outcomes(runId).catch(() => null),
+    // Root causes come back for the whole run — `/runs/{id}/root-causes` filters
+    // by factor, not by finding, so there is no per-page request to make. The
+    // set is one row per attributed factor per failure, so it scales with
+    // failures rather than with images, and indexing it here keeps the client
+    // from issuing a request per selection. Absent for a run analysed before
+    // the root-cause pass existed, which `api.rootCauses` returns as empty.
+    api.rootCauses(runId),
   ]);
 
   // A page past the end returns nothing, and the footer then reports a range
@@ -46,6 +54,7 @@ export default async function FailuresPage({
       pageSize={pageSize}
       findings={findings}
       outcomes={outcomes}
+      rootCauses={indexByFinding(rootCauses)}
     />
   );
 }
