@@ -274,6 +274,12 @@ RECOMMENDATION_OUTCOME_SHARE: Final[float] = float(os.getenv("MD_REC_SHARE", "0.
 # ---------------------------------------------------------------------------
 # API layer
 # ---------------------------------------------------------------------------
+# Most runs one MCP `get_analysis` call may compare. A comparison is only
+# readable at a handful of runs, and the response grows linearly with each;
+# a caller wanting more is better served by two calls than by one that cannot
+# be read. Not a security limit — the server is read-only — but a size one.
+MCP_MAX_RUNS: Final[int] = int(os.getenv("MD_MCP_MAX_RUNS", "10"))
+
 # Browser origins permitted to call the read-only API. A Next.js development
 # server runs on port 3000 while the API runs on 8000, so without this every
 # request fails CORS. Never widened to "*": the API serves local file contents,

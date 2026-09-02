@@ -1537,3 +1537,63 @@ fresh interpreter and asserts neither torch nor ultralytics is loaded after
 `import app.api`. It runs in a subprocess deliberately: the test suite has
 already imported torch through other modules, so checking `sys.modules` in
 process would prove nothing.
+
+## D-039 — Comparison semantics live in one Python module, and MCP is a second read-only projection
+
+**Status:** Accepted · Milestone 11
+
+**Decision.** `app/comparison.py` is the single implementation of every rule
+that decides what may be compared and what a comparison means: which factors
+qualify, whether two failure groups replicate, whether two evaluations share a
+protocol, whether two benchmarks measured the same device, how the five
+outcomes collapse to precision and recall, and which stored sentinels mean
+"not measured". It is pure — rows in, dictionaries out — and knows nothing of
+SQL, HTTP or MCP. `app/recommendations.py` now delegates its qualification and
+replication decisions to it.
+
+`app/mcp_server.py` exposes two read-only tools, `list_runs` and
+`get_analysis`, over stdio. Like `app/api.py` it adds no analysis: every figure
+is a stored measurement or an arithmetic combination of stored counts whose
+rule travels with it, assembled from `app/storage.py` readers and
+`app/comparison.py`. Connections come from `storage.connect_read_only`, which
+the HTTP API now uses too, so "read-only" has one implementation.
+
+**Reasoning.** Before this, the rules were in three places: evaluation and
+device comparability in the browser (`web/src/lib/compare/metrics.ts`,
+`provenance.ts`), factor qualification in the recommendations engine, and
+replication in a function that could only run with a database connection in
+hand. A second consumer would have copied all three, and `DEVELOPMENT_RULES.md`
+names the second copy as the defect. Moving the rules down to the Application
+layer lets the HTTP API, the MCP server, and any later consumer answer the same
+question the same way; the browser's copy remains until a `/compare` endpoint
+serves the Python one, and is recorded here as the next thing to retire.
+
+The MCP server is deliberately *not* a route on the HTTP API. The API's
+guarantee is that it declares no non-GET route and opens SQLite read-only; a
+tool surface with its own transport and its own consumer belongs beside it,
+sharing storage and comparison, rather than inside it.
+
+**What the tools return, and what they never return.** Aggregates only:
+outcome counts, mAP with its protocol, factor lift against a control rate,
+groups with their outcome mix, recommendations with their evidential status,
+deltas against a baseline, replication verdicts, and the evidence each run
+lacks with the command that produces it. Never findings, root-cause rows,
+images or heatmaps — they are per-object, the aggregates already carry the
+evidence, and a comparison of several runs must stay readable. Local paths are
+omitted unless asked for; they describe the operator's machine.
+
+**Rejected.** *Reimplementing the rules in the MCP module* — the drift this
+decision exists to prevent. *Returning findings so the model can re-derive
+everything* — thousands of rows per run, and a reasoning model re-deriving
+lift from raw counts would be doing the evidence layer's job worse.
+*Persisting the detector family and class names* so `list_runs` could state
+them — a schema change, and its own decision (Phase 2); until then the family
+comes from the job that produced a run and is `null` for a CLI run, never
+guessed by loading the checkpoint.
+
+**Guarded by test.** `tests/test_comparison.py` pins every rule, including
+that `app.recommendations` delegates to the same functions.
+`tests/test_mcp_server.py` drives both tools through the real protocol with an
+in-memory transport, asserts the database is byte-identical after every call,
+that the shared opener refuses writes at the engine, and — in a fresh
+interpreter — that importing the server loads neither torch nor FastAPI.

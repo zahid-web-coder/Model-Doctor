@@ -1039,3 +1039,34 @@ attribution is not an error — every failure simply lands in `unexplained`.
 
 Foreign keys are enforced, so consumers may rely on referential integrity.
 Deleting a run cascades to its images, findings, and groups.
+
+## 9. Reading the schema over MCP
+
+A read-only MCP server serves the same tables to a reasoning model, for the
+question the HTTP API was never asked: *compare these runs and say what to do
+next*. It adds no analysis. Every figure is a stored measurement or an
+arithmetic combination of stored counts whose rule is returned beside it,
+assembled by `app/comparison.py` from the readers in `app/storage.py`.
+
+```bash
+MD_DB_PATH=/path/to/model_doctor.db .venv/bin/python -m app.mcp_server
+# or, for Claude Code, the project's .mcp.json registers it as `model-doctor`
+```
+
+| Tool | Returns |
+| --- | --- |
+| `list_runs` | Every run, newest first: model (name, hash, family where a job recorded it), dataset (name, split, classes seen in findings), configuration, image and outcome counts, headline box mAP, which optional evidence exists, and which runs share the checkpoint |
+| `get_analysis(run_ids, baseline?, include_paths?, include_descriptive_groups?)` | For each run: outcome counts with derived precision/recall and the rule (§4), mAP/AR per task with its protocol, outline-level outcome counts, factor rates with lift and significance, discriminating failure groups with their outcome mix, recommendations with evidential status, benchmarks. Across runs: what they share, every configuration difference, deltas against the baseline, factor lift side by side, which groups replicate, shared actionable recommendations. Then the evidence each run lacks with the command that produces it, and fixed caveats |
+
+**What it never returns.** Findings, root-cause rows, images, heatmaps, or
+any file bytes. They are per-object; the aggregates carry the evidence, and a
+comparison of several runs fits in a few kilobytes.
+
+**`null` means not measured, never zero.** COCOeval's `-1.0` for an empty area
+band and a `NULL` lift both arrive as `null`. A consumer must decide how to
+present "not measured" rather than receive a number that will be read as one.
+
+**Read-only, structurally.** Connections come from
+`storage.connect_read_only` — the same `mode=ro` opener the HTTP API uses —
+the transport is stdio, runs are addressed by id, and the database location
+comes from `MD_DB_PATH` alone. There is no tool that writes.

@@ -79,7 +79,9 @@ def read_only(path: Path | None = None) -> Iterator[sqlite3.Connection]:
     """Open the database read-only, or explain why it cannot be opened.
 
     Deliberately not :func:`app.storage.connect`, which applies the schema and
-    can bump the recorded version. A request handler must not do either.
+    can bump the recorded version. A request handler must not do either. The
+    ``mode=ro`` open itself is :func:`app.storage.connect_read_only`, shared
+    with the MCP server so that "read-only" is defined once.
 
     Yields:
         A connection that cannot create or modify anything.
@@ -89,26 +91,18 @@ def read_only(path: Path | None = None) -> Iterator[sqlite3.Connection]:
             the command that produces one.
     """
     target = path or database_path()
-    if not target.is_file():
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                f"No diagnosis database at {target}. Produce one with: "
-                "python -m app.diagnosis --split test --save"
-            ),
-        )
+    # The opener lives in storage and is shared with the MCP server, so the
+    # read-only guarantee has one implementation. This wrapper only translates
+    # its failures into HTTP.
     try:
-        connection = sqlite3.connect(f"{target.resolve().as_uri()}?mode=ro", uri=True)
+        with storage.connect_read_only(target) as connection:
+            yield connection
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
     except sqlite3.Error as error:
         raise HTTPException(
             status_code=503, detail=f"Cannot open the database at {target}."
         ) from error
-
-    connection.row_factory = sqlite3.Row
-    try:
-        yield connection
-    finally:
-        connection.close()
 
 
 def has_table(connection: sqlite3.Connection, name: str) -> bool:

@@ -491,6 +491,49 @@ def connect(path: Path | None = None):
         connection.close()
 
 
+@contextmanager
+def connect_read_only(path: Path | None = None):
+    """Open the database so that nothing can be created or modified.
+
+    **The one implementation of "read-only" in the project.** The HTTP API and
+    the MCP server are both projections of the schema that must never write,
+    and each used to carry its own opener. Two copies of a guarantee drift —
+    one grows a pragma the other lacks — and the guarantee is worth exactly as
+    much as its weakest copy.
+
+    Deliberately not :func:`connect`, which applies the schema and can bump the
+    recorded version. That is right for a CLI pass and wrong for a request
+    handler, where two workers could race on it (D-037). SQLite's ``mode=ro``
+    URI refuses writes at the engine, so a reader that ever began writing
+    fails loudly at this boundary rather than quietly mutating history.
+
+    Args:
+        path: Database file. Defaults to :data:`config.DB_PATH`. Unlike
+            :func:`connect`, nothing is created: an absent file is an error.
+
+    Yields:
+        A connection with :class:`sqlite3.Row` rows that cannot write.
+
+    Raises:
+        FileNotFoundError: If the file does not exist. Callers translate this
+            into their own vocabulary — a 503 for HTTP, a tool error for MCP —
+            because the remedy is the same in both and belongs with them.
+        sqlite3.Error: If the file exists but cannot be opened.
+    """
+    target = Path(path) if path is not None else config.DB_PATH
+    if not target.is_file():
+        raise FileNotFoundError(
+            f"No diagnosis database at {target}. Produce one with: "
+            "python -m app.diagnosis --split test --save"
+        )
+    connection = sqlite3.connect(f"{target.resolve().as_uri()}?mode=ro", uri=True)
+    connection.row_factory = sqlite3.Row
+    try:
+        yield connection
+    finally:
+        connection.close()
+
+
 def initialise_database(connection: sqlite3.Connection) -> None:
     """Create tables and indexes if they are not already present.
 
@@ -2265,6 +2308,35 @@ RUN_OWNED_TABLES: tuple[str, ...] = (
     "run_evaluations",
     "run_benchmarks",
 )
+
+
+def has_table(connection: sqlite3.Connection, name: str) -> bool:
+    """Report whether an optional table exists in this database.
+
+    Only ``runs``, ``images`` and ``findings`` are guaranteed. A database saved
+    before a later schema version simply lacks the rest, and the surface that
+    needs one should return empty rather than fail (SCHEMA.md §6). Public so
+    that every read-only consumer asks the same question the same way.
+    """
+    return _table_exists(connection, name)
+
+
+def load_job_for_run(connection: sqlite3.Connection, run_id: int) -> JobRecord | None:
+    """Return the job that produced ``run_id``, or ``None`` for a CLI run.
+
+    A run started from the browser is linked to its job by ``jobs.run_id``,
+    and that row is the only place the detector family and the human-readable
+    model and dataset names are recorded. A run produced by the CLI has no
+    job, and a consumer must report the family as unknown rather than guess —
+    detecting it from the checkpoint means loading it, which a read-only
+    surface must never do.
+    """
+    if not _table_exists(connection, "jobs"):
+        return None
+    row = connection.execute(
+        "SELECT * FROM jobs WHERE run_id = ? ORDER BY id DESC LIMIT 1", (run_id,)
+    ).fetchone()
+    return _job_record(row) if row is not None else None
 
 
 def _table_exists(connection: sqlite3.Connection, name: str) -> bool:
