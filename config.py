@@ -295,8 +295,17 @@ CORS_ORIGINS: Final[tuple[str, ...]] = tuple(
 # the default must not put it anywhere a mistake could reach `app/`, `models/`,
 # `datasets/` or the database. Under the user's home by default; redirect it at
 # a mounted volume in a container.
+
+#: Where uploads land when nothing overrides it.
+#:
+#: Named separately from :data:`WORKSPACE_DIR` because both have to be servable.
+#: A database accumulates runs across sessions, and a session that set
+#: ``MD_WORKSPACE_DIR`` writes its images somewhere a later session started
+#: without it cannot read. See :data:`API_FILE_ROOTS`.
+DEFAULT_WORKSPACE_DIR: Final[Path] = Path.home() / ".model-doctor" / "workspace"
+
 WORKSPACE_DIR: Final[Path] = _path_from_env(
-    "MD_WORKSPACE_DIR", Path.home() / ".model-doctor" / "workspace"
+    "MD_WORKSPACE_DIR", DEFAULT_WORKSPACE_DIR
 )
 
 # Upload ceilings. Generous enough for a real detection dataset, bounded
@@ -325,21 +334,37 @@ STAGE_TIMEOUT_S: Final[int] = int(os.getenv("MD_STAGE_TIMEOUT", "10800"))
 # The API must be started with the same `MD_DATASETS_DIR` the runs were
 # diagnosed with, or their images will resolve outside every allowed root and
 # be refused. Extra roots can be added here when images live in several places.
+# `dict.fromkeys` deduplicates while keeping order: with `MD_WORKSPACE_DIR`
+# unset the two workspace entries coincide, and a list that repeats itself is
+# misleading to read in a 403's error message.
 API_FILE_ROOTS: Final[tuple[Path, ...]] = tuple(
-    Path(root).expanduser().resolve()
-    for root in (
-        *(
-            part.strip()
-            for part in os.getenv("MD_API_FILE_ROOTS", "").split(",")
-            if part.strip()
-        ),
-        str(DATASETS_DIR),
-        str(RESULTS_DIR),
-        # Runs started from the browser read their images out of the upload
-        # workspace, not out of `datasets/`. Without this the API refuses every
-        # image in every self-service run with a 403, and the dashboard renders
-        # a complete diagnosis in which no picture loads.
-        str(WORKSPACE_DIR),
+    dict.fromkeys(
+        Path(root).expanduser().resolve()
+        for root in (
+            *(
+                part.strip()
+                for part in os.getenv("MD_API_FILE_ROOTS", "").split(",")
+                if part.strip()
+            ),
+            str(DATASETS_DIR),
+            str(RESULTS_DIR),
+            # Runs started from the browser read their images out of the
+            # upload workspace, not out of `datasets/`. Without this the API
+            # refuses every image in every self-service run with a 403, and the
+            # dashboard renders a complete diagnosis in which no picture loads.
+            str(WORKSPACE_DIR),
+            # **And the default workspace, even when overridden.** One database
+            # accumulates runs from many sessions, and `MD_WORKSPACE_DIR` is set
+            # per session. A run analysed under the default is unreadable the
+            # moment a later session sets an override, and vice versa — every
+            # image in that run returns 403 while the diagnosis around it renders
+            # perfectly, reading as a broken dashboard not a path mismatch.
+            #
+            # Both are this installation's own upload directory, so allowing
+            # both widens nothing meaningful. Anywhere else still requires
+            # `MD_API_FILE_ROOTS` to say so explicitly.
+            str(DEFAULT_WORKSPACE_DIR),
+        )
     )
 )
 

@@ -57,6 +57,7 @@ already renders that absence as "not measured".
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -66,6 +67,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import config
 from app import jobs, storage, validation, workspace
 from app.detectors import SUPPORTED_FAMILIES
+from utils.exceptions import ResourceNotFoundError
 from utils.logging_utils import get_logger
 
 logger = get_logger(__name__)
@@ -146,7 +148,12 @@ def create_app() -> FastAPI:
         CORSMiddleware,
         allow_origins=list(config.CORS_ORIGINS),
         allow_credentials=False,
-        allow_methods=["GET", "POST"],
+        # Enumerated rather than "*", so the browser is told exactly what this
+        # service accepts and nothing is enabled by accident. DELETE is here
+        # because run deletion lives on this API; the reader still allows GET
+        # alone, which is what makes its read-only guarantee visible from
+        # outside the process.
+        allow_methods=["GET", "POST", "DELETE"],
         allow_headers=["*"],
     )
 
@@ -366,7 +373,151 @@ def create_app() -> FastAPI:
         with storage.connect() as connection:
             return [_job_payload(r) for r in storage.load_jobs(connection, limit)]
 
+    @application.get("/runs/{run_id}/footprint")
+    def run_footprint(run_id: int) -> dict[str, Any]:
+        """What deleting this run would destroy, counted per table.
+
+        Served so the confirmation a user sees carries quantities rather than a
+        bare question. It lives here rather than on the read API because it
+        exists only to support a write, and the reader has no business
+        describing destruction it cannot perform.
+        """
+        with storage.connect() as connection:
+            row = connection.execute(
+                "SELECT id FROM runs WHERE id = ?", (run_id,)
+            ).fetchone()
+            if row is None:
+                raise HTTPException(status_code=404, detail=f"No run with id {run_id}.")
+            counts = storage.run_footprint(connection, run_id)
+            files = len(storage.heatmap_paths(connection, run_id))
+        return {
+            "run_id": run_id,
+            "rows": {table: n for table, n in counts.items() if n},
+            "total_rows": sum(counts.values()),
+            "heatmap_files": files,
+        }
+
+    @application.delete("/runs/{run_id}")
+    def delete_run(run_id: int) -> dict[str, Any]:
+        """Delete one run, everything it owns, and the images it wrote.
+
+        **Irreversible, and the only destructive route in the project.** It is
+        on the control API because the reader opens SQLite read-only and
+        declares no non-GET route (D-037); adding a delete there would dissolve
+        a guarantee that is structural rather than conventional.
+
+        Files are removed only after the database delete succeeds, and only
+        when they sit inside this project's own results directory. A stored
+        path is a string from a table, not a warrant to unlink anything on the
+        machine — a database copied from elsewhere can name paths this process
+        should never touch.
+        """
+        with storage.connect() as connection:
+            try:
+                paths = storage.heatmap_paths(connection, run_id)
+                removed = storage.delete_run(connection, run_id)
+            except ResourceNotFoundError as exc:
+                raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+        deleted_files, refused = _remove_within_results(paths)
+        if refused:
+            logger.warning(
+                "Left %d heatmap file(s) in place: outside %s",
+                refused,
+                config.RESULTS_DIR,
+            )
+        return {
+            "run_id": run_id,
+            "rows": {table: n for table, n in removed.items() if n},
+            "total_rows": sum(removed.values()),
+            "files_deleted": deleted_files,
+            "files_refused": refused,
+        }
+
     return application
+
+
+def _remove_within_results(paths: Sequence[str]) -> tuple[int, int]:
+    """Delete each path that lies inside ``config.RESULTS_DIR``.
+
+    Returns the number removed and the number refused for sitting outside it.
+    Containment is checked after resolving symlinks, so a link pointing out of
+    the results directory is refused rather than followed.
+
+    A file already gone counts as removed: the goal is its absence, and a run
+    whose images were cleaned up by hand should not fail to delete.
+
+    **Every directory emptied is pruned, not just the first one.** Artifacts for
+    a run are conventionally written under a single ``run_<id>`` directory, but
+    the ``heatmaps`` table records absolute paths and nothing constrains them to
+    agree — a database written by an older layout, or one relocated through
+    ``MD_PATH_REMAP``, can spread a run's files across several. Pruning only the
+    first path's parent left the rest as empty directories that accumulate
+    silently.
+
+    Only directories that actually held something removed are considered, so a
+    directory emptied by somebody else is not swept up as a side effect.
+    Deepest first, so a nested directory and the parent it empties both go in
+    one pass. ``RESULTS_DIR`` itself is never removed, however empty it gets.
+    """
+    root = config.RESULTS_DIR.resolve()
+    deleted = 0
+    refused = 0
+    emptied: set[Path] = set()
+
+    for raw in paths:
+        candidate = Path(config.remap_path(raw))
+        try:
+            resolved = candidate.resolve()
+        except OSError:
+            refused += 1
+            continue
+        if not resolved.is_relative_to(root):
+            refused += 1
+            continue
+        try:
+            resolved.unlink(missing_ok=True)
+            deleted += 1
+            emptied.add(resolved.parent)
+        except OSError as exc:
+            logger.warning("Could not delete %s: %s", resolved, exc)
+            refused += 1
+
+    _prune_empty_directories(emptied, root)
+    return deleted, refused
+
+
+def _prune_empty_directories(directories: Iterable[Path], root: Path) -> None:
+    """Remove each directory that is now empty, deepest first.
+
+    Walks upward from each one so a directory emptied only by the removal of
+    its last subdirectory is collected too. Stops at ``root``, which is the
+    project's own results directory and belongs to the installation rather than
+    to any run.
+
+    A directory that is not empty, not inside ``root``, or cannot be removed is
+    left alone. Failing to prune is untidy; removing the wrong directory is not
+    recoverable, so every check here refuses rather than assumes.
+    """
+    candidates: set[Path] = set()
+    for directory in directories:
+        current = directory
+        # Climb to the root, so emptying `a/b/c` can also retire `a/b`.
+        while current != root and current.is_relative_to(root):
+            candidates.add(current)
+            current = current.parent
+
+    for directory in sorted(candidates, key=lambda p: len(p.parts), reverse=True):
+        if directory == root or not directory.is_relative_to(root):
+            continue
+        if not directory.is_dir() or directory.is_symlink():
+            continue
+        try:
+            if any(directory.iterdir()):
+                continue
+            directory.rmdir()
+        except OSError as exc:
+            logger.warning("Could not prune %s: %s", directory, exc)
 
 
 app = create_app()

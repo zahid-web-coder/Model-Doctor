@@ -497,8 +497,40 @@ class TestAuditRegressions:
             "the reader cannot serve images from runs started in the browser"
         )
 
+    def test_the_reader_may_serve_images_from_the_default_workspace_too(
+        self,
+    ) -> None:
+        """One database accumulates runs from sessions configured differently.
+
+        `MD_WORKSPACE_DIR` is set per session, and a run analysed under the
+        default becomes unreadable the moment a later session overrides it —
+        every image 403s while the diagnosis around it renders perfectly. That
+        happened here across runs in one database: some images sat under
+        `~/.model-doctor/workspace` and others under an override, and whichever
+        did not match the reader's current setting showed as broken boxes.
+
+        Both are this installation's own upload directory, so both are served.
+        Anywhere else still has to be named in `MD_API_FILE_ROOTS`.
+        """
+        assert config.DEFAULT_WORKSPACE_DIR.resolve() in config.API_FILE_ROOTS, (
+            "runs analysed under the default workspace cannot serve their images"
+        )
+
+    def test_permitted_roots_are_free_of_duplicates(self) -> None:
+        """With no override the two workspace entries coincide.
+
+        Harmless to serving, but the roots are quoted back in the 403 message,
+        and a list that repeats itself reads as a bug in the diagnosis rather
+        than as configuration.
+        """
+        roots = list(config.API_FILE_ROOTS)
+        assert len(roots) == len(set(roots))
+
     def test_permitted_roots_do_not_include_the_whole_home_directory(self) -> None:
         """Widening the roots must stay narrow: the workspace, not its parent."""
         for root in config.API_FILE_ROOTS:
             assert root != Path.home(), "API_FILE_ROOTS must not contain $HOME"
             assert root != Path("/"), "API_FILE_ROOTS must not contain /"
+            assert root != Path.home() / ".model-doctor", (
+                "the workspace's parent is not a permitted root"
+            )

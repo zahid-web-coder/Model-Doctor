@@ -42,6 +42,7 @@ from typing import Any
 
 import config
 from app.diagnosis import DatasetDiagnosis, Finding, ImageDiagnosis, Outcome
+from utils.exceptions import ModelDoctorError, ResourceNotFoundError
 from utils.logging_utils import get_logger
 
 logger = get_logger(__name__)
@@ -2244,3 +2245,129 @@ def reconcile_stale_jobs(connection: sqlite3.Connection) -> int:
             "Closed %d job(s) left running by a previous process", len(stale)
         )
     return len(stale)
+
+
+#: Tables a run owns, in the order a reader would want them reported.
+#:
+#: Used only to *describe* what a delete will remove. The delete itself does not
+#: walk this list — see :func:`delete_run`.
+RUN_OWNED_TABLES: tuple[str, ...] = (
+    "images",
+    "findings",
+    "mask_findings",
+    "root_causes",
+    "clusters",
+    "cluster_members",
+    "recommendations",
+    "heatmaps",
+    "embeddings",
+    "factor_rates",
+    "run_evaluations",
+    "run_benchmarks",
+)
+
+
+def _table_exists(connection: sqlite3.Connection, name: str) -> bool:
+    """Return whether a table is present.
+
+    Local rather than imported from ``app.api``: storage sits below the API in
+    the layering documented at the top of this module, and reaching upward for
+    a three-line helper would invert that for no gain.
+    """
+    row = connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (name,)
+    ).fetchone()
+    return row is not None
+
+
+def run_footprint(connection: sqlite3.Connection, run_id: int) -> dict[str, int]:
+    """Return how many rows in each table belong to ``run_id``.
+
+    Exists so a caller can say what a delete will destroy *before* destroying
+    it. A confirmation that names no quantity is not informed consent — "delete
+    this run?" and "delete this run, its 231 findings and 73 heatmaps?" ask
+    different questions.
+
+    ``cluster_members`` is counted through its cluster, because it is the one
+    owned table with no ``run_id`` of its own.
+
+    Missing tables are reported as ``0`` rather than raising: the optional
+    passes create their tables on first use, so a run analysed before one
+    existed legitimately has none.
+    """
+    counts: dict[str, int] = {}
+    for table in RUN_OWNED_TABLES:
+        if not _table_exists(connection, table):
+            counts[table] = 0
+            continue
+        if table == "cluster_members":
+            row = connection.execute(
+                "SELECT COUNT(*) FROM cluster_members WHERE cluster_id IN "
+                "(SELECT id FROM clusters WHERE run_id = ?)",
+                (run_id,),
+            ).fetchone()
+        else:
+            row = connection.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE run_id = ?", (run_id,)
+            ).fetchone()
+        counts[table] = int(row[0])
+    return counts
+
+
+def delete_run(connection: sqlite3.Connection, run_id: int) -> dict[str, int]:
+    """Delete one run and everything it owns, returning what was removed.
+
+    **One statement, not twelve.** Every owned table declares
+    ``ON DELETE CASCADE`` against ``runs`` or against ``findings``/``clusters``,
+    and :func:`connect` enables ``PRAGMA foreign_keys``, so deleting the run
+    row removes the rest. Hand-writing a delete per table would duplicate a
+    rule the schema already states, and the copy would drift the first time a
+    milestone adds a table — silently leaving orphans that only surface as
+    wrong counts much later.
+
+    ``jobs`` is deliberately not cascaded. Its foreign key is ``SET NULL``, so
+    the record of an analysis having been requested and run survives the
+    deletion of its output. The job is history; the run is data.
+
+    Raises:
+        ResourceNotFoundError: If no such run exists, so a caller cannot
+            report a successful delete of something that was never there.
+    """
+    row = connection.execute("SELECT id FROM runs WHERE id = ?", (run_id,)).fetchone()
+    if row is None:
+        raise ResourceNotFoundError(f"No run with id {run_id}.")
+
+    removed = run_footprint(connection, run_id)
+    with connection:
+        # Asserted rather than assumed: this connection is the one doing the
+        # delete, and without the pragma the cascade silently does nothing,
+        # leaving every child row orphaned behind a deleted parent.
+        enabled = connection.execute("PRAGMA foreign_keys").fetchone()[0]
+        if not enabled:
+            raise ModelDoctorError(
+                "Refusing to delete a run without foreign keys enabled: the "
+                "cascade would not fire and every owned row would be orphaned."
+            )
+        connection.execute("DELETE FROM runs WHERE id = ?", (run_id,))
+    removed["runs"] = 1
+    logger.info("Deleted run %d and %d owned row(s)", run_id, sum(removed.values()) - 1)
+    return removed
+
+
+def heatmap_paths(connection: sqlite3.Connection, run_id: int) -> list[str]:
+    """Return the heatmap files recorded for ``run_id``.
+
+    Read before a delete, so a caller can remove the images the run wrote.
+    Returns what the database *records* rather than what a path convention
+    implies: the rows are the only authority on which files this run owns, and
+    a directory named after a run could hold anything.
+
+    The caller is responsible for refusing paths outside its own output
+    directory — this returns stored strings and makes no claim about them.
+    """
+    if not _table_exists(connection, "heatmaps"):
+        return []
+    rows = connection.execute(
+        "SELECT path FROM heatmaps WHERE run_id = ? AND path IS NOT NULL", (run_id,)
+    ).fetchall()
+    return [str(row[0]) for row in rows]

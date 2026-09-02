@@ -14,6 +14,11 @@ import {
 } from "@/lib/api/rows";
 import { pct, num, NOT_MEASURED } from "@/lib/format";
 import { strongestFirst, noCausesReason } from "@/lib/rootCauses";
+import { Overlay, OverlayLegend } from "@/components/compare/Overlay";
+import { fitViewport } from "@/lib/compare/geometry";
+import {
+  ALL_LAYERS, NO_LAYERS, defaultLayers, hasOutline, predictionShapeOf, truthShapeOf, type Layers,
+} from "@/lib/findingShapes";
 import { absence, hasPrediction, hasTruth } from "@/lib/absence";
 
 /**
@@ -32,7 +37,7 @@ import { absence, hasPrediction, hasTruth } from "@/lib/absence";
  * what is being viewed, so it survives a reload and can be linked.
  */
 export function FailuresTable({
-  runId, page, pageSize, findings, outcomes, rootCauses,
+  runId, page, pageSize, findings, outcomes, rootCauses, polygons, dimensions,
 }: {
   runId: string;
   page: number;
@@ -48,12 +53,51 @@ export function FailuresTable({
    * panel says so rather than leaving a blank.
    */
   rootCauses: Record<number, RootCause[]>;
+  /**
+   * Predicted outlines by finding id, from `mask_findings`.
+   *
+   * Absent for a finding the mask pass did not cover, and structurally absent
+   * for every false negative — nothing was predicted, so there is no outline.
+   */
+  polygons: Record<number, number[][]>;
+  /** Image dimensions by image id, so the overlay can build its viewport. */
+  dimensions: Record<number, [number, number]>;
 }) {
   const router = useRouter();
   const [outcomeFilter, setOutcomeFilter] = useState("All Types");
   const [classFilter, setClassFilter] = useState("All Classes");
   const [selected, setSelected] = useState<Finding | null>(findings.items[0] ?? null);
   const [zoomed, setZoomed] = useState<Finding | null>(null);
+  // Decided once from the run rather than per finding, so the choice does not
+  // flip underneath a reader moving between findings.
+  const [layers, setLayers] = useState<Layers>(() =>
+    defaultLayers(Object.keys(polygons).length > 0)
+  );
+
+  const predictionPolygon = selected ? polygons[selected.id] ?? null : null;
+  const hasTruthOutline = Boolean(
+    selected && Array.isArray(selected.truth_polygon) && selected.truth_polygon.length >= 3
+  );
+
+  // Null when this finding has no outline to draw, or when the image's stored
+  // dimensions are unknown — the overlay places geometry in image pixels, so
+  // without the frame it sits in there is nothing to place it against.
+  const overlay = useMemo(() => {
+    if (!selected || !hasOutline(selected, predictionPolygon)) return null;
+    const size = dimensions[selected.image_id];
+    if (!size) return null;
+    const [width, height] = size;
+    return { width, height, viewport: fitViewport(width, height) };
+  }, [selected, predictionPolygon, dimensions]);
+
+  const zoomedPolygon = zoomed ? polygons[zoomed.id] ?? null : null;
+  const zoomedOverlay = useMemo(() => {
+    if (!zoomed || !hasOutline(zoomed, zoomedPolygon)) return null;
+    const size = dimensions[zoomed.image_id];
+    if (!size) return null;
+    const [width, height] = size;
+    return { width, height, viewport: fitViewport(width, height) };
+  }, [zoomed, zoomedPolygon, dimensions]);
 
   const causes = useMemo(
     () => strongestFirst(selected ? rootCauses[selected.id] : undefined),
@@ -216,15 +260,104 @@ export function FailuresTable({
           {selected ? (
             <>
               <p className="font-mono text-[13px] text-ink mb-3">Finding #{selected.id}</p>
-              <button
-                type="button"
-                onClick={() => setZoomed(selected)}
-                title="Open full size"
-                className="block w-full mb-4 rounded overflow-hidden ring-offset-2 hover:ring-2 hover:ring-brass/50 transition-shadow cursor-zoom-in"
-              >
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={api.imageUrl(selected.image_id)} alt="" className="w-full aspect-square rounded object-cover bg-black/10" />
-              </button>
+              {/* The outline, drawn by the same component the Compare page
+                  uses. Falls back to the photograph when this finding has no
+                  stored outline or the image dimensions are unknown — an empty
+                  SVG reads as a broken viewer, which is worse than the image
+                  on its own. */}
+              {overlay ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => setZoomed(selected)}
+                    title="Open full size"
+                    className="block w-full mb-2 rounded overflow-hidden bg-black/10 ring-offset-2 hover:ring-2 hover:ring-brass/50 transition-shadow cursor-zoom-in"
+                    style={{ aspectRatio: `${overlay.width} / ${overlay.height}`, maxHeight: "260px" }}
+                  >
+                    <Overlay
+                      imageId={selected.image_id}
+                      width={overlay.width}
+                      height={overlay.height}
+                      viewport={overlay.viewport}
+                      truth={truthShapeOf(selected, layers)}
+                      prediction={predictionShapeOf(selected, predictionPolygon, layers)}
+                      siblings={[]}
+                      extras={[]}
+                      showMasks
+                      showContext={false}
+                    />
+                  </button>
+                  {/* A grid, not a row: the two things a reader varies are
+                      which side (truth or prediction) and which geometry
+                      (outline or box), and laying the switches out that way
+                      makes "show only the predicted outline" a visible
+                      position rather than a puzzle. */}
+                  <div className="mb-3">
+                    <div className="grid grid-cols-[46px_1fr_1fr] gap-1 items-center">
+                      <span />
+                      <span className="text-[9px] uppercase tracking-wide text-slate text-center">Outline</span>
+                      <span className="text-[9px] uppercase tracking-wide text-slate text-center">Box</span>
+
+                      <span className="text-[10px] text-slate">Truth</span>
+                      <LayerToggle
+                        label="Outline"
+                        on={layers.truthMask}
+                        disabled={!hasTruthOutline}
+                        onClick={() => setLayers((l) => ({ ...l, truthMask: !l.truthMask }))}
+                      />
+                      <LayerToggle
+                        label="Box"
+                        on={layers.truthBox}
+                        disabled={!selected.truth_box}
+                        onClick={() => setLayers((l) => ({ ...l, truthBox: !l.truthBox }))}
+                      />
+
+                      <span className="text-[10px] text-slate">Pred</span>
+                      <LayerToggle
+                        label="Outline"
+                        on={layers.predictionMask}
+                        disabled={predictionPolygon === null}
+                        onClick={() => setLayers((l) => ({ ...l, predictionMask: !l.predictionMask }))}
+                      />
+                      <LayerToggle
+                        label="Box"
+                        on={layers.predictionBox}
+                        disabled={!selected.pred_box}
+                        onClick={() => setLayers((l) => ({ ...l, predictionBox: !l.predictionBox }))}
+                      />
+                    </div>
+                    <div className="flex gap-1.5 mt-1.5">
+                      <button
+                        type="button"
+                        onClick={() => setLayers(ALL_LAYERS)}
+                        className="text-[10px] px-2 py-0.5 rounded border border-border/50 text-slate hover:border-brass/40 transition-colors"
+                      >
+                        Show all
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setLayers(NO_LAYERS)}
+                        className="text-[10px] px-2 py-0.5 rounded border border-border/50 text-slate hover:border-brass/40 transition-colors"
+                      >
+                        Image only
+                      </button>
+                    </div>
+                  </div>
+                  <div className="mb-4">
+                    <OverlayLegend hasContext={false} />
+                  </div>
+                </>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setZoomed(selected)}
+                  title="Open full size"
+                  className="block w-full mb-4 rounded overflow-hidden ring-offset-2 hover:ring-2 hover:ring-brass/50 transition-shadow cursor-zoom-in"
+                >
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={api.imageUrl(selected.image_id)} alt="" className="w-full aspect-square rounded object-cover bg-black/10" />
+                </button>
+              )}
               <Detail label="Outcome" value={OUTCOME_LABEL[selected.outcome] ?? selected.outcome} />
               <Detail
                 label={hasTruth(selected.outcome) ? "Ground-truth class" : "Predicted class"}
@@ -317,14 +450,38 @@ export function FailuresTable({
             : undefined
         }
       >
-        {zoomed && (
+        {zoomed && zoomedOverlay ? (
+          /* The same drawing as the panel, at a size worth inspecting. The
+             layer switches above govern this too, so a reader who turned the
+             ground-truth mask off does not have it reappear on zoom. */
+          <div className="flex flex-col gap-3 items-center">
+            <div
+              className="max-h-[72vh] w-full"
+              style={{ aspectRatio: `${zoomedOverlay.width} / ${zoomedOverlay.height}`, maxWidth: "min(100%, 62vh)" }}
+            >
+              <Overlay
+                imageId={zoomed.image_id}
+                width={zoomedOverlay.width}
+                height={zoomedOverlay.height}
+                viewport={zoomedOverlay.viewport}
+                truth={truthShapeOf(zoomed, layers)}
+                prediction={predictionShapeOf(zoomed, zoomedPolygon, layers)}
+                siblings={[]}
+                extras={[]}
+                showMasks
+                showContext={false}
+              />
+            </div>
+            <OverlayLegend hasContext={false} />
+          </div>
+        ) : zoomed ? (
           /* eslint-disable-next-line @next/next/no-img-element */
           <img
             src={api.imageUrl(zoomed.image_id)}
             alt={`Source image for finding ${zoomed.id}`}
             className="max-w-full max-h-[75vh] object-contain rounded"
           />
-        )}
+        ) : null}
       </Lightbox>
     </div>
   );
@@ -336,5 +493,40 @@ function Detail({ label, value, mono, muted }: { label: string; value: string; m
       <p className="text-[10px] uppercase tracking-wider text-slate mb-0.5">{label}</p>
       <p className={`text-[13px] ${mono ? "font-mono text-[12px]" : ""} ${muted ? "text-slate italic" : "text-ink"}`}>{value}</p>
     </div>
+  );
+}
+
+/**
+ * One layer switch.
+ *
+ * Disabled rather than hidden when the layer has nothing to show: a reader who
+ * cannot find the "Pred mask" control does not learn that this finding has no
+ * predicted outline, and on a false negative that absence is the whole point.
+ */
+function LayerToggle({
+  label, on, onClick, disabled = false,
+}: {
+  label: string;
+  on: boolean;
+  onClick: () => void;
+  disabled?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      aria-pressed={on}
+      title={disabled ? `No ${label.toLowerCase()} stored for this finding` : undefined}
+      className={`text-[10px] px-2 py-1 rounded border transition-colors ${
+        disabled
+          ? "border-border/30 text-slate/50 cursor-not-allowed"
+          : on
+            ? "border-brass/50 bg-brass/10 text-brass"
+            : "border-border/50 text-slate hover:border-brass/40"
+      }`}
+    >
+      {label}
+    </button>
   );
 }

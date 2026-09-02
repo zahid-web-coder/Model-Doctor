@@ -22,12 +22,24 @@ export class ApiError extends Error {
   }
 }
 
-async function get<T>(path: string, init?: RequestInit): Promise<T> {
+async function get<T>(
+  path: string,
+  init?: RequestInit & { fresh?: boolean },
+): Promise<T> {
+  const { fresh, ...rest } = init ?? {};
   const response = await fetch(`${API_BASE}${path}`, {
-    // The database is written by an offline analysis pass, not by requests, so
-    // a short revalidate is enough and avoids hammering it on every render.
-    next: { revalidate: 15 },
-    ...init,
+    // Most reads tolerate a short revalidate: the expensive analysis passes
+    // write the database, and re-rendering a chart against data fifteen
+    // seconds old costs nothing.
+    //
+    // **`fresh` exists because that is no longer true everywhere.** Runs are
+    // now created and deleted through the control API while this dashboard is
+    // open, so a page that both shows a list and mutates it cannot serve a
+    // cached copy — a deleted row lingering for fifteen seconds reads as a
+    // failed delete, and invites a second attempt that 404s. Cache and
+    // revalidate are mutually exclusive in Next, so exactly one is set.
+    ...(fresh ? { cache: "no-store" as const } : { next: { revalidate: 15 } }),
+    ...rest,
   });
 
   if (!response.ok) {
@@ -63,7 +75,12 @@ async function getOptional<T>(path: string, fallback: T): Promise<T> {
 export const api = {
   health: () => get<{ status: string; schema_version: number }>("/health"),
 
-  runs: () => get<Run[]>("/runs"),
+  /**
+   * Every run, newest first.
+   *
+   * `fresh` for any view that can delete or create one — see `get`.
+   */
+  runs: (fresh = false) => get<Run[]>("/runs", { fresh }),
   run: (id: string | number) => get<Run>(`/runs/${id}`),
   /**
    * Outcome counts, with the buckets the API omitted filled in as zero.
