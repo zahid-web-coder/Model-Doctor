@@ -4,9 +4,15 @@ import { PageShell } from "@/components/shared/PageShell";
 import { api } from "@/lib/api/client";
 import { modelName, datasetName } from "@/lib/derive";
 import { num } from "@/lib/format";
+import { DeleteRunButton } from "@/components/runs/DeleteRunButton";
 
 /**
  * Run history, from `/runs`.
+ *
+ * Deleting a run is the one action offered here, and it goes to the control
+ * API — the reader this page uses opens SQLite read-only and declares no
+ * non-GET route. The page is a server component, so the button is a client
+ * island and refreshes this route rather than mutating a local copy.
  *
  * Columns are what the run row actually carries: configuration and identity.
  * There is no accuracy or mAP column — that was excluded, and the row does not
@@ -14,7 +20,9 @@ import { num } from "@/lib/format";
  * alongside so the table can show a count without inventing one.
  */
 export default async function RunsPage() {
-  const runs = await api.runs().catch(() => []);
+  // Uncached: this page deletes runs, and a stale list would show a row
+  // that no longer exists.
+  const runs = await api.runs(true).catch(() => []);
   const counts = await Promise.all(
     runs.map((run) =>
       api.outcomes(run.id)
@@ -54,6 +62,7 @@ export default async function RunsPage() {
                   <th className="font-medium px-3 py-3 text-right">Image size</th>
                   <th className="font-medium px-3 py-3 text-right">Confidence</th>
                   <th className="font-medium px-3 py-3 text-right">Findings</th>
+                  <th className="font-medium px-3 py-3 w-[44px]"><span className="sr-only">Actions</span></th>
                 </tr>
               </thead>
               <tbody>
@@ -77,10 +86,16 @@ export default async function RunsPage() {
                     <td className={`px-3 py-3 text-right font-mono text-[12px] ${counts[i] === null ? "text-slate italic" : "text-ink"}`}>
                       {num(counts[i])}
                     </td>
+                    <td className="px-2 py-3 text-right">
+                      <DeleteRunButton
+                        runId={run.id}
+                        label={`#${run.id} · ${modelName(run)}`}
+                      />
+                    </td>
                   </tr>
                 ))}
                 {runs.length === 0 && (
-                  <tr><td colSpan={8} className="px-4 py-10 text-center text-slate">No runs in this database.</td></tr>
+                  <tr><td colSpan={9} className="px-4 py-10 text-center text-slate">No runs in this database.</td></tr>
                 )}
               </tbody>
             </table>

@@ -50,6 +50,22 @@ export interface Capabilities {
   queue_depth: number;
 }
 
+/** What a run owns, so a confirmation can quote quantities rather than ask blind. */
+export interface Footprint {
+  run_id: number;
+  /** Row counts per table, zero-count tables omitted by the server. */
+  rows: Record<string, number>;
+  total_rows: number;
+  heatmap_files: number;
+}
+
+/** What a delete actually removed. */
+export interface Deletion extends Footprint {
+  files_deleted: number;
+  /** Files left alone for sitting outside the server's results directory. */
+  files_refused: number;
+}
+
 export type JobStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
 
 export interface Job {
@@ -162,6 +178,19 @@ export const control = {
 
   recent: async (): Promise<Job[]> =>
     unwrap(await fetch(`${CONTROL_BASE}/analyses`, { cache: "no-store" })),
+
+  /** What deleting this run would destroy, asked before anything is destroyed. */
+  footprint: async (runId: number): Promise<Footprint> =>
+    unwrap(await fetch(`${CONTROL_BASE}/runs/${runId}/footprint`, { cache: "no-store" })),
+
+  /**
+   * Delete a run and everything it owns. Irreversible.
+   *
+   * On the control API rather than the reader, which opens SQLite read-only
+   * and declares no non-GET route.
+   */
+  deleteRun: async (runId: number): Promise<Deletion> =>
+    unwrap(await fetch(`${CONTROL_BASE}/runs/${runId}`, { method: "DELETE" })),
 };
 
 /** Human labels for the pipeline stages the backend names. */
