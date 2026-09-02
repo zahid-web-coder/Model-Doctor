@@ -1,6 +1,8 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
+import { Pagination } from "@/components/shared/Pagination";
 import { FilterSelect } from "@/components/shared/FilterSelect";
 import { ExportButton } from "@/components/shared/ExportButton";
 import { Lightbox } from "@/components/shared/Lightbox";
@@ -11,6 +13,15 @@ import { NOT_MEASURED } from "@/lib/format";
 export interface Tile {
   finding: Finding;
   mask: MaskFinding | null;
+  /**
+   * Whether the explainability pass produced a heatmap for this finding.
+   *
+   * Per-tile, not per-run. Grad-CAM runs on failures, so a run that has
+   * heatmaps still has none for most of its findings — asking each tile to
+   * discover that by requesting one and taking the 404 cost a round trip per
+   * correct detection and mislabelled the tile until it came back.
+   */
+  explained: boolean;
 }
 
 /**
@@ -23,19 +34,18 @@ export interface Tile {
  * than as partial coverage.
  */
 function HeatTile({
-  tile, available, onOpen,
+  tile, onOpen,
 }: {
   tile: Tile;
-  available: boolean;
   onOpen: (tile: Tile, showingHeatmap: boolean) => void;
 }) {
   const [heatmapFailed, setHeatmapFailed] = useState(false);
-  const { finding, mask } = tile;
+  const { finding, mask, explained } = tile;
   // When the run has no explanations at all, go straight to the source image.
   // Requesting sixty heatmaps that are all known to 404 wastes the round trips
   // and, while they are in flight, labels every tile as a Grad-CAM it will
   // never be.
-  const showingHeatmap = available && !heatmapFailed;
+  const showingHeatmap = explained && !heatmapFailed;
   // The grid asks for the preview: a tile is a couple of hundred pixels wide
   // and the full-resolution overlay is roughly twenty times the bytes. The
   // detail view and the endpoint's default are both unchanged.
@@ -79,8 +89,11 @@ function HeatTile({
 }
 
 export function HeatmapGrid({
-  tiles, total, maskCount, explained,
+  runId, page, pageSize, tiles, total, maskCount, explained,
 }: {
+  runId: string;
+  page: number;
+  pageSize: number;
   tiles: Tile[];
   total: number;
   maskCount: number;
@@ -89,7 +102,9 @@ export function HeatmapGrid({
 }) {
   const [outcome, setOutcome] = useState("All Outcomes");
   const [cls, setCls] = useState("All Classes");
+  const router = useRouter();
   const [agreement, setAgreement] = useState("All");
+  const [coverage, setCoverage] = useState("All findings");
   // Which tile is open, and whether its tile was showing an attribution map —
   // the modal must not claim a heatmap the grid already fell back from.
   const [open, setOpen] = useState<{ tile: Tile; heatmap: boolean } | null>(null);
@@ -103,7 +118,10 @@ export function HeatmapGrid({
     [tiles]
   );
 
-  const visible = tiles.filter(({ finding, mask }) => {
+  const pageCount = Math.max(1, Math.ceil(total / pageSize));
+
+  const visible = tiles.filter(({ finding, mask, explained: hasHeatmap }) => {
+    if (coverage === "Explained only" && !hasHeatmap) return false;
     if (outcome !== "All Outcomes" && (OUTCOME_LABEL[finding.outcome] ?? finding.outcome) !== outcome) return false;
     if (cls !== "All Classes" && finding.class_name !== cls) return false;
     // The disagreement the mask pass exists to surface: the box says correct,
@@ -126,6 +144,7 @@ export function HeatmapGrid({
           <FilterSelect value={outcome} options={outcomes} onChange={setOutcome} width="w-[175px]" />
           <FilterSelect value={cls} options={classes} onChange={setCls} width="w-[140px]" />
           <FilterSelect value={agreement} options={["All", "Box correct, outline not"]} onChange={setAgreement} width="w-[200px]" />
+          <FilterSelect value={coverage} options={["All findings", "Explained only"]} onChange={setCoverage} width="w-[160px]" />
           <ExportButton
             rows={visible.map((t) => ({
               finding_id: t.finding.id,
@@ -160,7 +179,8 @@ export function HeatmapGrid({
 
       <div className="flex-1 overflow-y-auto custom-scrollbar pr-2 pb-2">
         <p className="text-[11px] text-slate mb-3">
-          Showing {visible.length} of the first {tiles.length} findings ({total} in this run).
+          Showing {visible.length} of {tiles.length} on this page — {total} finding
+          {total === 1 ? "" : "s"} in this run, {explained} with an attention heatmap.
           {maskCount === 0
             ? " No outline measurements for this run."
             : ` ${maskCount} carry an outline measurement.`}
@@ -170,7 +190,6 @@ export function HeatmapGrid({
             <HeatTile
               key={t.finding.id}
               tile={t}
-              available={explained > 0}
               onOpen={(tile, heatmap) => setOpen({ tile, heatmap })}
             />
           ))}
@@ -178,6 +197,14 @@ export function HeatmapGrid({
         {visible.length === 0 && (
           <p className="py-10 text-center text-slate text-[13px]">No findings match these filters.</p>
         )}
+      </div>
+
+      <div className="shrink-0 border-t border-border/40 pt-3 mt-2">
+        <Pagination
+          page={page} pageCount={pageCount} total={total} pageSize={pageSize}
+          onChange={(next) => router.push(`/runs/${runId}/heatmaps?page=${next}&size=${pageSize}`)}
+          onPageSizeChange={(size) => router.push(`/runs/${runId}/heatmaps?page=1&size=${size}`)}
+        />
       </div>
 
       <Lightbox
