@@ -78,12 +78,15 @@ function Tag({
   y,
   unit,
   fill,
+  bounds,
 }: {
   text: string;
   x: number;
   y: number;
   unit: number;
   fill: string;
+  /** The image, so a label can never be placed outside it. */
+  bounds: { width: number; height: number };
 }) {
   const fontSize = unit * 10;
   const padding = unit * 3;
@@ -92,15 +95,29 @@ function Tag({
   // measurement pass would cost a render cycle per label.
   const width = text.length * fontSize * 0.58 + padding * 2;
   const height = fontSize + padding * 2;
-  // Above the box, unless that would leave the viewport.
-  const top = y - height - unit * 2;
-  const at = top > 0 ? top : y + unit * 2;
+  const margin = unit * 2;
+
+  // Above the box by preference, below it when there is no room above.
+  const preferred = y - height - margin;
+  // **Then clamped into the image on both axes.** Only the top edge used to be
+  // guarded, so a prediction label sat wherever the caller put it — below the
+  // box — and an object filling the frame left nowhere for it to go. On this
+  // project's staircases that is the common case, not the rare one: a box
+  // covering 98.6% of the image leaves five pixels underneath, and the
+  // confidence disappeared off the canvas. A label placed past the edge is
+  // simply not drawn, and the number it carries is usually the one the reader
+  // came for.
+  const at = Math.max(
+    margin,
+    Math.min(preferred > 0 ? preferred : y + margin, bounds.height - height - margin),
+  );
+  const left = Math.max(margin, Math.min(x, bounds.width - width - margin));
 
   return (
     <g>
-      <rect x={x} y={at} width={width} height={height} rx={unit * 2} fill={fill} />
+      <rect x={left} y={at} width={width} height={height} rx={unit * 2} fill={fill} />
       <text
-        x={x + padding}
+        x={left + padding}
         y={at + padding + fontSize * 0.8}
         fontSize={fontSize}
         fill="#F4EFE3"
@@ -256,6 +273,7 @@ export function Overlay({
           y={rectOf(truth.box).y}
           unit={unit}
           fill={TONE.truth}
+          bounds={{ width, height }}
         />
       )}
 
@@ -266,6 +284,7 @@ export function Overlay({
           y={rectOf(prediction.box).y + rectOf(prediction.box).height + unit * 14}
           unit={unit}
           fill={TONE[prediction.tone]}
+          bounds={{ width, height }}
         />
       )}
     </svg>
