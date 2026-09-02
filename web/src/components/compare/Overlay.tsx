@@ -27,11 +27,28 @@ import {
  * Nothing here knows which detector produced a run. It draws stored pixels.
  */
 
+/**
+ * Overlay colours are chosen for legibility on photographs, not to match the
+ * app's palette — which is why they are the only saturated values in the UI.
+ *
+ * These were originally the design tokens: brass for truth, moss and rust for
+ * predictions. All three are muted and two of them are warm browns, so on a
+ * tan staircase an annotated object and a failed prediction rendered as nearly
+ * the same colour. That is the one confusion this drawing must never allow.
+ *
+ * The set is now maximally separated by hue and bright enough to hold against
+ * an arbitrary photograph: red for ground truth, green for a prediction that
+ * matched, amber for one that failed. Context stays muted on purpose — it is
+ * there to be seen past, not read.
+ *
+ * The stroke rule below still carries the distinction on its own, for a reader
+ * who cannot rely on hue at all.
+ */
 const TONE = {
-  truth: "#BB8F51", // brass
-  good: "#66805A", // evidence-moss
-  bad: "#A65C48", // evidence-rust
-  context: "#8B8272", // slate
+  truth: "#FF3B30", // bright red — the annotated object
+  good: "#16E06A", // bright green — prediction that matched
+  bad: "#FFB020", // bright amber — prediction that failed or was extra
+  context: "#8B8272", // slate — deliberately quiet
 } as const;
 
 export interface Shape {

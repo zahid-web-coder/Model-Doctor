@@ -25,7 +25,7 @@ export default async function FailuresPage({
   const current = Math.max(1, Number(page ?? 1) || 1);
   const pageSize = resolvePageSize(size);
 
-  const [findings, outcomes, rootCauses] = await Promise.all([
+  const [findings, outcomes, rootCauses, masks, images] = await Promise.all([
     api.findings(runId, pageSize, (current - 1) * pageSize),
     api.outcomes(runId).catch(() => null),
     // Root causes come back for the whole run — `/runs/{id}/root-causes` filters
@@ -35,6 +35,17 @@ export default async function FailuresPage({
     // from issuing a request per selection. Absent for a run analysed before
     // the root-cause pass existed, which `api.rootCauses` returns as empty.
     api.rootCauses(runId),
+    // The predicted outline lives in `mask_findings`, not on the finding —
+    // separate tables, because the mask pass covers a run independently of
+    // diagnosis. Fetched for the run rather than per selection, the same way
+    // the root causes above are: the endpoint has no per-finding filter, and a
+    // request per click would be worse than one indexed here.
+    api.maskFindings(runId),
+    // Dimensions, so the overlay can put the photograph and the geometry in
+    // one coordinate space. Stored on the image row rather than inferred from
+    // the bitmap, which is what lets a stored box be interpreted without
+    // re-opening the file.
+    api.images(runId).catch(() => []),
   ]);
 
   // A page past the end returns nothing, and the footer then reports a range
@@ -55,6 +66,16 @@ export default async function FailuresPage({
       findings={findings}
       outcomes={outcomes}
       rootCauses={indexByFinding(rootCauses)}
+      polygons={Object.fromEntries(
+        masks
+          .filter((m) => m.pred_polygon !== null)
+          .map((m) => [m.finding_id, m.pred_polygon as number[][]])
+      )}
+      dimensions={Object.fromEntries(
+        images
+          .filter((i) => typeof i.width === "number" && typeof i.height === "number")
+          .map((i) => [i.id, [i.width as number, i.height as number] as [number, number]])
+      )}
     />
   );
 }
