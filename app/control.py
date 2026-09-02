@@ -57,7 +57,7 @@ already renders that absence as "not measured".
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -446,10 +446,25 @@ def _remove_within_results(paths: Sequence[str]) -> tuple[int, int]:
 
     A file already gone counts as removed: the goal is its absence, and a run
     whose images were cleaned up by hand should not fail to delete.
+
+    **Every directory emptied is pruned, not just the first one.** Artifacts for
+    a run are conventionally written under a single ``run_<id>`` directory, but
+    the ``heatmaps`` table records absolute paths and nothing constrains them to
+    agree — a database written by an older layout, or one relocated through
+    ``MD_PATH_REMAP``, can spread a run's files across several. Pruning only the
+    first path's parent left the rest as empty directories that accumulate
+    silently.
+
+    Only directories that actually held something removed are considered, so a
+    directory emptied by somebody else is not swept up as a side effect.
+    Deepest first, so a nested directory and the parent it empties both go in
+    one pass. ``RESULTS_DIR`` itself is never removed, however empty it gets.
     """
     root = config.RESULTS_DIR.resolve()
     deleted = 0
     refused = 0
+    emptied: set[Path] = set()
+
     for raw in paths:
         candidate = Path(config.remap_path(raw))
         try:
@@ -463,18 +478,46 @@ def _remove_within_results(paths: Sequence[str]) -> tuple[int, int]:
         try:
             resolved.unlink(missing_ok=True)
             deleted += 1
+            emptied.add(resolved.parent)
         except OSError as exc:
             logger.warning("Could not delete %s: %s", resolved, exc)
             refused += 1
 
-    # Prune the run's directory only when emptied, and only inside results.
-    for raw in paths[:1]:
-        parent = Path(config.remap_path(raw)).resolve().parent
-        if not (parent.is_relative_to(root) and parent.is_dir()):
-            continue
-        if not any(parent.iterdir()):
-            parent.rmdir()
+    _prune_empty_directories(emptied, root)
     return deleted, refused
+
+
+def _prune_empty_directories(directories: Iterable[Path], root: Path) -> None:
+    """Remove each directory that is now empty, deepest first.
+
+    Walks upward from each one so a directory emptied only by the removal of
+    its last subdirectory is collected too. Stops at ``root``, which is the
+    project's own results directory and belongs to the installation rather than
+    to any run.
+
+    A directory that is not empty, not inside ``root``, or cannot be removed is
+    left alone. Failing to prune is untidy; removing the wrong directory is not
+    recoverable, so every check here refuses rather than assumes.
+    """
+    candidates: set[Path] = set()
+    for directory in directories:
+        current = directory
+        # Climb to the root, so emptying `a/b/c` can also retire `a/b`.
+        while current != root and current.is_relative_to(root):
+            candidates.add(current)
+            current = current.parent
+
+    for directory in sorted(candidates, key=lambda p: len(p.parts), reverse=True):
+        if directory == root or not directory.is_relative_to(root):
+            continue
+        if not directory.is_dir() or directory.is_symlink():
+            continue
+        try:
+            if any(directory.iterdir()):
+                continue
+            directory.rmdir()
+        except OSError as exc:
+            logger.warning("Could not prune %s: %s", directory, exc)
 
 
 app = create_app()

@@ -271,3 +271,123 @@ class TestFileRemovalIsContained:
         # the directory must survive with it.
         assert run_dir.is_dir()
         assert kept.exists()
+
+
+class TestPruningSpansEveryDirectory:
+    """A run's artifacts are not guaranteed to sit in one directory."""
+
+    def test_prunes_every_directory_it_emptied(self, scratch_results: Path) -> None:
+        """Prunes every directory it emptied."""
+        # The `heatmaps` table records absolute paths and nothing forces them
+        # to share a parent. Pruning only the first left the rest behind.
+        heatmaps = scratch_results / "heatmaps"
+        dirs = [heatmaps / "run_1", heatmaps / "legacy" / "run_1", heatmaps / "spare"]
+        files = []
+        for index, directory in enumerate(dirs):
+            directory.mkdir(parents=True, exist_ok=True)
+            target = directory / f"finding_{index}.png"
+            target.write_bytes(b"x")
+            files.append(target)
+
+        deleted, refused = _remove_within_results([str(f) for f in files])
+
+        assert (deleted, refused) == (3, 0)
+        for directory in dirs:
+            assert not directory.exists(), f"{directory} was left behind empty"
+
+    def test_retires_a_parent_emptied_by_its_last_subdirectory(
+        self, scratch_results: Path
+    ) -> None:
+        """Retires a parent emptied by its last subdirectory."""
+        nested = scratch_results / "heatmaps" / "legacy" / "run_2"
+        nested.mkdir(parents=True, exist_ok=True)
+        target = nested / "a.png"
+        target.write_bytes(b"x")
+
+        _remove_within_results([str(target)])
+
+        assert not nested.exists()
+        assert not nested.parent.exists(), "the emptied parent was not retired"
+
+    def test_keeps_a_directory_that_still_holds_something(
+        self, scratch_results: Path
+    ) -> None:
+        """Keeps a directory that still holds something."""
+        # Previews are derived and not recorded in `heatmaps`, so they survive
+        # the delete and the directory must survive with them.
+        run_dir = scratch_results / "heatmaps" / "run_3"
+        run_dir.mkdir(parents=True, exist_ok=True)
+        removed = run_dir / "a.png"
+        kept = run_dir / "a.preview.jpg"
+        removed.write_bytes(b"x")
+        kept.write_bytes(b"y")
+
+        _remove_within_results([str(removed)])
+
+        assert run_dir.is_dir()
+        assert kept.exists()
+
+    def test_never_removes_the_results_directory_itself(
+        self, scratch_results: Path
+    ) -> None:
+        """Never removes the results directory itself."""
+        # It belongs to the installation, not to any run, and a later analysis
+        # expects to write into it.
+        loose = scratch_results / "stray.png"
+        loose.write_bytes(b"x")
+        (scratch_results / "heatmaps").rmdir()
+
+        _remove_within_results([str(loose)])
+
+        assert scratch_results.is_dir(), "pruned the results directory itself"
+
+    def test_does_not_prune_a_directory_it_emptied_nothing_in(
+        self, scratch_results: Path
+    ) -> None:
+        """Does not prune a directory it emptied nothing in."""
+        # An unrelated empty directory is somebody else's business.
+        bystander = scratch_results / "heatmaps" / "run_untouched"
+        bystander.mkdir(parents=True, exist_ok=True)
+        elsewhere = scratch_results / "heatmaps" / "run_4"
+        elsewhere.mkdir(parents=True, exist_ok=True)
+        target = elsewhere / "a.png"
+        target.write_bytes(b"x")
+
+        _remove_within_results([str(target)])
+
+        assert bystander.is_dir(), "removed an empty directory it never touched"
+        assert not elsewhere.exists()
+
+    @pytest.mark.usefixtures("scratch_results")
+    def test_a_refused_path_prunes_nothing(self, tmp_path: Path) -> None:
+        """A refused path prunes nothing."""
+        # Containment still governs: a path outside results is neither deleted
+        # nor allowed to retire the directory holding it.
+        outside_dir = tmp_path / "elsewhere"
+        outside_dir.mkdir()
+        outside = outside_dir / "a.png"
+        outside.write_bytes(b"keep me")
+
+        deleted, refused = _remove_within_results([str(outside)])
+
+        assert (deleted, refused) == (0, 1)
+        assert outside.exists()
+        assert outside_dir.is_dir(), "pruned a directory outside the results tree"
+
+    def test_a_symlinked_directory_is_not_pruned(
+        self, scratch_results: Path
+    ) -> None:
+        """A symlinked directory is not pruned."""
+        # Resolving the file lands inside the real tree; the link itself must
+        # not be rmdir'd, which would remove somebody else's directory entry.
+        real_dir = scratch_results / "heatmaps" / "run_5"
+        real_dir.mkdir(parents=True, exist_ok=True)
+        target = real_dir / "a.png"
+        target.write_bytes(b"x")
+        link = scratch_results / "heatmaps" / "alias"
+        link.symlink_to(real_dir, target_is_directory=True)
+
+        _remove_within_results([str(link / "a.png")])
+
+        assert not target.exists()
+        assert link.is_symlink(), "removed a symlink standing in for a directory"
