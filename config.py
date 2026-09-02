@@ -295,6 +295,7 @@ CORS_ORIGINS: Final[tuple[str, ...]] = tuple(
 # the default must not put it anywhere a mistake could reach `app/`, `models/`,
 # `datasets/` or the database. Under the user's home by default; redirect it at
 # a mounted volume in a container.
+
 #: Where uploads land when nothing overrides it.
 #:
 #: Named separately from :data:`WORKSPACE_DIR` because both have to be servable.
