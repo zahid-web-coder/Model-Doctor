@@ -19,18 +19,59 @@ import type { Prediction, Shape } from "@/components/compare/Overlay";
  * decides how to present it.
  */
 
-/** Which layers the reader has asked to see. */
+/**
+ * Which layers the reader has asked to see.
+ *
+ * Four independent switches rather than three, so either side can be isolated
+ * completely: box and outline are separate for ground truth and for the
+ * prediction. One shared "boxes" switch meant a reader comparing the
+ * prediction's box against the annotated outline could not get there.
+ */
 export interface Layers {
   truthMask: boolean;
+  truthBox: boolean;
   predictionMask: boolean;
-  boxes: boolean;
+  predictionBox: boolean;
 }
 
 export const ALL_LAYERS: Layers = {
   truthMask: true,
+  truthBox: true,
   predictionMask: true,
-  boxes: true,
+  predictionBox: true,
 };
+
+/** Everything hidden — the photograph on its own, for an unobstructed look. */
+export const NO_LAYERS: Layers = {
+  truthMask: false,
+  truthBox: false,
+  predictionMask: false,
+  predictionBox: false,
+};
+
+/**
+ * What to show first, given whether the run stored any outlines.
+ *
+ * **Boxes start off on a segmentation run.** The polygon is the shape that
+ * says something — it is what the model actually predicted — and the box is
+ * its axis-aligned hull, so drawing both puts a rectangle around every outline
+ * for no added information. On this project's staircases the object routinely
+ * fills the frame (one prediction covers 98.6% of its image), and the box then
+ * traces the image border, which reads as a frame around the photograph rather
+ * than as data.
+ *
+ * On a run with no outlines the box is the only geometry there is, so it stays
+ * on. Either way the reader can toggle it; this only decides what they see
+ * before touching anything.
+ */
+export function defaultLayers(hasAnyOutline: boolean): Layers {
+  return {
+    truthMask: true,
+    predictionMask: true,
+    truthBox: !hasAnyOutline,
+    predictionBox: !hasAnyOutline,
+  };
+}
 
 /**
  * Colour role for a prediction's outline.
@@ -67,7 +108,7 @@ export function labelFor(finding: Finding): string {
  * `truth_polygon`, and every other outcome stores one.
  */
 export function truthShapeOf(finding: Finding, layers: Layers): Shape | null {
-  const box = layers.boxes ? finding.truth_box : null;
+  const box = layers.truthBox ? finding.truth_box : null;
   const polygon = layers.truthMask ? finding.truth_polygon : null;
   if (!box && !polygon) return null;
   return { box, polygon };
@@ -86,7 +127,7 @@ export function predictionShapeOf(
   predictionPolygon: number[][] | null,
   layers: Layers,
 ): Prediction | null {
-  const box = layers.boxes ? finding.pred_box : null;
+  const box = layers.predictionBox ? finding.pred_box : null;
   const polygon = layers.predictionMask ? predictionPolygon : null;
   if (!box && !polygon) return null;
   return { box, polygon, tone: toneFor(finding.outcome), label: labelFor(finding) };

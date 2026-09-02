@@ -17,7 +17,7 @@ import { strongestFirst, noCausesReason } from "@/lib/rootCauses";
 import { Overlay, OverlayLegend } from "@/components/compare/Overlay";
 import { fitViewport } from "@/lib/compare/geometry";
 import {
-  ALL_LAYERS, hasOutline, predictionShapeOf, truthShapeOf, type Layers,
+  ALL_LAYERS, NO_LAYERS, defaultLayers, hasOutline, predictionShapeOf, truthShapeOf, type Layers,
 } from "@/lib/findingShapes";
 import { absence, hasPrediction, hasTruth } from "@/lib/absence";
 
@@ -68,7 +68,11 @@ export function FailuresTable({
   const [classFilter, setClassFilter] = useState("All Classes");
   const [selected, setSelected] = useState<Finding | null>(findings.items[0] ?? null);
   const [zoomed, setZoomed] = useState<Finding | null>(null);
-  const [layers, setLayers] = useState<Layers>(ALL_LAYERS);
+  // Decided once from the run rather than per finding, so the choice does not
+  // flip underneath a reader moving between findings.
+  const [layers, setLayers] = useState<Layers>(() =>
+    defaultLayers(Object.keys(polygons).length > 0)
+  );
 
   const predictionPolygon = selected ? polygons[selected.id] ?? null : null;
   const hasTruthOutline = Boolean(
@@ -283,24 +287,61 @@ export function FailuresTable({
                       showContext={false}
                     />
                   </button>
-                  <div className="flex flex-wrap gap-1.5 mb-3">
-                    <LayerToggle
-                      label="GT mask"
-                      on={layers.truthMask}
-                      disabled={!hasTruthOutline}
-                      onClick={() => setLayers((l) => ({ ...l, truthMask: !l.truthMask }))}
-                    />
-                    <LayerToggle
-                      label="Pred mask"
-                      on={layers.predictionMask}
-                      disabled={predictionPolygon === null}
-                      onClick={() => setLayers((l) => ({ ...l, predictionMask: !l.predictionMask }))}
-                    />
-                    <LayerToggle
-                      label="Boxes"
-                      on={layers.boxes}
-                      onClick={() => setLayers((l) => ({ ...l, boxes: !l.boxes }))}
-                    />
+                  {/* A grid, not a row: the two things a reader varies are
+                      which side (truth or prediction) and which geometry
+                      (outline or box), and laying the switches out that way
+                      makes "show only the predicted outline" a visible
+                      position rather than a puzzle. */}
+                  <div className="mb-3">
+                    <div className="grid grid-cols-[46px_1fr_1fr] gap-1 items-center">
+                      <span />
+                      <span className="text-[9px] uppercase tracking-wide text-slate text-center">Outline</span>
+                      <span className="text-[9px] uppercase tracking-wide text-slate text-center">Box</span>
+
+                      <span className="text-[10px] text-slate">Truth</span>
+                      <LayerToggle
+                        label="Outline"
+                        on={layers.truthMask}
+                        disabled={!hasTruthOutline}
+                        onClick={() => setLayers((l) => ({ ...l, truthMask: !l.truthMask }))}
+                      />
+                      <LayerToggle
+                        label="Box"
+                        on={layers.truthBox}
+                        disabled={!selected.truth_box}
+                        onClick={() => setLayers((l) => ({ ...l, truthBox: !l.truthBox }))}
+                      />
+
+                      <span className="text-[10px] text-slate">Pred</span>
+                      <LayerToggle
+                        label="Outline"
+                        on={layers.predictionMask}
+                        disabled={predictionPolygon === null}
+                        onClick={() => setLayers((l) => ({ ...l, predictionMask: !l.predictionMask }))}
+                      />
+                      <LayerToggle
+                        label="Box"
+                        on={layers.predictionBox}
+                        disabled={!selected.pred_box}
+                        onClick={() => setLayers((l) => ({ ...l, predictionBox: !l.predictionBox }))}
+                      />
+                    </div>
+                    <div className="flex gap-1.5 mt-1.5">
+                      <button
+                        type="button"
+                        onClick={() => setLayers(ALL_LAYERS)}
+                        className="text-[10px] px-2 py-0.5 rounded border border-border/50 text-slate hover:border-brass/40 transition-colors"
+                      >
+                        Show all
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setLayers(NO_LAYERS)}
+                        className="text-[10px] px-2 py-0.5 rounded border border-border/50 text-slate hover:border-brass/40 transition-colors"
+                      >
+                        Image only
+                      </button>
+                    </div>
                   </div>
                   <div className="mb-4">
                     <OverlayLegend hasContext={false} />

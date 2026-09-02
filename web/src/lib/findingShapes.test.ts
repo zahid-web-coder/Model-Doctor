@@ -1,7 +1,7 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import {
-  ALL_LAYERS, hasOutline, labelFor, predictionShapeOf, toneFor, truthShapeOf,
+  ALL_LAYERS, NO_LAYERS, defaultLayers, hasOutline, labelFor, predictionShapeOf, toneFor, truthShapeOf,
   type Layers,
 } from "./findingShapes.ts";
 import type { Finding, Outcome } from "./api/rows.ts";
@@ -32,7 +32,9 @@ function finding(overrides: Partial<Finding> = {}): Finding {
 }
 
 const PRED_POLY = [[11, 11], [89, 11], [89, 89]];
-const NONE: Layers = { truthMask: false, predictionMask: false, boxes: false };
+const NONE: Layers = {
+  truthMask: false, truthBox: false, predictionMask: false, predictionBox: false,
+};
 
 describe("toneFor", () => {
   test("only a matched prediction reads as good", () => {
@@ -65,7 +67,7 @@ describe("truthShapeOf", () => {
   });
 
   test("the box layer hides the box without hiding the polygon", () => {
-    const shape = truthShapeOf(finding(), { ...ALL_LAYERS, boxes: false });
+    const shape = truthShapeOf(finding(), { ...ALL_LAYERS, truthBox: false });
     assert.equal(shape?.box, null);
     assert.ok(shape?.polygon);
   });
@@ -138,5 +140,59 @@ describe("hasOutline", () => {
   test("a degenerate polygon does not count as an outline", () => {
     // Two points bound no area. The backend uses the same three-point rule.
     assert.equal(hasOutline(finding({ truth_polygon: [[1, 1], [2, 2]] }), null), false);
+  });
+});
+
+describe("defaultLayers", () => {
+  test("a segmentation run opens on outlines, not boxes", () => {
+    // The box is the polygon's axis-aligned hull, so showing both draws a
+    // rectangle round every outline for no added information.
+    const layers = defaultLayers(true);
+    assert.equal(layers.truthBox, false);
+    assert.equal(layers.predictionBox, false);
+    assert.equal(layers.truthMask, true);
+    assert.equal(layers.predictionMask, true);
+  });
+
+  test("a run with no outlines still shows its boxes", () => {
+    // Otherwise a box-only detector would open on an empty overlay.
+    assert.ok(defaultLayers(false).truthBox && defaultLayers(false).predictionBox);
+  });
+
+  test("masks are never off by default", () => {
+    for (const outlines of [true, false]) {
+      const layers = defaultLayers(outlines);
+      assert.ok(layers.truthMask && layers.predictionMask);
+    }
+  });
+});
+
+describe("isolating one layer", () => {
+  test("the predicted outline can be shown entirely on its own", () => {
+    // The point of splitting the box switch per side: a reader comparing the
+    // prediction against nothing else needs every other layer gone.
+    const only: Layers = {
+      truthMask: false, truthBox: false, predictionMask: true, predictionBox: false,
+    };
+    assert.equal(truthShapeOf(finding(), only), null);
+    const pred = predictionShapeOf(finding(), PRED_POLY, only);
+    assert.deepEqual(pred?.polygon, PRED_POLY);
+    assert.equal(pred?.box, null);
+  });
+
+  test("truth outline against prediction box is reachable", () => {
+    // Impossible while one switch governed both boxes.
+    const mixed: Layers = {
+      truthMask: true, truthBox: false, predictionMask: false, predictionBox: true,
+    };
+    assert.equal(truthShapeOf(finding(), mixed)?.box, null);
+    assert.ok(truthShapeOf(finding(), mixed)?.polygon);
+    assert.ok(predictionShapeOf(finding(), PRED_POLY, mixed)?.box);
+    assert.equal(predictionShapeOf(finding(), PRED_POLY, mixed)?.polygon, null);
+  });
+
+  test("NO_LAYERS draws nothing at all", () => {
+    assert.equal(truthShapeOf(finding(), NO_LAYERS), null);
+    assert.equal(predictionShapeOf(finding(), PRED_POLY, NO_LAYERS), null);
   });
 });
