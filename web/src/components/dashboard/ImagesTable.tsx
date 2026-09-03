@@ -70,6 +70,48 @@ const TONE: Record<string, string> = {
   empty: "bg-black/5 text-slate",
 };
 
+/** Qualified clean: green, because the objects were all found, but not the plain one. */
+const QUALIFIED = "bg-[#66805A]/12 text-[#66805A] ring-1 ring-inset ring-[#A65C48]/35";
+
+/**
+ * How one image's verdict reads on screen.
+ *
+ * **A clean image can hold a loose box, and the badge has to say so.** This
+ * pass measures mask coverage; the finding-level outcome measures box overlap,
+ * so an outline covering 99% of an object whose box scored 0.28 IoU is
+ * legitimately `clean` here and `poor_localization` on the Failures screen
+ * (D-036). Across the reference database that is 26 images — every one with an
+ * IoU below 0.50 and coverage above it, exactly as the distinction predicts.
+ *
+ * Both readings are true, but a badge saying only "Clean" beside a row the
+ * Failures tab lists as a failure leaves the reader no way to reconcile them,
+ * and the likeliest conclusion is that one of the two screens is broken.
+ *
+ * **Presentation only.** The stored verdict is untouched, so filtering,
+ * counting and export continue to work on what the classifier decided — this
+ * changes how that verdict is worded, not what it is.
+ */
+function present(row: ImageDiagnosis): {
+  label: string;
+  meaning: string;
+  tone: string;
+} {
+  const label = LABEL[row.verdict] ?? row.verdict;
+  const meaning = MEANING[row.verdict] ?? row.verdict;
+  const loose = row.outcomes.poor_localization ?? 0;
+  if (row.verdict !== "clean" || loose === 0) {
+    return { label, meaning, tone: TONE[row.verdict] ?? "bg-[#A65C48]/10 text-[#A65C48]" };
+  }
+  return {
+    label: "Mask clean · box loose",
+    meaning:
+      `every object covered and nothing extra, but ${loose} ` +
+      `box${loose === 1 ? "" : "es"} scored too low an IoU to match — ` +
+      "the Failures tab reports the same image as poor localization",
+    tone: QUALIFIED,
+  };
+}
+
 export function ImagesTable({
   runId,
   rows,
@@ -162,6 +204,9 @@ export function ImagesTable({
   // Deliberately excludes `empty` from the denominator — see the docstring.
   const scored = rows.filter((r) => r.verdict !== "empty");
   const clean = scored.filter((r) => r.verdict === "clean").length;
+  const qualified = scored.filter(
+    (r) => r.verdict === "clean" && (r.outcomes.poor_localization ?? 0) > 0,
+  ).length;
   const merged = rows.filter((r) => r.merged).length;
   const split = rows.filter((r) => r.split).length;
 
@@ -256,7 +301,14 @@ export function ImagesTable({
         <StatCard
           label="Clean images"
           value={num(clean)}
-          sub={`of ${num(scored.length)} with something to find`}
+          // The number is the stored verdict rate and stays that way — this
+          // says how many of those carry a loose box, rather than quietly
+          // moving them out of the count.
+          sub={
+            qualified > 0
+              ? `of ${num(scored.length)} with something to find · ${num(qualified)} with a loose box`
+              : `of ${num(scored.length)} with something to find`
+          }
           tone="brass"
         />
         <StatCard label="Affected" value={num(scored.length - clean)} />
@@ -327,12 +379,10 @@ export function ImagesTable({
                 </td>
                 <td className="px-3 py-2.5">
                   <span
-                    className={`text-[10px] px-2 py-0.5 rounded whitespace-nowrap ${
-                      TONE[r.verdict] ?? "bg-[#A65C48]/10 text-[#A65C48]"
-                    }`}
-                    title={MEANING[r.verdict] ?? r.verdict}
+                    className={`text-[10px] px-2 py-0.5 rounded whitespace-nowrap ${present(r).tone}`}
+                    title={present(r).meaning}
                   >
-                    {LABEL[r.verdict] ?? r.verdict}
+                    {present(r).label}
                   </span>
                 </td>
               </tr>
@@ -351,9 +401,7 @@ export function ImagesTable({
         onClose={() => setOpen(null)}
         title={open ? `Image #${open.image_id}` : ""}
         subtitle={
-          open
-            ? `${LABEL[open.verdict] ?? open.verdict} — ${MEANING[open.verdict] ?? ""}`
-            : undefined
+          open ? `${present(open).label} — ${present(open).meaning}` : undefined
         }
       >
         {open && viewport ? (
