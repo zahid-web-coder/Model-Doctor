@@ -132,6 +132,19 @@ export const api = {
 
   /** Which findings in a run have an explanation. Empty is a real answer. */
   /**
+   * Every finding on one image — all annotated objects and all predictions,
+   * including those the matcher paired with a different finding.
+   *
+   * That last part is the point: a merged detection is only visible when the
+   * prediction assigned to a neighbouring finding is drawn beside the object
+   * it also covers.
+   */
+  imageFindings: (runId: string | number, imageId: number) =>
+    get<Page<Finding>>(
+      `/runs/${runId}/findings?image_id=${imageId}&limit=200`,
+    ).then((page) => page.items),
+
+  /**
    * Image-level verdicts. Empty for a run analysed before the pass existed,
    * which the Images screen reports as "not measured" rather than as clean.
    */

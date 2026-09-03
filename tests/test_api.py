@@ -784,3 +784,30 @@ class TestPathRemap:
         """A database written on Windows must be readable on POSIX."""
         monkeypatch.setattr(config, "PATH_REMAP", ((r"C:\data", "/mnt/data"),))
         assert config.remap_path(r"C:\data\images\a.jpg") == "/mnt/data/images/a.jpg"
+
+
+def test_findings_can_be_narrowed_to_one_image(client: TestClient) -> None:
+    """A viewer showing one photograph needs every finding on it.
+
+    Including the ones the matcher paired with a different finding: a merged
+    detection is only visible when the prediction assigned to a neighbouring
+    finding is drawn beside the object it also covers.
+    """
+    everything = client.get("/runs/1/findings").json()
+    assert everything["total"] >= 1
+    image_id = everything["items"][0]["image_id"]
+
+    narrowed = client.get(f"/runs/1/findings?image_id={image_id}").json()
+    assert narrowed["items"], "the filter returned nothing for a real image"
+    assert all(f["image_id"] == image_id for f in narrowed["items"])
+    # The total must count the filtered set, or paging is computed against a
+    # population the caller is not being shown.
+    assert narrowed["total"] == len(narrowed["items"])
+    assert narrowed["total"] <= everything["total"]
+
+
+def test_an_image_with_no_findings_returns_an_empty_page(client: TestClient) -> None:
+    """An unknown image is empty, not an error: it is a filter, not a lookup."""
+    response = client.get("/runs/1/findings?image_id=999999")
+    assert response.status_code == 200
+    assert response.json() == {"items": [], "total": 0, "limit": 200, "offset": 0}

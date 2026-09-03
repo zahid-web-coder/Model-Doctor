@@ -26,7 +26,7 @@ interface ZoomView {
   truth: Shape;
   prediction: Prediction | null;
   siblings: Shape[];
-  extras: Shape[];
+  extras: Prediction[];
 }
 
 /**
@@ -80,7 +80,7 @@ interface SideModel {
   finding: Finding;
   image: ImageRow | undefined;
   mask: MaskFinding | undefined;
-  extras: Shape[];
+  extras: Prediction[];
 }
 
 function Side({
@@ -283,10 +283,18 @@ export function DiffViewer({
       .map((other) => ({ box: other.truthBox, polygon: other.truthPolygon }));
   }, [pair, pairsByFile]);
 
-  const extraShapes = (findings: Finding[], masks: Map<number, MaskFinding>): Shape[] =>
+  const extraShapes = (
+    findings: Finding[],
+    masks: Map<number, MaskFinding>,
+  ): Prediction[] =>
     findings.map((finding) => ({
       box: finding.pred_box,
       polygon: masks.get(finding.id)?.pred_polygon ?? null,
+      // These are unmatched predictions by construction, so "failed or extra"
+      // is what they are; the tone is carried explicitly now rather than
+      // assumed by the renderer.
+      tone: "bad" as const,
+      label: finding.class_name ?? "prediction",
     }));
 
   return (

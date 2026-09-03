@@ -285,14 +285,30 @@ def create_app() -> FastAPI:
         run_id: int,
         limit: int = Query(DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE),
         offset: int = Query(0, ge=0),
+        image_id: int | None = None,
     ) -> dict[str, Any]:
-        """A page of findings, with the total so a caller can page properly."""
+        """A page of findings, with the total so a caller can page properly.
+
+        `image_id` narrows to one photograph — every annotated object and every
+        prediction on it, including those the matcher paired with a different
+        finding. The total counts the same filtered set, or paging would be
+        computed against a population the caller is not being shown.
+        """
         with read_only() as connection:
             resolve_run(connection, run_id)
-            total = connection.execute(
-                "SELECT COUNT(*) AS n FROM findings WHERE run_id = ?", (run_id,)
-            ).fetchone()["n"]
-            rows = storage.load_findings_page(connection, run_id, limit, offset)
+            if image_id is None:
+                total = connection.execute(
+                    "SELECT COUNT(*) AS n FROM findings WHERE run_id = ?", (run_id,)
+                ).fetchone()["n"]
+            else:
+                total = connection.execute(
+                    "SELECT COUNT(*) AS n FROM findings "
+                    "WHERE run_id = ? AND image_id = ?",
+                    (run_id, image_id),
+                ).fetchone()["n"]
+            rows = storage.load_findings_page(
+                connection, run_id, limit, offset, image_id=image_id
+            )
         return {
             "items": serialise(rows),
             "total": total,

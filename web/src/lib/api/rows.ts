@@ -50,6 +50,14 @@ export interface Run {
   match_iou_threshold: number;
   localization_iou_floor: number;
   image_size: number;
+  /**
+   * What a reader called this run, or null if never named.
+   *
+   * Never a blank string — storage clears rather than storing `""`, because a
+   * name that renders as nothing is indistinguishable on screen from an
+   * unnamed run while behaving differently everywhere else.
+   */
+  name: string | null;
 }
 
 /** The five outcome buckets the analysis pass records. */

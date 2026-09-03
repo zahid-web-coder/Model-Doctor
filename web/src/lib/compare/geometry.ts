@@ -106,6 +106,131 @@ export const pointsOf = (polygon: number[][]): string =>
   polygon.map(([x, y]) => `${x},${y}`).join(" ");
 
 /**
+ * The rectangle a shape occupies — from its box when one is drawn, and from its
+ * polygon's extent otherwise.
+ *
+ * **A label must not depend on the box layer being on.** Tags used to anchor on
+ * `box` alone, so with boxes switched off — the default on a segmentation run,
+ * where the outline is the whole point — the confidence score silently
+ * disappeared. The polygon bounds the same object, so it can anchor the same
+ * label. Returns null only when there is no geometry at all, which is a shape
+ * that was never drawn.
+ */
+export function boundsOf(shape: {
+  box: number[] | null;
+  polygon: number[][] | null;
+}): { x: number; y: number; width: number; height: number } | null {
+  if (isBox(shape.box)) return rectOf(shape.box);
+  if (!isPolygon(shape.polygon)) return null;
+  const xs = shape.polygon.map(([x]) => x);
+  const ys = shape.polygon.map(([, y]) => y);
+  const x = Math.min(...xs);
+  const y = Math.min(...ys);
+  return { x, y, width: Math.max(...xs) - x, height: Math.max(...ys) - y };
+}
+
+/** A label's box, in image pixels. */
+export interface Rect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * How big a label's background is, estimated from its text.
+ *
+ * Estimated rather than measured: SVG cannot report text extents before paint,
+ * and a background that is a little wide costs nothing, while a measurement
+ * pass would cost a render cycle per label.
+ */
+export function labelSize(
+  text: string,
+  unit: number,
+): { width: number; height: number; fontSize: number; padding: number } {
+  const fontSize = unit * 10;
+  const padding = unit * 3;
+  return {
+    width: text.length * fontSize * 0.58 + padding * 2,
+    height: fontSize + padding * 2,
+    fontSize,
+    padding,
+  };
+}
+
+/**
+ * Where a label sits: above its anchor by preference, below when there is no
+ * room above, and clamped inside the image on both axes.
+ *
+ * A label placed past the edge is simply not drawn, and the number it carries
+ * is usually the one the reader came for. On this project's staircases that is
+ * the common case rather than the rare one — a prediction covering 98.6% of
+ * its image leaves five pixels underneath.
+ */
+export function labelRect(
+  text: string,
+  x: number,
+  y: number,
+  unit: number,
+  bounds: { width: number; height: number },
+): Rect {
+  const { width, height } = labelSize(text, unit);
+  const margin = unit * 2;
+  const preferred = y - height - margin;
+  return {
+    x: Math.max(margin, Math.min(x, bounds.width - width - margin)),
+    y: Math.max(
+      margin,
+      Math.min(preferred > 0 ? preferred : y + margin, bounds.height - height - margin),
+    ),
+    width,
+    height,
+  };
+}
+
+/**
+ * Push a label clear of the ones already placed.
+ *
+ * **Clamping alone loses labels.** Two predictions that both span the image
+ * clamp to the same point against the bottom edge, and the second is drawn
+ * exactly underneath the first — on image 737 that hid a 30.2% score behind a
+ * 28.9% one, with nothing on screen to suggest a third prediction existed.
+ * Overlapping shapes are the whole subject of this view, so their labels
+ * collide by default rather than by accident.
+ *
+ * Steps down first, then up, and gives up rather than leaving the image: a
+ * label drawn over another is still readable, and one outside the frame is not
+ * drawn at all.
+ */
+export function withoutOverlap(
+  rect: Rect,
+  placed: Rect[],
+  bounds: { width: number; height: number },
+  gap: number,
+): Rect {
+  const hits = (candidate: Rect) =>
+    placed.some(
+      (other) =>
+        candidate.x < other.x + other.width &&
+        other.x < candidate.x + candidate.width &&
+        candidate.y < other.y + other.height &&
+        other.y < candidate.y + candidate.height,
+    );
+  if (!hits(rect)) return rect;
+
+  const step = rect.height + gap;
+  for (const direction of [1, -1]) {
+    let candidate = rect;
+    for (let attempt = 0; attempt <= placed.length; attempt += 1) {
+      candidate = { ...candidate, y: candidate.y + direction * step };
+      if (candidate.y < 0 || candidate.y + candidate.height > bounds.height) break;
+      if (!hits(candidate)) return candidate;
+    }
+  }
+  return rect;
+}
+
+/**
  * One on-screen unit, expressed in image pixels for the current viewport.
  *
  * Strokes and labels are sized from this rather than from a fixed number of

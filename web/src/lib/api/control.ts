@@ -191,6 +191,25 @@ export const control = {
    */
   deleteRun: async (runId: number): Promise<Deletion> =>
     unwrap(await fetch(`${CONTROL_BASE}/runs/${runId}`, { method: "DELETE" })),
+
+  /**
+   * Set or clear a run's name.
+   *
+   * Blank clears it. This is the one writable field on a run: the rest records
+   * what an analysis pass did, and it goes to the control API because the
+   * reader opens SQLite read-only and declares no non-GET route.
+   */
+  renameRun: async (
+    runId: number,
+    name: string | null
+  ): Promise<{ run_id: number; name: string | null }> =>
+    unwrap(
+      await fetch(`${CONTROL_BASE}/runs/${runId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name }),
+      })
+    ),
 };
 
 /** Human labels for the pipeline stages the backend names. */

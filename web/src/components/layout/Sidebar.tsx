@@ -73,9 +73,24 @@ export function Sidebar() {
 
   return (
     <div
-      className={`${collapsed ? "w-[68px]" : "w-[240px]"} h-full flex flex-col justify-between shrink-0 transition-[width] duration-200`}
+      /*
+        **The rail scrolls when it does not fit.** Its container is
+        `max-h-screen overflow-hidden`, so anything past the viewport was
+        clipped with no way to reach it — on a laptop screen that meant the run
+        configuration card, whose four thresholds are the only place the values
+        a pass ran at appear. `min-h-0` is what lets a flex child shrink below
+        its content height; without it the box keeps its natural size and
+        `overflow-y-auto` has nothing to scroll.
+
+        `justify-between` still spaces the two groups apart when there is room,
+        and collapses to the top when there is not, which is exactly the
+        behaviour wanted at both sizes.
+      */
+      className={`${collapsed ? "w-[68px]" : "w-[240px]"} h-full min-h-0 overflow-y-auto custom-scrollbar flex flex-col justify-between shrink-0 transition-[width] duration-200`}
     >
-      <div className="flex flex-col gap-8">
+      {/* Neither group may be compressed to make the other fit: squeezing the
+          nav into unreadable rows is worse than scrolling to it. */}
+      <div className="flex flex-col gap-8 shrink-0">
         {/* The mark stays at every width — it is the one thing that should not
             collapse, because a rail with no identity on it reads as chrome
             belonging to the browser rather than to the product. */}
@@ -137,15 +152,28 @@ export function Sidebar() {
           <span className="text-ink font-semibold text-[13px] leading-none mt-0.5">#{runId}</span>
         </Link>
       ) : (
-      <div className="flex flex-col gap-4">
+      <div className="flex flex-col gap-4 shrink-0 pt-8">
         <Link
           href={`/runs/${runId}/failures`}
           className="block bg-[#EBE6D8]/50 rounded-xl p-4 border border-border/40 hover:border-brass/60 transition-colors"
         >
           <p className="text-slate text-[11px] font-medium mb-1">Current Run</p>
-          <div className="flex justify-between items-center mb-3">
-            <h3 className="text-ink font-semibold text-[15px]">Run #{runId}</h3>
-            <span className="text-[10px] font-semibold uppercase tracking-wide text-slate px-2 py-0.5 rounded-full bg-black/5">
+          <div className="flex justify-between items-center gap-2 mb-3">
+            {/* The id stays even when the run is named: it is what every URL,
+                export and log line refers to, and two runs may share a name. */}
+            <h3 className="text-ink font-semibold text-[15px] min-w-0 truncate">
+              {run?.name ? (
+                <>
+                  {run.name}
+                  <span className="text-slate/60 font-normal text-[12px] ml-1.5">
+                    #{runId}
+                  </span>
+                </>
+              ) : (
+                `Run #${runId}`
+              )}
+            </h3>
+            <span className="shrink-0 text-[10px] font-semibold uppercase tracking-wide text-slate px-2 py-0.5 rounded-full bg-black/5">
               {run?.split ?? "n/a"}
             </span>
           </div>

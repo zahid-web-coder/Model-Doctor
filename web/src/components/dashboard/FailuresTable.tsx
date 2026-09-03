@@ -1,12 +1,13 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { StatCard } from "@/components/shared/StatCard";
 import { Pagination } from "@/components/shared/Pagination";
 import { ExportButton } from "@/components/shared/ExportButton";
 import { Lightbox } from "@/components/shared/Lightbox";
 import { FilterSelect } from "@/components/shared/FilterSelect";
+import { LayerToggle } from "@/components/shared/LayerToggle";
 import { api } from "@/lib/api/client";
 import {
   OUTCOME_LABEL, FAILURE_OUTCOMES,
@@ -17,7 +18,8 @@ import { strongestFirst, noCausesReason } from "@/lib/rootCauses";
 import { Overlay, OverlayLegend } from "@/components/compare/Overlay";
 import { fitViewport } from "@/lib/compare/geometry";
 import {
-  ALL_LAYERS, NO_LAYERS, defaultLayers, hasOutline, predictionShapeOf, truthShapeOf, type Layers,
+  ALL_LAYERS, NO_LAYERS, contextFor, defaultLayers, hasOutline,
+  predictionShapeOf, truthShapeOf, type Layers,
 } from "@/lib/findingShapes";
 import { absence, hasPrediction, hasTruth } from "@/lib/absence";
 
@@ -36,6 +38,9 @@ import { absence, hasPrediction, hasTruth } from "@/lib/absence";
  * Paging is in the URL because the API pages server-side: the page is part of
  * what is being viewed, so it survives a reload and can be linked.
  */
+/** Stable identity, so the context memos do not re-run on every render. */
+const EMPTY_FINDINGS: Finding[] = [];
+
 export function FailuresTable({
   runId, page, pageSize, findings, outcomes, rootCauses, polygons, dimensions,
 }: {
@@ -90,7 +95,54 @@ export function FailuresTable({
     return { width, height, viewport: fitViewport(width, height) };
   }, [selected, predictionPolygon, dimensions]);
 
+  // Every finding on the selected image, fetched on selection rather than held
+  // for the whole run: the page carries only its own 50 rows, and a merged
+  // detection is invisible without the prediction that belongs to a
+  // *different* finding.
+  //
+  // Keyed by the image it was fetched for, so a result that arrives after the
+  // selection moved on is ignored rather than drawn over the new image.
+  const [fetched, setFetched] = useState<{ imageId: number; rows: Finding[] } | null>(
+    null,
+  );
+  const contextImage = zoomed?.image_id ?? selected?.image_id ?? null;
+  const imageFindings =
+    fetched && fetched.imageId === contextImage ? fetched.rows : EMPTY_FINDINGS;
+
+  useEffect(() => {
+    if (contextImage === null) return;
+    let live = true;
+    api
+      .imageFindings(runId, contextImage)
+      .then((rows) => {
+        if (live) setFetched({ imageId: contextImage, rows });
+      })
+      // Context is an enhancement: if it cannot be fetched the panel still
+      // draws the finding itself rather than failing.
+      .catch(() => {
+        if (live) setFetched({ imageId: contextImage, rows: [] });
+      });
+    return () => {
+      live = false;
+    };
+  }, [runId, contextImage]);
+
+  const panelContext = useMemo(
+    () =>
+      selected
+        ? contextFor(selected.id, imageFindings, polygons, layers)
+        : { siblings: [], predictions: [] },
+    [selected, imageFindings, polygons, layers],
+  );
+
   const zoomedPolygon = zoomed ? polygons[zoomed.id] ?? null : null;
+  const zoomContext = useMemo(
+    () =>
+      zoomed
+        ? contextFor(zoomed.id, imageFindings, polygons, layers)
+        : { siblings: [], predictions: [] },
+    [zoomed, imageFindings, polygons, layers],
+  );
   const zoomedOverlay = useMemo(() => {
     if (!zoomed || !hasOutline(zoomed, zoomedPolygon)) return null;
     const size = dimensions[zoomed.image_id];
@@ -118,6 +170,11 @@ export function FailuresTable({
     if (classFilter !== "All Classes" && f.class_name !== classFilter) return false;
     return true;
   });
+
+  // Where the zoomed finding sits among the rows on screen. -1 once a filter
+  // change has excluded it, which leaves the panel showing what it was showing
+  // and offers no step, rather than closing under the reader.
+  const zoomAt = zoomed ? rows.findIndex((f) => f.id === zoomed.id) : -1;
 
   const pageCount = Math.max(1, Math.ceil(findings.total / pageSize));
   const share = (n: number) => {
@@ -281,10 +338,10 @@ export function FailuresTable({
                       viewport={overlay.viewport}
                       truth={truthShapeOf(selected, layers)}
                       prediction={predictionShapeOf(selected, predictionPolygon, layers)}
-                      siblings={[]}
-                      extras={[]}
+                      siblings={panelContext.siblings}
+                      extras={panelContext.predictions}
                       showMasks
-                      showContext={false}
+                      showContext
                     />
                   </button>
                   {/* A grid, not a row: the two things a reader varies are
@@ -344,7 +401,11 @@ export function FailuresTable({
                     </div>
                   </div>
                   <div className="mb-4">
-                    <OverlayLegend hasContext={false} />
+                    <OverlayLegend
+                      hasContext={
+                        panelContext.siblings.length + panelContext.predictions.length > 0
+                      }
+                    />
                   </div>
                 </>
               ) : (
@@ -449,6 +510,27 @@ export function FailuresTable({
             ? `${zoomed.class_name ?? NOT_MEASURED} • ${OUTCOME_LABEL[zoomed.outcome] ?? zoomed.outcome}`
             : undefined
         }
+        // Stepping walks the filtered rows of this page, matching what the
+        // table shows. It stops at the page boundary rather than fetching the
+        // next one: paging is in the URL, and quietly moving off the page the
+        // reader linked to would make that link mean something else.
+        position={zoomAt < 0 ? undefined : `${zoomAt + 1} of ${rows.length}`}
+        onPrev={
+          zoomAt > 0
+            ? () => {
+                setZoomed(rows[zoomAt - 1]);
+                setSelected(rows[zoomAt - 1]);
+              }
+            : undefined
+        }
+        onNext={
+          zoomAt >= 0 && zoomAt < rows.length - 1
+            ? () => {
+                setZoomed(rows[zoomAt + 1]);
+                setSelected(rows[zoomAt + 1]);
+              }
+            : undefined
+        }
       >
         {zoomed && zoomedOverlay ? (
           /* The same drawing as the panel, at a size worth inspecting. The
@@ -466,13 +548,17 @@ export function FailuresTable({
                 viewport={zoomedOverlay.viewport}
                 truth={truthShapeOf(zoomed, layers)}
                 prediction={predictionShapeOf(zoomed, zoomedPolygon, layers)}
-                siblings={[]}
-                extras={[]}
+                siblings={zoomContext.siblings}
+                extras={zoomContext.predictions}
                 showMasks
-                showContext={false}
+                showContext
               />
             </div>
-            <OverlayLegend hasContext={false} />
+            <OverlayLegend
+              hasContext={
+                zoomContext.siblings.length + zoomContext.predictions.length > 0
+              }
+            />
           </div>
         ) : zoomed ? (
           /* eslint-disable-next-line @next/next/no-img-element */
@@ -493,40 +579,5 @@ function Detail({ label, value, mono, muted }: { label: string; value: string; m
       <p className="text-[10px] uppercase tracking-wider text-slate mb-0.5">{label}</p>
       <p className={`text-[13px] ${mono ? "font-mono text-[12px]" : ""} ${muted ? "text-slate italic" : "text-ink"}`}>{value}</p>
     </div>
-  );
-}
-
-/**
- * One layer switch.
- *
- * Disabled rather than hidden when the layer has nothing to show: a reader who
- * cannot find the "Pred mask" control does not learn that this finding has no
- * predicted outline, and on a false negative that absence is the whole point.
- */
-function LayerToggle({
-  label, on, onClick, disabled = false,
-}: {
-  label: string;
-  on: boolean;
-  onClick: () => void;
-  disabled?: boolean;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={disabled}
-      aria-pressed={on}
-      title={disabled ? `No ${label.toLowerCase()} stored for this finding` : undefined}
-      className={`text-[10px] px-2 py-1 rounded border transition-colors ${
-        disabled
-          ? "border-border/30 text-slate/50 cursor-not-allowed"
-          : on
-            ? "border-brass/50 bg-brass/10 text-brass"
-            : "border-border/50 text-slate hover:border-brass/40"
-      }`}
-    >
-      {label}
-    </button>
   );
 }
