@@ -40,13 +40,24 @@ export default async function RunsPage() {
             <h3 className="text-[17px] font-heading text-ink">Run History</h3>
             <p className="text-[13px] text-slate">Track and compare model runs.</p>
           </div>
+          {/* Both of these were `<button>` with no handler: they rendered,
+              they highlighted on hover, and they did nothing. The screens they
+              imply already exist and are reachable from the rail, so the fix
+              is to point at them rather than to build anything — and they are
+              links, not buttons, because navigation is what they do. */}
           <div className="flex items-center gap-2">
-            <button type="button" className="flex items-center gap-2 px-3 py-1.5 rounded-md border border-border/60 bg-card text-[13px] text-ink hover:border-brass/50 transition-colors">
+            <Link
+              href="/compare"
+              className="flex items-center gap-2 px-3 py-1.5 rounded-md border border-border/60 bg-card text-[13px] text-ink hover:border-brass/50 transition-colors"
+            >
               <GitCompare size={13} className="text-slate" /> Compare
-            </button>
-            <button type="button" className="flex items-center gap-2 px-3 py-1.5 rounded-md bg-brass/90 text-[13px] text-white hover:bg-brass transition-colors">
+            </Link>
+            <Link
+              href="/analyze"
+              className="flex items-center gap-2 px-3 py-1.5 rounded-md bg-brass/90 text-[13px] text-white hover:bg-brass transition-colors"
+            >
               <Plus size={13} /> New Run
-            </button>
+            </Link>
           </div>
         </div>
 
