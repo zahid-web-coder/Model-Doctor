@@ -80,19 +80,21 @@ export function RunName({
         type="button"
         onClick={begin}
         title={name ? "Rename this run" : "Name this run"}
-        className="group inline-flex items-center gap-1.5 text-left max-w-full min-w-[80px] min-h-[20px]"
+        className="group inline-flex items-center gap-2 text-left max-w-full"
       >
-        {/* An unnamed run is blank, not a prompt. A row of "Add a name" in
-            every cell is a column of instructions rather than data, and the
-            pencil on hover is enough to say the cell can be written. The
-            button keeps a minimum size so an empty one is still a target. */}
+        {/* An unnamed run is blank, not a prompt: a column of "Add a name"
+            reads as instructions where data should be. */}
         <span className="truncate text-[12px] text-ink group-hover:text-brass transition-colors">
           {name}
         </span>
-        <Pencil
-          size={11}
-          className="shrink-0 text-slate/0 group-hover:text-slate transition-colors"
-        />
+        {/* **The pencil is always drawn, not revealed on hover.** A control
+            that appears only once the pointer is over it cannot be discovered
+            by looking, and on a blank cell there is nothing else to suggest
+            the column can be written at all. Quiet enough not to compete with
+            the names beside it, and it is the whole cell that is clickable. */}
+        <span className="shrink-0 w-[22px] h-[22px] grid place-items-center rounded border border-border/50 text-slate/70 group-hover:border-brass/50 group-hover:text-brass transition-colors">
+          <Pencil size={11} />
+        </span>
       </button>
     );
   }
