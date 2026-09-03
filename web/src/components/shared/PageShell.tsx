@@ -22,7 +22,15 @@ export async function PageShell({ children }: { children: ReactNode }) {
 
   return (
     <RunProvider runs={runs}>
-      <main className="min-h-screen bg-background text-foreground p-6 flex gap-6 overflow-hidden max-h-screen">
+      {/*
+        `h-screen` rather than `min-h-screen` with `max-h-screen`. Those two
+        together already pinned the height to the viewport, but neither makes
+        it *definite*, and a percentage height only resolves against a definite
+        one — so `h-full` on a child fell back to the child's own content
+        height. The sidebar then grew past the viewport and was clipped by the
+        `overflow-hidden` here, with no way to scroll to what it had cut off.
+      */}
+      <main className="h-screen bg-background text-foreground p-6 flex gap-6 overflow-hidden">
         <Sidebar />
         <div className="flex-1 flex flex-col gap-6 overflow-hidden">
           <Header />
