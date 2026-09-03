@@ -2,12 +2,17 @@
 
 import { api } from "@/lib/api/client";
 import {
+  boundsOf,
   isBox,
   isPolygon,
+  labelRect,
+  labelSize,
   pointsOf,
   rectOf,
   unitOf,
   viewBoxOf,
+  withoutOverlap,
+  type Rect,
   type Viewport,
 } from "@/lib/compare/geometry";
 
@@ -72,53 +77,33 @@ export interface Prediction extends Shape {
  */
 const DASH = (unit: number) => `${unit * 6} ${unit * 4}`;
 
+/**
+ * A label at an already-resolved position.
+ *
+ * Placement is `labelRect`'s job rather than this component's, because labels
+ * have to be positioned against each other and a component cannot see its
+ * siblings.
+ */
 function Tag({
   text,
-  x,
-  y,
+  at,
   unit,
   fill,
-  bounds,
+  opacity = 1,
 }: {
   text: string;
-  x: number;
-  y: number;
+  at: Rect;
   unit: number;
   fill: string;
-  /** The image, so a label can never be placed outside it. */
-  bounds: { width: number; height: number };
+  opacity?: number;
 }) {
-  const fontSize = unit * 10;
-  const padding = unit * 3;
-  // Estimated rather than measured: SVG cannot report text extents before
-  // paint, and a background that is a little wide costs nothing, while a
-  // measurement pass would cost a render cycle per label.
-  const width = text.length * fontSize * 0.58 + padding * 2;
-  const height = fontSize + padding * 2;
-  const margin = unit * 2;
-
-  // Above the box by preference, below it when there is no room above.
-  const preferred = y - height - margin;
-  // **Then clamped into the image on both axes.** Only the top edge used to be
-  // guarded, so a prediction label sat wherever the caller put it — below the
-  // box — and an object filling the frame left nowhere for it to go. On this
-  // project's staircases that is the common case, not the rare one: a box
-  // covering 98.6% of the image leaves five pixels underneath, and the
-  // confidence disappeared off the canvas. A label placed past the edge is
-  // simply not drawn, and the number it carries is usually the one the reader
-  // came for.
-  const at = Math.max(
-    margin,
-    Math.min(preferred > 0 ? preferred : y + margin, bounds.height - height - margin),
-  );
-  const left = Math.max(margin, Math.min(x, bounds.width - width - margin));
-
+  const { fontSize, padding } = labelSize(text, unit);
   return (
-    <g>
-      <rect x={left} y={at} width={width} height={height} rx={unit * 2} fill={fill} />
+    <g opacity={opacity}>
+      <rect {...at} rx={unit * 2} fill={fill} />
       <text
-        x={left + padding}
-        y={at + padding + fontSize * 0.8}
+        x={at.x + padding}
+        y={at.y + padding + fontSize * 0.8}
         fontSize={fontSize}
         fill="#F4EFE3"
         fontFamily="ui-monospace, monospace"
@@ -212,6 +197,50 @@ export function Overlay({
   const extraOpacity = hasFocus ? 0.75 : 1;
   const contextStroke = hasFocus ? 0.6 : 1;
   const extraStroke = hasFocus ? 0.7 : 1;
+  // Labels are laid out together, in one pass, because they have to be
+  // positioned against each other as well as against the image. The finding
+  // under investigation is placed first and keeps its spot; context labels
+  // move around it.
+  const bounds = { width, height };
+  const placed: Rect[] = [];
+  const place = (text: string, x: number, y: number): Rect => {
+    const at = withoutOverlap(labelRect(text, x, y, unit, bounds), placed, bounds, unit);
+    placed.push(at);
+    return at;
+  };
+
+  // Anchored on whatever geometry is showing rather than on the box: boxes are
+  // off by default on a segmentation run, and a label that needs them takes
+  // the confidence score down with it.
+  const truthBounds = truth ? boundsOf(truth) : null;
+  const truthTag = truthBounds ? place("GT", truthBounds.x, truthBounds.y) : null;
+
+  const predictionBounds = prediction ? boundsOf(prediction) : null;
+  const predictionTag =
+    prediction && predictionBounds
+      ? place(
+          prediction.label,
+          predictionBounds.x,
+          predictionBounds.y + predictionBounds.height + unit * 14,
+        )
+      : null;
+
+  // Confidence for every prediction on the image, not only the one being
+  // compared. In the whole-image view each prediction *is* the subject, and
+  // "which of these did the model believe?" is the first question asked of a
+  // merged detection — the number that answers it cannot be one shape's
+  // privilege.
+  const extraTags = extras.flatMap((extra) => {
+    const at = boundsOf(extra);
+    if (!at) return [];
+    return [
+      {
+        text: extra.label,
+        tone: extra.tone,
+        at: place(extra.label, at.x, at.y + at.height + unit * 14),
+      },
+    ];
+  });
 
   return (
     <svg
@@ -299,25 +328,28 @@ export function Overlay({
         />
       )}
 
-      {truth && isBox(truth.box) && (
+      {/* Context labels first, so a focused one wins any overlap that survived
+          the layout pass. Each carries the weight of the outline it belongs
+          to. */}
+      {extraTags.map((tag, index) => (
         <Tag
-          text="GT"
-          x={rectOf(truth.box).x}
-          y={rectOf(truth.box).y}
+          key={`extra-tag-${index}`}
+          text={tag.text}
+          at={tag.at}
           unit={unit}
-          fill={TONE.truth}
-          bounds={{ width, height }}
+          fill={TONE[tag.tone]}
+          opacity={extraOpacity}
         />
-      )}
+      ))}
 
-      {prediction && isBox(prediction.box) && (
+      {truthTag && <Tag text="GT" at={truthTag} unit={unit} fill={TONE.truth} />}
+
+      {prediction && predictionTag && (
         <Tag
           text={prediction.label}
-          x={rectOf(prediction.box).x}
-          y={rectOf(prediction.box).y + rectOf(prediction.box).height + unit * 14}
+          at={predictionTag}
           unit={unit}
           fill={TONE[prediction.tone]}
-          bounds={{ width, height }}
         />
       )}
     </svg>
