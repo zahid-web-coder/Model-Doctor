@@ -1,7 +1,8 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import {
-  ALL_LAYERS, NO_LAYERS, defaultLayers, hasOutline, labelFor, predictionShapeOf, toneFor, truthShapeOf,
+  ALL_LAYERS, NO_LAYERS, contextFor, defaultLayers, hasOutline, labelFor,
+  predictionShapeOf, toneFor, truthShapeOf,
   type Layers,
 } from "./findingShapes.ts";
 import type { Finding, Outcome } from "./api/rows.ts";
@@ -194,5 +195,64 @@ describe("isolating one layer", () => {
   test("NO_LAYERS draws nothing at all", () => {
     assert.equal(truthShapeOf(finding(), NO_LAYERS), null);
     assert.equal(predictionShapeOf(finding(), PRED_POLY, NO_LAYERS), null);
+  });
+});
+
+describe("contextFor", () => {
+  /** The image-737 shape: the merged prediction belongs to a different finding. */
+  const IMAGE_737 = [
+    finding({ id: 1225, outcome: "poor_localization", pred_box: [0, 0, 90, 90] }),
+    finding({ id: 1226, outcome: "false_positive", truth_box: null, truth_polygon: null }),
+    finding({ id: 1228, outcome: "false_negative", pred_box: null, confidence: null }),
+  ];
+
+  test("a related prediction is not hidden because it belongs to another finding", () => {
+    // The whole point. Inspecting #1228, the prediction the matcher gave to
+    // #1225 — which also covers 80% of #1228 — must be drawn, or the merge
+    // that caused this false negative is invisible.
+    const ctx = contextFor(1228, IMAGE_737, { 1225: PRED_POLY }, ALL_LAYERS);
+    const boxes = ctx.predictions.map((p) => p.box);
+    assert.ok(
+      boxes.some((b) => b && b[2] === 90),
+      "the prediction assigned to #1225 was not offered as context",
+    );
+  });
+
+  test("the finding being inspected is never duplicated into its own context", () => {
+    const ctx = contextFor(1225, IMAGE_737, { 1225: PRED_POLY }, ALL_LAYERS);
+    assert.equal(ctx.predictions.length, 1, "only #1226 predicts besides #1225");
+    assert.equal(ctx.siblings.length, 1, "only #1228 is annotated besides #1225");
+  });
+
+  test("other annotated objects come through as siblings", () => {
+    const ctx = contextFor(1226, IMAGE_737, {}, ALL_LAYERS);
+    assert.equal(ctx.siblings.length, 2, "#1225 and #1228 are both annotated");
+  });
+
+  test("a false positive contributes a prediction but no sibling", () => {
+    const ctx = contextFor(1225, IMAGE_737, {}, ALL_LAYERS);
+    assert.ok(ctx.predictions.length >= 1);
+    assert.ok(!ctx.siblings.some((s) => s.box === null && s.polygon === null));
+  });
+
+  test("context carries each prediction's own tone, not a blanket failure", () => {
+    // Painting a neighbouring *correct* prediction as a failure would
+    // misreport it, which is why extras carry a tone at all.
+    const withCorrect = [
+      finding({ id: 1, outcome: "correct" }),
+      finding({ id: 2, outcome: "false_positive", truth_box: null, truth_polygon: null }),
+    ];
+    const ctx = contextFor(2, withCorrect, {}, ALL_LAYERS);
+    assert.equal(ctx.predictions[0].tone, "good");
+  });
+
+  test("layers still govern what context draws", () => {
+    const ctx = contextFor(1228, IMAGE_737, { 1225: PRED_POLY }, NO_LAYERS);
+    assert.deepEqual(ctx, { siblings: [], predictions: [] });
+  });
+
+  test("an image with only this finding has no context", () => {
+    const ctx = contextFor(1, [finding({ id: 1 })], {}, ALL_LAYERS);
+    assert.deepEqual(ctx, { siblings: [], predictions: [] });
   });
 });

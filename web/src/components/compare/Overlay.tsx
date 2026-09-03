@@ -137,6 +137,7 @@ function Outline({
   opacity = 1,
   strokeScale = 1,
   showMask,
+  fillMask = true,
 }: {
   shape: Shape;
   colour: string;
@@ -145,14 +146,21 @@ function Outline({
   opacity?: number;
   strokeScale?: number;
   showMask: boolean;
+  /**
+   * Whether the polygon is washed with colour or drawn as an outline only.
+   *
+   * Context shapes are outlined: several filled masks at 18% stack into an
+   * unreadable smear, and the object under investigation stops standing out.
+   */
+  fillMask?: boolean;
 }) {
   return (
     <g opacity={opacity}>
       {showMask && isPolygon(shape.polygon) && (
         <polygon
           points={pointsOf(shape.polygon)}
-          fill={colour}
-          fillOpacity={0.18}
+          fill={fillMask ? colour : "none"}
+          fillOpacity={fillMask ? 0.18 : 0}
           stroke={colour}
           strokeWidth={unit * 1.2 * strokeScale}
           strokeDasharray={dashed ? DASH(unit) : undefined}
@@ -190,11 +198,20 @@ export function Overlay({
   truth: Shape | null;
   prediction: Prediction | null;
   siblings: Shape[];
-  extras: Shape[];
+  extras: Prediction[];
   showMasks: boolean;
   showContext: boolean;
 }) {
   const unit = unitOf(viewport);
+  // Context is drawn quietly so the finding under investigation stands out.
+  // When there is no such finding — the whole-image view, where every shape is
+  // equally the subject — dimming contrasts everything against nothing and
+  // simply makes the drawing hard to read. So the weight follows the focus.
+  const hasFocus = truth !== null || prediction !== null;
+  const contextOpacity = hasFocus ? 0.45 : 1;
+  const extraOpacity = hasFocus ? 0.75 : 1;
+  const contextStroke = hasFocus ? 0.6 : 1;
+  const extraStroke = hasFocus ? 0.7 : 1;
 
   return (
     <svg
@@ -216,33 +233,49 @@ export function Overlay({
       />
 
       {/* Context first, so it can never paint over the object in question. */}
+      {/* Context first, so it can never paint over the object in question.
+          Sibling outlines follow `showMasks` like everything else: with boxes
+          switched off on a segmentation run they would otherwise render as
+          nothing, and the reader would believe the image held one object. */}
       {showContext &&
         siblings.map((sibling, index) => (
           <Outline
             key={`sibling-${index}`}
             shape={sibling}
-            colour={TONE.context}
+            colour={hasFocus ? TONE.context : TONE.truth}
             unit={unit}
             dashed={false}
-            opacity={0.45}
-            strokeScale={0.6}
-            showMask={false}
+            opacity={contextOpacity}
+            strokeScale={contextStroke}
+            showMask={showMasks}
+            // Filled in the whole-image view, outlined when something else is
+            // the subject. The wash is what makes ground truth unmistakable
+            // against a dashed prediction of a similar hue — the same reading
+            // the failures panel gives its selected finding.
+            fillMask={!hasFocus}
           />
         ))}
 
       {/* Extras belong to the image, not to the object being compared. They are
           drawn thin and unlabelled per-shape; the count and its meaning are
           stated in the panel below the viewer. */}
+      {/* Other predictions on this image, including the one the matcher gave
+          to a different finding — which is how a merged detection becomes
+          visible at all. Coloured by their own outcome, because painting a
+          neighbouring *correct* prediction as a failure would misreport it.
+          Outline only: a large merged mask filled at 18% would swamp the
+          object being inspected. */}
       {extras.map((extra, index) => (
         <Outline
           key={`extra-${index}`}
           shape={extra}
-          colour={TONE.bad}
+          colour={TONE[extra.tone]}
           unit={unit}
           dashed
-          opacity={0.75}
-          strokeScale={0.7}
+          opacity={extraOpacity}
+          strokeScale={extraStroke}
           showMask={showMasks}
+          fillMask={false}
         />
       ))}
 
@@ -302,7 +335,7 @@ export function OverlayLegend({ hasContext }: { hasContext: boolean }) {
     items.push({
       colour: TONE.context,
       dashed: false,
-      label: "Other annotated objects — context only",
+      label: "Other objects and predictions on this image — context",
       faint: true,
     });
   }

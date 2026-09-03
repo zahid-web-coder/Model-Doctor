@@ -1,11 +1,19 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import Link from "next/link";
+import { useEffect, useMemo, useState } from "react";
 import { FilterSelect } from "@/components/shared/FilterSelect";
 import { ExportButton } from "@/components/shared/ExportButton";
 import { StatCard } from "@/components/shared/StatCard";
-import type { ImageDiagnosis } from "@/lib/api/rows";
+import { LayerToggle } from "@/components/shared/LayerToggle";
+import { Lightbox } from "@/components/shared/Lightbox";
+import { Overlay, OverlayLegend } from "@/components/compare/Overlay";
+import { api } from "@/lib/api/client";
+import { fitViewport } from "@/lib/compare/geometry";
+import {
+  ALL_LAYERS, NO_LAYERS, defaultLayers, predictionShapeOf, truthShapeOf,
+  type Layers,
+} from "@/lib/findingShapes";
+import type { Finding, ImageDiagnosis, Outcome } from "@/lib/api/rows";
 import { num } from "@/lib/format";
 
 /**
@@ -48,6 +56,15 @@ const LABEL: Record<string, string> = {
   partial_coverage: "Partial coverage",
 };
 
+/** Outcome filter labels, mapped back to the stored keys. */
+const OUTCOME_KEYS: Record<string, Outcome> = {
+  Correct: "correct",
+  "False Negative": "false_negative",
+  "False Positive": "false_positive",
+  "Poor Localization": "poor_localization",
+  "Wrong Class": "wrong_class",
+};
+
 const TONE: Record<string, string> = {
   clean: "bg-[#66805A]/12 text-[#66805A]",
   empty: "bg-black/5 text-slate",
@@ -57,23 +74,88 @@ export function ImagesTable({
   runId,
   rows,
   filenames,
+  dimensions,
+  polygons,
 }: {
   runId: string;
   rows: ImageDiagnosis[];
   filenames: Record<number, string>;
+  /** Image dimensions by id, so the overlay can build its viewport. */
+  dimensions: Record<number, [number, number]>;
+  /** Predicted outlines by finding id, from `mask_findings`. */
+  polygons: Record<number, number[][]>;
 }) {
   const [verdict, setVerdict] = useState("All verdicts");
+  // The image being inspected, with every finding on it. Nothing is
+  // "selected" here — this view is the whole photograph, which is what the
+  // Failures panel deliberately is not.
+  const [open, setOpen] = useState<ImageDiagnosis | null>(null);
+  const [opened, setOpened] = useState<{ imageId: number; rows: Finding[] } | null>(
+    null,
+  );
+  useEffect(() => {
+    if (!open) return;
+    let live = true;
+    api
+      .imageFindings(runId, open.image_id)
+      .then((found) => {
+        if (live) setOpened({ imageId: open.image_id, rows: found });
+      })
+      .catch(() => {
+        if (live) setOpened({ imageId: open.image_id, rows: [] });
+      });
+    return () => {
+      live = false;
+    };
+  }, [runId, open]);
   const [size, setSize] = useState("All images");
+  const [outcome, setOutcome] = useState("All outcomes");
 
   const verdicts = useMemo(
     () => ["All verdicts", ...Array.from(new Set(rows.map((r) => r.verdict)))],
     [rows],
   );
 
+  const [layers, setLayers] = useState<Layers>(() =>
+    defaultLayers(Object.keys(polygons).length > 0),
+  );
+
+  const viewport = useMemo(() => {
+    if (!open) return null;
+    const size = dimensions[open.image_id];
+    if (!size) return null;
+    const [width, height] = size;
+    return { width, height, viewport: fitViewport(width, height) };
+  }, [open, dimensions]);
+
+  const wholeImage = useMemo(() => {
+    const found = opened && open && opened.imageId === open.image_id ? opened.rows : [];
+    const siblings = [];
+    const predictions = [];
+    for (const finding of found) {
+      const truth = truthShapeOf(finding, layers);
+      if (truth) siblings.push(truth);
+      const prediction = predictionShapeOf(
+        finding,
+        polygons[finding.id] ?? null,
+        layers,
+      );
+      if (prediction) predictions.push(prediction);
+    }
+    return { siblings, predictions };
+  }, [opened, open, polygons, layers]);
+
   const visible = rows.filter((r) => {
     if (verdict !== "All verdicts" && r.verdict !== verdict) return false;
     if (size === "Single-object" && r.gt_count !== 1) return false;
     if (size === "Multi-object" && r.gt_count <= 1) return false;
+    // "Contains a false negative" rather than "is a false negative": an image
+    // holds several findings, so this narrows to images where that outcome
+    // occurred at least once.
+    if (outcome !== "All outcomes") {
+      const key = OUTCOME_KEYS[outcome];
+      if (!key || !(r.outcomes[key] > 0)) return false;
+    }
     return true;
   });
 
@@ -126,6 +208,12 @@ export function ImagesTable({
               )
             }
             width="w-[170px]"
+          />
+          <FilterSelect
+            value={outcome}
+            options={["All outcomes", ...Object.keys(OUTCOME_KEYS)]}
+            onChange={setOutcome}
+            width="w-[165px]"
           />
           <FilterSelect
             value={size}
@@ -202,16 +290,28 @@ export function ImagesTable({
                 className="border-b border-border/25 hover:bg-black/[0.02] transition-colors"
               >
                 <td className="px-3 py-2.5">
-                  <Link
-                    href={`/runs/${runId}/failures`}
-                    className="font-mono text-[12px] text-ink hover:text-brass transition-colors"
-                    title={filenames[r.image_id]}
+                  <button
+                    type="button"
+                    onClick={() => setOpen(r)}
+                    title="Open the whole image"
+                    className="flex items-center gap-2.5 text-left group"
                   >
-                    #{r.image_id}
-                  </Link>
-                  <span className="text-[11px] text-slate ml-2 truncate inline-block max-w-[220px] align-bottom">
-                    {filenames[r.image_id] ?? ""}
-                  </span>
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={api.imageUrl(r.image_id)}
+                      alt=""
+                      loading="lazy"
+                      className="w-9 h-9 rounded object-cover bg-black/10 shrink-0 group-hover:ring-2 group-hover:ring-brass/50 transition-shadow"
+                    />
+                    <span>
+                      <span className="font-mono text-[12px] text-ink group-hover:text-brass transition-colors">
+                        #{r.image_id}
+                      </span>
+                      <span className="text-[11px] text-slate ml-2 truncate inline-block max-w-[200px] align-bottom">
+                        {filenames[r.image_id] ?? ""}
+                      </span>
+                    </span>
+                  </button>
                 </td>
                 <td className="px-3 py-2.5 text-right font-mono text-[12px] text-ink">
                   {r.gt_count}
@@ -245,6 +345,119 @@ export function ImagesTable({
           </p>
         )}
       </div>
+
+      <Lightbox
+        open={open !== null}
+        onClose={() => setOpen(null)}
+        title={open ? `Image #${open.image_id}` : ""}
+        subtitle={
+          open
+            ? `${LABEL[open.verdict] ?? open.verdict} — ${MEANING[open.verdict] ?? ""}`
+            : undefined
+        }
+      >
+        {open && viewport ? (
+          <div className="flex flex-col gap-3 items-center">
+            <div
+              className="max-h-[72vh] w-full"
+              style={{
+                aspectRatio: `${viewport.width} / ${viewport.height}`,
+                maxWidth: "min(100%, 62vh)",
+              }}
+            >
+              {/* Nothing is singled out: every annotated object is a sibling
+                  and every prediction an extra, which is the whole-image view
+                  the Failures panel deliberately does not give. */}
+              <Overlay
+                imageId={open.image_id}
+                width={viewport.width}
+                height={viewport.height}
+                viewport={viewport.viewport}
+                truth={null}
+                prediction={null}
+                siblings={wholeImage.siblings}
+                extras={wholeImage.predictions}
+                showMasks
+                showContext
+              />
+            </div>
+            {/* The same four layers the failures panel offers, over the same
+                overlay, so switching between the two views does not change
+                what a control means. */}
+            <div className="grid grid-cols-[46px_1fr_1fr] gap-1 items-center w-[240px]">
+              <span />
+              <span className="text-[9px] uppercase tracking-wide text-slate text-center">
+                Outline
+              </span>
+              <span className="text-[9px] uppercase tracking-wide text-slate text-center">
+                Box
+              </span>
+
+              <span className="text-[10px] text-slate">Truth</span>
+              <LayerToggle
+                label="Outline"
+                on={layers.truthMask}
+                onClick={() => setLayers((l) => ({ ...l, truthMask: !l.truthMask }))}
+              />
+              <LayerToggle
+                label="Box"
+                on={layers.truthBox}
+                onClick={() => setLayers((l) => ({ ...l, truthBox: !l.truthBox }))}
+              />
+
+              <span className="text-[10px] text-slate">Pred</span>
+              <LayerToggle
+                label="Outline"
+                on={layers.predictionMask}
+                onClick={() =>
+                  setLayers((l) => ({ ...l, predictionMask: !l.predictionMask }))
+                }
+              />
+              <LayerToggle
+                label="Box"
+                on={layers.predictionBox}
+                onClick={() =>
+                  setLayers((l) => ({ ...l, predictionBox: !l.predictionBox }))
+                }
+              />
+            </div>
+            <div className="flex gap-1.5">
+              <button
+                type="button"
+                onClick={() => setLayers(ALL_LAYERS)}
+                className="text-[10px] px-2 py-0.5 rounded border border-border/50 text-slate hover:border-brass/40 transition-colors"
+              >
+                Show all
+              </button>
+              <button
+                type="button"
+                onClick={() => setLayers(NO_LAYERS)}
+                className="text-[10px] px-2 py-0.5 rounded border border-border/50 text-slate hover:border-brass/40 transition-colors"
+              >
+                Image only
+              </button>
+            </div>
+            <OverlayLegend hasContext />
+            <p className="text-[11px] text-slate max-w-[62vh] text-center leading-relaxed">
+              {open.gt_count} annotated object{open.gt_count === 1 ? "" : "s"} ·{" "}
+              {open.pred_count} prediction{open.pred_count === 1 ? "" : "s"} ·{" "}
+              {Object.entries(open.outcomes)
+                .filter(([, n]) => n > 0)
+                .map(([k, n]) => `${n} ${k.replace(/_/g, " ")}`)
+                .join(" · ")}
+            </p>
+          </div>
+        ) : (
+          open && (
+            /* eslint-disable-next-line @next/next/no-img-element */
+            <img
+              src={api.imageUrl(open.image_id)}
+              alt={`Image ${open.image_id}`}
+              className="max-w-full max-h-[75vh] object-contain rounded"
+            />
+          )
+        )}
+      </Lightbox>
 
       <p className="text-[11px] text-slate mt-3 shrink-0 leading-relaxed border-t border-border/40 pt-3">
         Measured on outlines, not boxes: a box around a diagonal object sweeps

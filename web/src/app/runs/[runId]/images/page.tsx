@@ -23,12 +23,33 @@ export default async function ImagesPage({
   params: Promise<{ runId: string }>;
 }) {
   const { runId } = await params;
-  const [diagnoses, images] = await Promise.all([
+  const [diagnoses, images, masks] = await Promise.all([
     api.imageDiagnoses(runId),
     api.images(runId).catch(() => []),
+    // Predicted outlines for the whole run, so opening an image can draw every
+    // prediction on it without a second request per row.
+    api.maskFindings(runId),
   ]);
 
   const filenames = Object.fromEntries(images.map((i) => [i.id, i.filename]));
+  const dimensions = Object.fromEntries(
+    images
+      .filter((i) => typeof i.width === "number" && typeof i.height === "number")
+      .map((i) => [i.id, [i.width as number, i.height as number] as [number, number]]),
+  );
+  const polygons = Object.fromEntries(
+    masks
+      .filter((m) => m.pred_polygon !== null)
+      .map((m) => [m.finding_id, m.pred_polygon as number[][]]),
+  );
 
-  return <ImagesTable runId={runId} rows={diagnoses} filenames={filenames} />;
+  return (
+    <ImagesTable
+      runId={runId}
+      rows={diagnoses}
+      filenames={filenames}
+      dimensions={dimensions}
+      polygons={polygons}
+    />
+  );
 }

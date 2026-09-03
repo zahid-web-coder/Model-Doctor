@@ -151,3 +151,38 @@ export function hasOutline(
     (Array.isArray(predictionPolygon) && predictionPolygon.length >= 3)
   );
 }
+
+
+/**
+ * The other findings on the same image, as context for the one being viewed.
+ *
+ * **Related predictions are never hidden because they belong to another
+ * finding.** A finding knows only its own pairing, so on image 737 the
+ * prediction the matcher gave to #1225 — which also covers 80% of #1228 — was
+ * invisible while inspecting #1228, and the merge it caused was impossible to
+ * see. Every other object and prediction on the image is handed to the
+ * renderer as context.
+ *
+ * Context is drawn quietly by `Overlay`: siblings at 45% opacity and 0.6
+ * stroke, extras at 75% and 0.7, both outline-only, against the selected
+ * finding at full weight with its mask filled. The selection stands out by
+ * contrast rather than by a separate highlight mechanism.
+ */
+export function contextFor(
+  selectedId: number,
+  imageFindings: Finding[],
+  polygons: Record<number, number[][]>,
+  layers: Layers,
+): { siblings: Shape[]; predictions: Prediction[] } {
+  const others = imageFindings.filter((f) => f.id !== selectedId);
+  const siblings: Shape[] = [];
+  const predictions: Prediction[] = [];
+
+  for (const finding of others) {
+    const truth = truthShapeOf(finding, layers);
+    if (truth) siblings.push(truth);
+    const prediction = predictionShapeOf(finding, polygons[finding.id] ?? null, layers);
+    if (prediction) predictions.push(prediction);
+  }
+  return { siblings, predictions };
+}

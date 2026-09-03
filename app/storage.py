@@ -949,6 +949,7 @@ def load_findings_page(
     limit: int,
     offset: int,
     outcome: Outcome | None = None,
+    image_id: int | None = None,
 ) -> list[FindingRecord]:
     """Return a page of findings using SQL-level pagination.
 
@@ -962,45 +963,58 @@ def load_findings_page(
         limit: Maximum number of rows to return.
         offset: Number of rows to skip.
         outcome: When given, only findings of this outcome are returned.
+        image_id: When given, only findings on this image are returned. Asked
+            for by a viewer showing one photograph in full: every annotated
+            object and every prediction on it, including those the matcher
+            paired with a different finding. Without it the caller would have
+            to hold a whole run's findings to draw one image.
 
     Returns:
         At most *limit* findings, starting from *offset*, in insertion order.
     """
-    if outcome is None:
-        rows = connection.execute(
-            "SELECT * FROM findings WHERE run_id = ? ORDER BY id LIMIT ? OFFSET ?",
-            (run_id, limit, offset),
-        ).fetchall()
-    else:
-        rows = connection.execute(
-            "SELECT * FROM findings WHERE run_id = ? AND outcome = ? "
-            "ORDER BY id LIMIT ? OFFSET ?",
-            (run_id, outcome.value, limit, offset),
-        ).fetchall()
+    clauses = ["run_id = ?"]
+    params: list[Any] = [run_id]
+    if outcome is not None:
+        clauses.append("outcome = ?")
+        params.append(outcome.value if hasattr(outcome, "value") else str(outcome))
+    if image_id is not None:
+        clauses.append("image_id = ?")
+        params.append(image_id)
+    rows = connection.execute(
+        f"SELECT * FROM findings WHERE {' AND '.join(clauses)} "
+        "ORDER BY id LIMIT ? OFFSET ?",
+        (*params, limit, offset),
+    ).fetchall()
+    return [_finding_record(row) for row in rows]
+
+
+def _finding_record(row: sqlite3.Row) -> FindingRecord:
+    """Build one finding from a stored row.
+
+    Extracted so every reader of `findings` produces the same shape; the paged
+    query previously inlined it and would have needed a second copy once a
+    filter was added.
+    """
 
     def box(prefix: str) -> tuple[float, float, float, float] | None:
         values = [row[f"{prefix}_{axis}"] for axis in ("x1", "y1", "x2", "y2")]
         return tuple(values) if values[0] is not None else None  # type: ignore[return-value]
 
-    records = []
-    for row in rows:
-        polygon = json.loads(row["truth_polygon"]) if row["truth_polygon"] else None
-        records.append(
-            FindingRecord(
-                id=row["id"],
-                run_id=row["run_id"],
-                image_id=row["image_id"],
-                outcome=row["outcome"],
-                class_id=row["class_id"],
-                class_name=row["class_name"],
-                confidence=row["confidence"],
-                iou=row["iou"],
-                pred_box=box("pred"),
-                truth_box=box("truth"),
-                truth_polygon=polygon,
-            )
-        )
-    return records
+    return FindingRecord(
+        id=row["id"],
+        run_id=row["run_id"],
+        image_id=row["image_id"],
+        outcome=row["outcome"],
+        class_id=row["class_id"],
+        class_name=row["class_name"],
+        confidence=row["confidence"],
+        iou=row["iou"],
+        pred_box=box("pred"),
+        truth_box=box("truth"),
+        truth_polygon=(
+            json.loads(row["truth_polygon"]) if row["truth_polygon"] else None
+        ),
+    )
 
 
 def outcome_counts(connection: sqlite3.Connection, run_id: int) -> dict[str, int]:
