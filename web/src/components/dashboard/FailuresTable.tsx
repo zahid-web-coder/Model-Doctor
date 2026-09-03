@@ -171,6 +171,11 @@ export function FailuresTable({
     return true;
   });
 
+  // Where the zoomed finding sits among the rows on screen. -1 once a filter
+  // change has excluded it, which leaves the panel showing what it was showing
+  // and offers no step, rather than closing under the reader.
+  const zoomAt = zoomed ? rows.findIndex((f) => f.id === zoomed.id) : -1;
+
   const pageCount = Math.max(1, Math.ceil(findings.total / pageSize));
   const share = (n: number) => {
     const totalFailures = outcomes
@@ -503,6 +508,27 @@ export function FailuresTable({
         subtitle={
           zoomed
             ? `${zoomed.class_name ?? NOT_MEASURED} • ${OUTCOME_LABEL[zoomed.outcome] ?? zoomed.outcome}`
+            : undefined
+        }
+        // Stepping walks the filtered rows of this page, matching what the
+        // table shows. It stops at the page boundary rather than fetching the
+        // next one: paging is in the URL, and quietly moving off the page the
+        // reader linked to would make that link mean something else.
+        position={zoomAt < 0 ? undefined : `${zoomAt + 1} of ${rows.length}`}
+        onPrev={
+          zoomAt > 0
+            ? () => {
+                setZoomed(rows[zoomAt - 1]);
+                setSelected(rows[zoomAt - 1]);
+              }
+            : undefined
+        }
+        onNext={
+          zoomAt >= 0 && zoomAt < rows.length - 1
+            ? () => {
+                setZoomed(rows[zoomAt + 1]);
+                setSelected(rows[zoomAt + 1]);
+              }
             : undefined
         }
       >

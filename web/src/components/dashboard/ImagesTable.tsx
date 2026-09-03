@@ -207,6 +207,11 @@ export function ImagesTable({
   const qualified = scored.filter(
     (r) => r.verdict === "clean" && (r.outcomes.poor_localization ?? 0) > 0,
   ).length;
+  // Where the open image sits in what the reader is looking at. -1 once a
+  // filter change has removed it from the list, which leaves the panel open on
+  // what it was showing and simply offers no next — better than closing the
+  // panel out from under the reader or stepping into a set they cannot see.
+  const openAt = open ? visible.findIndex((r) => r.image_id === open.image_id) : -1;
   const merged = rows.filter((r) => r.merged).length;
   const split = rows.filter((r) => r.split).length;
 
@@ -402,6 +407,16 @@ export function ImagesTable({
         title={open ? `Image #${open.image_id}` : ""}
         subtitle={
           open ? `${present(open).label} — ${present(open).meaning}` : undefined
+        }
+        // Stepping follows the filtered list, not the whole run: a reader who
+        // narrowed to false negatives is walking that set, and jumping to a
+        // clean image they had filtered out would undo the filter silently.
+        position={openAt < 0 ? undefined : `${openAt + 1} of ${visible.length}`}
+        onPrev={openAt > 0 ? () => setOpen(visible[openAt - 1]) : undefined}
+        onNext={
+          openAt >= 0 && openAt < visible.length - 1
+            ? () => setOpen(visible[openAt + 1])
+            : undefined
         }
       >
         {open && viewport ? (

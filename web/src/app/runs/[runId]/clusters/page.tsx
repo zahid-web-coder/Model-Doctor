@@ -1,7 +1,7 @@
 import { api } from "@/lib/api/client";
 import { StatCard } from "@/components/shared/StatCard";
 import { ExportButton } from "@/components/shared/ExportButton";
-import { OUTCOME_LABEL } from "@/lib/api/rows";
+import { ClusterImages } from "@/components/dashboard/ClusterImages";
 import { pct, num } from "@/lib/format";
 import { factorNote, factorsInSignature, signatureSummary, UNEXPLAINED } from "@/lib/factors";
 
@@ -14,18 +14,37 @@ import { factorNote, factorsInSignature, signatureSummary, UNEXPLAINED } from "@
  * findings carrying both. There is nothing to describe beyond that, which is
  * why the mock's prose descriptions are gone.
  *
- * **No thumbnails yet, though they are now possible.** `/groups/{id}/members`
- * returns `image_id` as of the backend fix that added it, so a member image
- * could be requested from `/images/{id}`. The cards still show the member list:
- * adding a thumbnail grid is a design change rather than a data one, and is
- * left for whoever decides what a cluster card should lead with.
+ * **The cards lead with the photographs.** A signature is a claim about what
+ * its failures have in common — "small_object + thin_structure, 20 findings"
+ * is a definition, and a list of class names and outcomes repeats the
+ * definition rather than evidencing it. Whether those twenty really are small
+ * and thin, and whether the `unexplained` ones share something the detectors
+ * have no name for, are questions answered by looking. So each card shows its
+ * members and opens into the same overlay the Failures and Images screens use.
+ *
+ * Image dimensions and predicted outlines are fetched once for the run and
+ * handed down, rather than per card: the cards share images, and a request per
+ * cluster would fetch the same run-wide tables four times over.
  */
 export default async function ClustersPage({ params }: { params: Promise<{ runId: string }> }) {
   const { runId } = await params;
-  const [groups, outcomes] = await Promise.all([
+  const [groups, outcomes, images, masks] = await Promise.all([
     api.groups(runId),
     api.outcomes(runId).catch(() => null),
+    api.images(runId).catch(() => []),
+    api.maskFindings(runId),
   ]);
+
+  const dimensions = Object.fromEntries(
+    images
+      .filter((i) => typeof i.width === "number" && typeof i.height === "number")
+      .map((i) => [i.id, [i.width as number, i.height as number] as [number, number]]),
+  );
+  const polygons = Object.fromEntries(
+    masks
+      .filter((m) => m.pred_polygon !== null)
+      .map((m) => [m.finding_id, m.pred_polygon as number[][]]),
+  );
 
   const members = await Promise.all(groups.map((g) => api.groupMembers(g.id)));
   const totalFailures = outcomes
@@ -125,18 +144,13 @@ export default async function ClustersPage({ params }: { params: Promise<{ runId
                     </dl>
                   )}
 
-                  <div className="flex flex-col gap-1">
-                    {list.slice(0, 4).map((m) => (
-                      <div key={m.finding_id} className="flex items-center justify-between gap-2 text-[11px]">
-                        <span className="font-mono text-slate truncate">{m.class_name ?? "n/a"}</span>
-                        <span className="text-slate shrink-0">{OUTCOME_LABEL[m.outcome] ?? m.outcome}</span>
-                      </div>
-                    ))}
-                    {list.length > 4 && (
-                      <p className="text-[11px] text-slate mt-1">+{list.length - 4} more</p>
-                    )}
-                    {list.length === 0 && <p className="text-[11px] text-slate">No members returned.</p>}
-                  </div>
+                  <ClusterImages
+                    runId={runId}
+                    label={group.label}
+                    members={list}
+                    dimensions={dimensions}
+                    polygons={polygons}
+                  />
 
                   {unexplained && (
                     <p className="text-[11px] text-slate mt-3 leading-relaxed border-t border-border/40 pt-2">
