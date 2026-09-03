@@ -100,7 +100,7 @@ export function Lightbox({
       role="dialog"
       aria-modal="true"
     >
-      <div className="bg-card border border-border/60 rounded-xl shadow-2xl max-w-[min(1100px,95vw)] max-h-[92vh] w-full flex flex-col overflow-hidden">
+      <div className="relative bg-card border border-border/60 rounded-xl shadow-2xl max-w-[min(1100px,95vw)] max-h-[92vh] w-full flex flex-col overflow-hidden">
         <div className="flex items-start justify-between gap-4 px-5 py-3.5 border-b border-border/40 shrink-0">
           <div className="min-w-0">
             <div className="text-[14px] text-ink font-medium truncate">{title}</div>
@@ -138,9 +138,27 @@ export function Lightbox({
           </div>
         </div>
 
-        <div className="flex-1 min-h-0 overflow-auto custom-scrollbar p-4 grid place-items-center bg-black/[0.03]">
+        <div className="flex-1 min-h-0 overflow-auto custom-scrollbar p-4 sm:px-16 grid place-items-center bg-black/[0.03]">
           {children}
         </div>
+
+        {/* **The arrows sit on the picture, not only in the corner.** A 28px
+            control tucked beside the close button is easy to miss and easy to
+            mistake for decoration, and a reader who clicks the greyed-out one
+            at the start of a list learns nothing about whether stepping works
+            at all. These are placed where the eye already is, sized to be
+            unmistakable, and the panel gains side padding so they never cover
+            the drawing they are next to. */}
+        {(onPrev || onNext) && (
+          <>
+            <Edge side="left" onClick={onPrev} label="Previous">
+              <ChevronLeft size={20} />
+            </Edge>
+            <Edge side="right" onClick={onNext} label="Next">
+              <ChevronRight size={20} />
+            </Edge>
+          </>
+        )}
 
         {footer && (
           <div className="px-5 py-3 border-t border-border/40 shrink-0">{footer}</div>
@@ -148,6 +166,41 @@ export function Lightbox({
       </div>
     </div>,
     document.body
+  );
+}
+
+/**
+ * A large stepping arrow on the edge of the panel.
+ *
+ * Hidden at the ends rather than merely disabled, unlike its counterpart in the
+ * header: a dimmed disc floating over a photograph reads as part of the image,
+ * and the header control is already there to say the direction exists and is
+ * exhausted.
+ */
+function Edge({
+  side,
+  onClick,
+  label,
+  children,
+}: {
+  side: "left" | "right";
+  onClick?: () => void;
+  label: string;
+  children: ReactNode;
+}) {
+  if (!onClick) return null;
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={label}
+      title={`${label} (arrow key)`}
+      className={`absolute top-1/2 -translate-y-1/2 ${
+        side === "left" ? "left-2" : "right-2"
+      } z-10 w-10 h-10 grid place-items-center rounded-full bg-card/95 border border-border/60 text-ink shadow-lg hover:bg-card hover:border-brass/60 hover:text-brass active:scale-95 transition-all`}
+    >
+      {children}
+    </button>
   );
 }
 
