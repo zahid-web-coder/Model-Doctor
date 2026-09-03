@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "model-doctor": {
+      "command": ".venv/bin/python",
+      "args": ["-m", "app.mcp_server"],
+      "env": {
+        "MD_DB_PATH": "db/manual.db"
+      }
+    }
+  }
+}

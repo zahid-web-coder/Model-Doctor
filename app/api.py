@@ -79,7 +79,9 @@ def read_only(path: Path | None = None) -> Iterator[sqlite3.Connection]:
     """Open the database read-only, or explain why it cannot be opened.
 
     Deliberately not :func:`app.storage.connect`, which applies the schema and
-    can bump the recorded version. A request handler must not do either.
+    can bump the recorded version. A request handler must not do either. The
+    ``mode=ro`` open itself is :func:`app.storage.connect_read_only`, shared
+    with the MCP server so that "read-only" is defined once.
 
     Yields:
         A connection that cannot create or modify anything.
@@ -89,26 +91,18 @@ def read_only(path: Path | None = None) -> Iterator[sqlite3.Connection]:
             the command that produces one.
     """
     target = path or database_path()
-    if not target.is_file():
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                f"No diagnosis database at {target}. Produce one with: "
-                "python -m app.diagnosis --split test --save"
-            ),
-        )
+    # The opener lives in storage and is shared with the MCP server, so the
+    # read-only guarantee has one implementation. This wrapper only translates
+    # its failures into HTTP.
     try:
-        connection = sqlite3.connect(f"{target.resolve().as_uri()}?mode=ro", uri=True)
+        with storage.connect_read_only(target) as connection:
+            yield connection
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
     except sqlite3.Error as error:
         raise HTTPException(
             status_code=503, detail=f"Cannot open the database at {target}."
         ) from error
-
-    connection.row_factory = sqlite3.Row
-    try:
-        yield connection
-    finally:
-        connection.close()
 
 
 def has_table(connection: sqlite3.Connection, name: str) -> bool:
@@ -478,6 +472,36 @@ def create_app() -> FastAPI:
             media_type=_IMAGE_TYPES.get(resolved.suffix.lower(), "image/jpeg"),
             filename=str(row["filename"]),
         )
+
+    @application.get("/runs/{run_id}/image-diagnoses")
+    def get_image_diagnoses(
+        run_id: int, verdict: str | None = None, coverage: bool = False
+    ) -> list[dict[str, Any]]:
+        """What shape the model's mistake took on each image (schema v11).
+
+        A second lens over the same findings, never a replacement: the
+        outcome counts on each row are the finding-level ones, unchanged.
+        `coverage` attaches the object/prediction pairs behind each verdict,
+        which is how a merge is distinguished from an independent miss.
+        """
+        with read_only() as connection:
+            resolve_run(connection, run_id)
+            if not has_table(connection, "image_diagnoses"):
+                return []
+            return serialise(
+                storage.load_image_diagnoses(
+                    connection, run_id, verdict, with_coverage=coverage
+                )
+            )
+
+    @application.get("/runs/{run_id}/images/{image_id}/coverage")
+    def get_image_coverage(run_id: int, image_id: int) -> list[dict[str, Any]]:
+        """Every measured object/prediction overlap on one image, strongest first."""
+        with read_only() as connection:
+            resolve_run(connection, run_id)
+            if not has_table(connection, "image_coverage"):
+                return []
+            return serialise(storage.load_image_coverage(connection, run_id, image_id))
 
     @application.get("/runs/{run_id}/heatmaps")
     def get_heatmaps(run_id: int, method: str = "grad-cam") -> list[dict[str, Any]]:

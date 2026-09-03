@@ -269,6 +269,42 @@ export interface RootCause {
   evidence: string | null;
 }
 
+/** One object/prediction overlap, measured on masks. */
+export interface ImageCoverage {
+  truth_finding_id: number;
+  pred_finding_id: number;
+  /** Share of the ground-truth mask the prediction covers, 0-1. */
+  coverage: number;
+}
+
+/**
+ * What shape the model's mistake took on one image.
+ *
+ * A second lens over the same findings, never a replacement: `outcomes` are
+ * the finding-level counts, unchanged. `verdict` says whether the image was
+ * handled cleanly, or whether one prediction was stretched across several
+ * objects (`merged`) or several predictions landed on one (`split`).
+ */
+export interface ImageDiagnosis {
+  id: number;
+  run_id: number;
+  image_id: number;
+  gt_count: number;
+  pred_count: number;
+  outcomes: Record<string, number>;
+  verdict: string;
+  merged: boolean;
+  split: boolean;
+  objects_untouched: number;
+  predictions_on_nothing: number;
+  /** Stored with the row: merge and split counts are sensitive to it. */
+  cover_hit: number;
+  cover_miss: number;
+  method: string;
+  created_at: string;
+  coverage: ImageCoverage[];
+}
+
 export interface ImageRow {
   id: number;
   run_id: number;

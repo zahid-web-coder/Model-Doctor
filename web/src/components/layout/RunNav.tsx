@@ -10,6 +10,7 @@ export function RunNav({ runId }: { runId: string }) {
     { label: "Root Causes", href: `/runs/${runId}/root-causes` },
     { label: "Clusters", href: `/runs/${runId}/clusters` },
     { label: "Failures", href: `/runs/${runId}/failures` },
+    { label: "Images", href: `/runs/${runId}/images` },
     { label: "Heatmaps", href: `/runs/${runId}/heatmaps` },
     { label: "Recommendations", href: `/runs/${runId}/recommendations` },
   ];

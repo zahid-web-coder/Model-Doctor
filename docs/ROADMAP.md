@@ -463,6 +463,68 @@ precision/recall curve. The evaluation pass re-runs inference unthresholded.
 
 ---
 
+## Milestone 11 — MCP tools for run comparison · **Completed (Phase 1)**
+
+Hand the stored evidence to a reasoning model in a shape it can compare,
+without re-deriving anything and without being able to change anything.
+
+**Delivered.** Two read-only MCP tools over stdio. `list_runs` says what each
+run is, what evidence it carries, and which runs share its checkpoint.
+`get_analysis` returns the evidence for a set of runs in one comparison-friendly
+structure: identity and configuration differences, outcome counts with derived
+precision/recall and the rule behind them, COCO mAP/AR with its protocol, factor
+lift against a control rate, failure groups with their outcome mix,
+recommendations with their evidential status, deltas against a baseline, which
+groups replicate, and what each run lacks with the command that produces it.
+
+Scope:
+
+| Item | Status |
+| --- | --- |
+| `app/comparison.py` — every comparison rule, once, pure | Completed |
+| `app/recommendations.py` delegates qualification and replication to it | Completed |
+| `storage.connect_read_only` shared by the HTTP API and the MCP server | Completed |
+| `app/mcp_server.py` — `list_runs`, `get_analysis`, stdio only | Completed |
+| Input validation: ids only, capped, unknown ids named, baseline checked | Completed |
+| Sentinels normalised: COCOeval `-1` and undefined lift become `null` | Completed |
+| Evidence gaps reported with the remedy command | Completed |
+| Project `.mcp.json`; `requirements-mcp.txt` without torch or FastAPI | Completed |
+| Run labels/notes, persisted family and classes, dataset hash, per-class outcomes, image-level flips | Phase 2 |
+| `/compare` on the HTTP API from the same module; retire the browser's copy of the rules | Phase 2 |
+
+**Read-only, by construction.** No tool deletes, mutates, trains or triggers
+inference. The database is opened `mode=ro`, the transport opens no port, runs
+are addressed by id and the database location comes from configuration alone.
+
+---
+
+## Milestone 12 — Image-level diagnosis · **Completed**
+
+Answer "how many photographs did the model handle correctly, and what shape was
+the mistake" beside the existing "which object failed and why".
+
+**Delivered.** Schema version 11 adds `image_diagnoses` and `image_coverage`.
+One verdict per image, measured on outlines, with the thresholds that produced
+it and every pairwise coverage stored so it can be re-read at a different one.
+
+Scope:
+
+| Item | Status |
+| --- | --- |
+| `app/image_diagnosis.py` — the pass, with a pure classifier | Completed |
+| Schema version 11: `image_diagnoses`, `image_coverage` | Completed |
+| Merge and split detected on masks; no box fallback | Completed |
+| `partial_coverage` for the band between the thresholds, both sides | Completed |
+| `GET /runs/{id}/image-diagnoses`, `GET /runs/{id}/images/{id}/coverage` | Completed |
+| MCP `get_analysis` gains an `images` block | Completed |
+| Images screen, filterable by verdict and by object count | Completed |
+| 29 tests, including that findings and outcomes are unchanged | Completed |
+
+**Additive, and proven so.** Every finding, outcome count and evaluation across
+all eight stored runs is byte-identical after the pass (D-017, D-040).
+
+---
+
 ## Blocked pending resources
 
 Not milestones, but they gate progress:

@@ -1034,3 +1034,79 @@ Real mAP and real compute cost, per run. Schema version 9.
 
 RF-DETR is the more accurate model on this dataset and roughly twelve times the
 CPU cost. Box scores reproduce the standalone comparison script exactly.
+
+## Milestone 11 — MCP Tools for Run Comparison · 2026-09-02
+
+Two read-only MCP tools, so a reasoning model can compare runs over the stored
+evidence and propose next actions without Model Doctor doing either for it.
+
+### Added
+
+- `app/comparison.py` — every comparison rule in one pure module: factor
+  qualification, group replication, evaluation and benchmark comparability,
+  the five-outcome collapse to precision/recall with its rule attached, config
+  differences, cross-run deltas, evidence gaps with remedy commands, and the
+  translation of stored sentinels (`-1.0`, `NULL` lift) to `null`.
+- `app/mcp_server.py` — `list_runs` and `get_analysis` over stdio, built on
+  `MCPServer` from the official `mcp` 2.x SDK. Aggregates only; never
+  findings, images or file bytes. Ids capped by `MD_MCP_MAX_RUNS`.
+- `storage.connect_read_only` — the one `mode=ro` opener, now used by both the
+  HTTP API and the MCP server. `storage.has_table` and
+  `storage.load_job_for_run` as public readers.
+- `requirements-mcp.txt`, a project `.mcp.json`, and docs: D-039,
+  SCHEMA §9, ARCHITECTURE entries, an ONBOARDING section.
+- `tests/test_comparison.py` (35) and `tests/test_mcp_server.py` (21): every
+  rule pinned; both tools driven through the real protocol; the database
+  proven byte-identical after calls; writes refused at the engine; a
+  fresh-interpreter test that importing the server loads neither torch nor
+  FastAPI.
+
+### Changed
+
+- `app/recommendations.py` delegates `_qualifies` and the replication verdict
+  to `app/comparison.py`. Behaviour unchanged; the rule now has one home.
+- `app/api.py::read_only` wraps `storage.connect_read_only` and only translates
+  its failures to HTTP.
+
+### Decided
+
+- **The browser keeps its copy of the comparison rules for now.** Retiring it
+  needs a `/compare` endpoint served from `app/comparison.py`; that is Phase 2,
+  recorded in D-039.
+- **Detector family is reported from the job that produced a run, or `null`.**
+  Detecting it means loading the checkpoint, which a read-only surface must
+  never do. Persisting it is a schema change and its own decision.
+
+## Milestone 12 — Image-level Diagnosis · 2026-09-02
+
+A verdict per photograph beside the verdict per object. Schema version 11.
+
+### Added
+
+- `app/image_diagnosis.py` — ten verdicts per image, measured on outlines, with
+  a pure `classify` taking a coverage matrix and returning a verdict.
+- `image_diagnoses` and `image_coverage`. The second holds the object/prediction
+  pairs behind each verdict, so a merge is traceable to the prediction that
+  caused it rather than inferred.
+- `GET /runs/{id}/image-diagnoses`, `GET /runs/{id}/images/{id}/coverage`; an
+  `images` block on MCP `get_analysis`; an Images screen filterable by verdict
+  and by object count.
+- 29 tests, including that findings, outcome counts and evaluations are
+  unchanged by the pass.
+
+### Fixed
+
+- `run_footprint` counted `image_coverage` by a `run_id` it does not have.
+  It reaches its run through its diagnosis, as `cluster_members` does through
+  its cluster; the existing delete tests caught it.
+
+### Decided
+
+- **`partial_coverage` names the band between the thresholds, on both sides.**
+  Without it an image holding a real false negative was reported clean — found
+  on image 629, whose second object was covered 0.472 by the prediction matched
+  to its neighbour. The same hole existed on the prediction side.
+- **No box fallback.** Boxes overstate diagonal objects by up to 2.9x; a wrong
+  measurement is worse than a missing one.
+- **`empty` is separate from `clean`**, so a blank test set cannot score
+  perfectly.

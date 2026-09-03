@@ -1,0 +1,14 @@
+# Model Doctor — MCP server dependencies
+#
+# The MCP server is a second read-only projection of the schema, beside the
+# HTTP API. It reads SQLite and does arithmetic on stored rows, so like the
+# API it needs neither torch, ultralytics, opencv nor numpy — and unlike the
+# API it needs no FastAPI either. A test asserts both stay true:
+#   tests/test_mcp_server.py::test_importing_the_server_loads_neither_torch_nor_fastapi
+#
+# Install for a deployment:
+#   pip install -r requirements-mcp.txt
+#
+# For development, or to run any analysis pass, use requirements.txt instead.
+
+mcp>=2.1,<3   # Official Python SDK; 2.x renamed FastMCP to MCPServer

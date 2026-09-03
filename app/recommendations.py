@@ -35,9 +35,9 @@ from typing import Any
 import config
 from app import storage
 from app.clustering import DISCRIMINATING_METHOD, UNEXPLAINED_LABEL
+from app.comparison import factor_qualifies, outcomes_agree
 from utils.exceptions import ModelDoctorError
 from utils.logging_utils import get_logger
-from utils.statistics import fisher_exact_two_sided
 
 logger = get_logger(__name__)
 
@@ -99,10 +99,11 @@ class GroupEvidence:
 def _qualifies(lift: float | None, p_value: float) -> bool:
     """Return whether a factor is more common in failures than in successes.
 
-    The bar a factor must clear before any action may cite it: measurably more
-    frequent among failures, and distinguishable from chance.
+    The rule itself lives in :func:`app.comparison.factor_qualifies`, shared
+    with every other consumer that asks the question, so this module and the
+    MCP server cannot disagree about which factors are worth citing.
     """
-    return lift is not None and lift > 1.0 and p_value < 0.05
+    return factor_qualifies(lift, p_value)
 
 
 def comparable_runs(
@@ -234,9 +235,9 @@ def _outcome_agrees(
             """,
             (other["id"],),
         ).fetchone()["n"]
-        verdicts.append(
-            fisher_exact_two_sided(here, size, there, other["size"]) >= 0.05
-        )
+        # The statistical decision is app.comparison's, so a cross-run report
+        # and this pass reach the same verdict from the same counts.
+        verdicts.append(outcomes_agree(here, size, there, other["size"]))
 
     if not verdicts:
         return None

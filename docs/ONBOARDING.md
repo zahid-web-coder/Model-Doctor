@@ -201,3 +201,29 @@ Uploads are kept in `MD_WORKSPACE_DIR` (default `~/.model-doctor/workspace`),
 outside the repository. Each analysis keeps its own copy of the dataset, so the
 newest `MD_WORKSPACE_KEEP` workspaces (5 by default) are retained and older
 ones are removed when a new analysis starts.
+
+## Letting Claude compare runs (MCP)
+
+Model Doctor's stored analysis is available to a reasoning model through two
+read-only MCP tools, `list_runs` and `get_analysis`. Nothing here can write:
+the database is opened `mode=ro`, the transport is stdio, and there is no tool
+that deletes, mutates, trains, or runs inference.
+
+The repository ships a project-scoped `.mcp.json` that registers the server
+as `model-doctor` against `db/manual.db`. In Claude Code, open the project and
+approve the server once when prompted, or register it yourself:
+
+```bash
+claude mcp add -s project model-doctor -e MD_DB_PATH="$PWD/db/manual.db" -- .venv/bin/python -m app.mcp_server
+```
+
+Then ask, for example:
+
+> Compare runs 4, 5 and 7 and tell me what I should investigate next. Cite
+> the evidence from the Model Doctor analysis and clearly distinguish evidence
+> from inference.
+
+The server needs only `requirements-mcp.txt` — no torch, no FastAPI — so it
+can run on a machine that has the database and nothing else. Point
+`MD_DB_PATH` at a different database to serve different runs; there is no
+tool argument for it, deliberately.

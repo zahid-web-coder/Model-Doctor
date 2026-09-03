@@ -285,6 +285,58 @@ A second detector family behind the same contract.
 
 ---
 
+### `app/image_diagnosis.py` — Completed
+
+**What shape the model's mistake took, per photograph.**
+
+- A second lens over the same findings, never a replacement. `app/diagnosis.py`
+  answers which object failed; this answers how many images were handled
+  cleanly, and whether one prediction was stretched across several objects
+  (`merged`) or several landed on one (`split`).
+- Geometry is masks. A box around a diagonal object sweeps across its
+  neighbours, so box overlap manufactures relationships the objects do not
+  have. A run without outlines is reported as not measured; there is no box
+  fallback (D-040).
+- `classify` is pure — coverage matrix in, verdict out — so every rule and its
+  precedence is testable without a database or an image.
+- Thresholds are stored with each verdict and every pairwise coverage is kept,
+  so a consumer can re-threshold without re-running the pass.
+
+---
+
+### `app/comparison.py` — Completed
+
+**Every rule that decides what may be compared, written once and pure.**
+
+- Factor qualification (lift above one, significant), group replication
+  (Fisher's exact test on the miss share), evaluation comparability (same
+  evaluator, sweep, IoU range and detection cap), benchmark comparability
+  (same device), and the collapse of five outcomes to precision and recall —
+  with the rule attached to every figure it produces.
+- Rows in, dictionaries out. No SQL, no HTTP, no MCP. `app/recommendations.py`
+  delegates its two decisions here, so the recommendations pass and any
+  cross-run report cannot disagree about whether a pattern held (D-039).
+- Sentinels are translated at this boundary: COCOeval's `-1.0` and an
+  undefined lift both become `None`, so nothing downstream averages them in.
+
+---
+
+### `app/mcp_server.py` — Completed
+
+**A second read-only projection of the schema, for a reasoning model.**
+
+- Two tools over stdio: `list_runs` and `get_analysis`. Like `app/api.py` it
+  adds no analysis; it assembles `app/storage.py` rows through
+  `app/comparison.py` and returns aggregates only — never findings, images or
+  file bytes.
+- Read-only by construction: `storage.connect_read_only` (shared with the
+  HTTP API), no port, runs addressed by id, database location from
+  configuration alone. No tool deletes, mutates, trains or triggers inference.
+- Needs neither torch nor FastAPI; `requirements-mcp.txt` says so and a
+  fresh-interpreter test enforces it.
+
+---
+
 ## Data flow
 
 ```
