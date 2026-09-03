@@ -151,7 +151,10 @@ export function Header() {
           width="min-w-[300px]"
           options={runs.map((r) => ({
             key: String(r.id),
-            label: `#${r.id}`,
+            // The id stays in the label even when a run is named. Names are
+            // labels rather than keys — two runs may share one — and the id is
+            // what every URL, export and log line refers to.
+            label: r.name ? `#${r.id} ${r.name}` : `#${r.id}`,
             note: [
               modelName(r),
               modelFingerprint(r),

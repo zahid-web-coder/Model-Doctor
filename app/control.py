@@ -63,6 +63,7 @@ from typing import Any
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
 
 import config
 from app import jobs, storage, validation, workspace
@@ -78,6 +79,19 @@ logger = get_logger(__name__)
 _UPLOADED_FILE = File(...)
 _OPTIONAL_FAMILY = Form(default=None)
 _SPLIT_FIELD = Form(default="test")
+
+
+class RunNameBody(BaseModel):
+    """The body of a rename.
+
+    ``None`` and a blank string both clear the name — the field is optional so
+    that clearing is expressible, rather than requiring a separate route to
+    undo what this one did. Storage does the trimming and the length check, so
+    the rule lives with the column it protects; the bound here only stops an
+    unreasonable payload before it reaches the database.
+    """
+
+    name: str | None = Field(default=None, max_length=1000)
 
 
 def _checks(result: validation.ValidationResult) -> dict[str, Any]:
@@ -149,11 +163,11 @@ def create_app() -> FastAPI:
         allow_origins=list(config.CORS_ORIGINS),
         allow_credentials=False,
         # Enumerated rather than "*", so the browser is told exactly what this
-        # service accepts and nothing is enabled by accident. DELETE is here
-        # because run deletion lives on this API; the reader still allows GET
-        # alone, which is what makes its read-only guarantee visible from
-        # outside the process.
-        allow_methods=["GET", "POST", "DELETE"],
+        # service accepts and nothing is enabled by accident. DELETE and PATCH
+        # are here because deleting and renaming a run live on this API; the
+        # reader still allows GET alone, which is what makes its read-only
+        # guarantee visible from outside the process.
+        allow_methods=["GET", "POST", "PATCH", "DELETE"],
         allow_headers=["*"],
     )
 
@@ -396,6 +410,29 @@ def create_app() -> FastAPI:
             "total_rows": sum(counts.values()),
             "heatmap_files": files,
         }
+
+    @application.patch("/runs/{run_id}")
+    def rename_run(run_id: int, body: RunNameBody) -> dict[str, Any]:
+        """Set or clear a run's name.
+
+        **The only field on a run that can be written.** Everything else
+        records what an analysis pass did, and rewriting any of it would make
+        the stored parameters disagree with the findings derived from them.
+        What a run is *called* belongs to the reader instead: `best.pt` is
+        Ultralytics' default filename, so several runs are otherwise
+        indistinguishable without reading their ids.
+
+        On the control API for the same reason delete is: the read API opens
+        SQLite read-only and declares no non-GET route (D-037).
+        """
+        with storage.connect() as connection:
+            try:
+                run = storage.rename_run(connection, run_id, body.name)
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            if run is None:
+                raise HTTPException(status_code=404, detail=f"No run with id {run_id}.")
+        return {"run_id": run.id, "name": run.name}
 
     @application.delete("/runs/{run_id}")
     def delete_run(run_id: int) -> dict[str, Any]:

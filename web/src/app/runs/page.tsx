@@ -5,6 +5,7 @@ import { api } from "@/lib/api/client";
 import { modelName, datasetName } from "@/lib/derive";
 import { num } from "@/lib/format";
 import { DeleteRunButton } from "@/components/runs/DeleteRunButton";
+import { RunName } from "@/components/runs/RunName";
 
 /**
  * Run history, from `/runs`.
@@ -55,6 +56,7 @@ export default async function RunsPage() {
               <thead className="sticky top-0 bg-card border-b border-border/40">
                 <tr className="text-left text-slate">
                   <th className="font-medium px-4 py-3">Run ID</th>
+                  <th className="font-medium px-3 py-3">Name</th>
                   <th className="font-medium px-3 py-3">Split</th>
                   <th className="font-medium px-3 py-3">Model</th>
                   <th className="font-medium px-3 py-3">Dataset</th>
@@ -73,6 +75,9 @@ export default async function RunsPage() {
                         #{run.id} <ArrowRight size={12} />
                       </Link>
                     </td>
+                    <td className="px-3 py-3 max-w-[220px]">
+                      <RunName runId={run.id} name={run.name} />
+                    </td>
                     <td className="px-3 py-3">
                       <span className="text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-black/5 text-slate">
                         {run.split}
@@ -89,7 +94,7 @@ export default async function RunsPage() {
                     <td className="px-2 py-3 text-right">
                       <DeleteRunButton
                         runId={run.id}
-                        label={`#${run.id} · ${modelName(run)}`}
+                        label={`#${run.id} · ${run.name ?? modelName(run)}`}
                       />
                     </td>
                   </tr>

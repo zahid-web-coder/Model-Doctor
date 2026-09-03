@@ -50,7 +50,7 @@ logger = get_logger(__name__)
 # Bumped when the schema changes in a way that existing readers must know
 # about. Recorded in the database so a consumer can detect a mismatch instead
 # of failing on a missing column.
-SCHEMA_VERSION: int = 11
+SCHEMA_VERSION: int = 12
 
 SCHEMA_STATEMENTS: tuple[str, ...] = (
     """
@@ -73,7 +73,8 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
         confidence_threshold    REAL    NOT NULL,
         match_iou_threshold     REAL    NOT NULL,
         localization_iou_floor  REAL    NOT NULL,
-        image_size              INTEGER NOT NULL
+        image_size              INTEGER NOT NULL,
+        name                    TEXT
     )
     """,
     # One row per image attempted. `error` is populated when an image could not
@@ -481,6 +482,10 @@ class RunRecord:
     match_iou_threshold: float
     localization_iou_floor: float
     image_size: int
+    #: What a reader called this run, or None if never named. Never a blank
+    #: string: clearing a name restores the id as the run's only identity,
+    #: and "" would render as a run with an invisible name.
+    name: str | None = None
 
 
 @dataclass(frozen=True)
@@ -595,6 +600,44 @@ def connect_read_only(path: Path | None = None):
         connection.close()
 
 
+#: Columns added to tables that already existed, as ``(table, column, type)``.
+#:
+#: Every schema change before version 12 added a whole table, which
+#: ``CREATE TABLE IF NOT EXISTS`` handles on its own. A column added to an
+#: existing table does not work that way: the create statement is skipped for a
+#: database that already has the table, so the column would appear only on
+#: freshly created files and every existing database would keep reading and
+#: writing without it. Each entry here is applied with ``ALTER TABLE`` when
+#: absent.
+#:
+#: Nullable and without a default, so the migration cannot alter a stored value
+#: — an unnamed run reads as ``NULL``, which is what it was before the column
+#: existed.
+_ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
+    ("runs", "name", "TEXT"),
+)
+
+
+def _add_missing_columns(connection: sqlite3.Connection) -> None:
+    """Add any column in :data:`_ADDED_COLUMNS` the database does not have.
+
+    Idempotent, and safe on a database created before the column existed: the
+    table is inspected first, so this neither fails on a second call nor
+    depends on the recorded schema version to decide what to do.
+    """
+    for table, column, declaration in _ADDED_COLUMNS:
+        present = {
+            row["name"]
+            for row in connection.execute(f"PRAGMA table_info({table})").fetchall()
+        }
+        if not present:
+            continue  # The table itself is absent; nothing to widen.
+        if column in present:
+            continue
+        connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
+        logger.info("Added column %s.%s", table, column)
+
+
 def initialise_database(connection: sqlite3.Connection) -> None:
     """Create tables and indexes if they are not already present.
 
@@ -603,6 +646,7 @@ def initialise_database(connection: sqlite3.Connection) -> None:
     """
     for statement in SCHEMA_STATEMENTS:
         connection.execute(statement)
+    _add_missing_columns(connection)
 
     existing = connection.execute("SELECT version FROM schema_info").fetchone()
     if existing is None:
@@ -805,6 +849,7 @@ def save_dataset_diagnosis(
 # ---------------------------------------------------------------------------
 def _row_to_run(row: sqlite3.Row) -> RunRecord:
     """Convert a ``runs`` row into a :class:`RunRecord`."""
+    columns = row.keys()
     return RunRecord(
         id=row["id"],
         created_at=row["created_at"],
@@ -816,6 +861,10 @@ def _row_to_run(row: sqlite3.Row) -> RunRecord:
         match_iou_threshold=row["match_iou_threshold"],
         localization_iou_floor=row["localization_iou_floor"],
         image_size=row["image_size"],
+        # Absent from databases written before schema 12, which is why this is
+        # read defensively rather than by subscript. `in` on the row itself
+        # would search its *values*, so the column list is asked explicitly.
+        name=row["name"] if "name" in columns else None,
     )
 
 
@@ -829,6 +878,49 @@ def list_runs(connection: sqlite3.Connection) -> list[RunRecord]:
     """Return every run, newest first."""
     rows = connection.execute("SELECT * FROM runs ORDER BY id DESC").fetchall()
     return [_row_to_run(row) for row in rows]
+
+
+#: Longest name a run may carry. Generous for a label, short enough that a
+#: pasted paragraph cannot make the header unreadable.
+MAX_RUN_NAME = 80
+
+
+def rename_run(
+    connection: sqlite3.Connection, run_id: int, name: str | None
+) -> RunRecord | None:
+    """Set or clear a run's name, returning the run as it now stands.
+
+    A name is the only writable field on a run. Everything else records what an
+    analysis pass did, and rewriting that would make the stored evidence
+    disagree with the findings derived from it — but what a run is *called* is
+    the reader's, not the pass's.
+
+    Blank input clears the name rather than storing ``""``. An empty string is
+    a name that renders as nothing, which is indistinguishable on screen from
+    an unnamed run while behaving differently everywhere else.
+
+    Args:
+        connection: An open connection.
+        run_id: The run to rename.
+        name: The new name, or None/blank to clear it.
+
+    Returns:
+        The updated run, or None if no run has that id.
+
+    Raises:
+        ValueError: If the name exceeds :data:`MAX_RUN_NAME` characters.
+    """
+    cleaned = (name or "").strip()
+    if len(cleaned) > MAX_RUN_NAME:
+        raise ValueError(
+            f"A run name may be at most {MAX_RUN_NAME} characters, got {len(cleaned)}."
+        )
+    cursor = connection.execute(
+        "UPDATE runs SET name = ? WHERE id = ?", (cleaned or None, run_id)
+    )
+    if cursor.rowcount == 0:
+        return None
+    return load_run(connection, run_id)
 
 
 @dataclass(frozen=True)
