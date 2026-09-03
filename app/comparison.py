@@ -118,6 +118,7 @@ REMEDIES: Mapping[str, str] = {
     "groups": "python -m app.clustering --run {run_id}",
     "recommendations": "python -m app.recommendations --run {run_id}",
     "mask_findings": "python -m app.mask_diagnosis --run {run_id}",
+    "image_diagnoses": "python -m app.image_diagnosis --run {run_id}",
 }
 
 
@@ -602,3 +603,93 @@ def evidence_gaps(
                     {"run_id": rid, "missing": kind, "how": remedy.format(run_id=rid)}
                 )
     return gaps
+
+
+# ---------------------------------------------------------------------------
+# Image-level summary (schema version 11)
+# ---------------------------------------------------------------------------
+
+#: Verdicts in the order they are reported: the good state first, then the
+#: shapes a mistake can take, roughly by how much they say about the model.
+IMAGE_VERDICT_ORDER: tuple[str, ...] = (
+    "clean",
+    "empty",
+    "zero_prediction",
+    "merged",
+    "split",
+    "merged_and_split",
+    "partly_missed",
+    "spurious",
+    "partly_missed_and_spurious",
+    "partial_coverage",
+)
+
+
+def image_summary(rows: Sequence[Any]) -> dict[str, Any] | None:
+    """Aggregate one run's image diagnoses, or ``None`` when not measured.
+
+    **``empty`` is reported separately and never counted as clean.** An image
+    with nothing to find and nothing found is correct behaviour, but folding it
+    into the clean rate would let a test set of blank photographs score
+    perfectly. The clean rate is therefore over images that had something to
+    find or something predicted.
+
+    The single/multi split is reported because an object's chances depend on
+    what else is in frame: on this project's data an object in a multi-object
+    image failed 2.1x to 2.8x more often, significantly on three runs of five.
+    It is offered as a measurement, not as a conclusion.
+
+    Thresholds travel with the numbers, since merge and split counts are
+    sensitive to ``cover_hit``.
+    """
+    if not rows:
+        return None
+
+    verdicts: dict[str, int] = {}
+    for row in rows:
+        verdicts[row.verdict] = verdicts.get(row.verdict, 0) + 1
+
+    empty = verdicts.get("empty", 0)
+    scored = [r for r in rows if r.verdict != "empty"]
+    clean = verdicts.get("clean", 0)
+
+    def failures(group: Sequence[Any]) -> int:
+        return sum(
+            r.outcomes["false_negative"]
+            + r.outcomes["false_positive"]
+            + r.outcomes["poor_localization"]
+            + r.outcomes["wrong_class"]
+            for r in group
+        )
+
+    def block(group: Sequence[Any]) -> dict[str, Any]:
+        objects = sum(r.gt_count for r in group)
+        failed = failures(group)
+        return {
+            "images": len(group),
+            "objects": objects,
+            "failures": failed,
+            "failures_per_object": round(failed / objects, 4) if objects else None,
+            "clean_images": sum(1 for r in group if r.verdict == "clean"),
+        }
+
+    single = [r for r in scored if r.gt_count == 1]
+    multi = [r for r in scored if r.gt_count > 1]
+    first = rows[0]
+    return {
+        "total": len(rows),
+        "scored": len(scored),
+        "empty": empty,
+        "clean": clean,
+        "clean_rate": round(clean / len(scored), 4) if scored else None,
+        "affected": len(scored) - clean,
+        "verdicts": {v: verdicts[v] for v in IMAGE_VERDICT_ORDER if v in verdicts},
+        "merged_images": sum(1 for r in rows if r.merged),
+        "split_images": sum(1 for r in rows if r.split),
+        "by_object_count": {"single": block(single), "multi": block(multi)},
+        "thresholds": {
+            "cover_hit": first.cover_hit,
+            "cover_miss": first.cover_miss,
+            "method": first.method,
+        },
+    }

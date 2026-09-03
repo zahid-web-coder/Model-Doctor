@@ -1597,3 +1597,64 @@ that `app.recommendations` delegates to the same functions.
 in-memory transport, asserts the database is byte-identical after every call,
 that the shared opener refuses writes at the engine, and — in a fresh
 interpreter — that importing the server loads neither torch nor FastAPI.
+
+## D-040 — Image-level diagnosis is a second lens, additive, and measured on masks
+
+**Status:** Accepted · Milestone 12
+
+**Decision.** A new pass, `app/image_diagnosis.py`, assigns one verdict per
+image — `clean`, `empty`, `zero_prediction`, `merged`, `split`,
+`merged_and_split`, `partly_missed`, `spurious`,
+`partly_missed_and_spurious`, `partial_coverage` — and stores it in two
+additive tables at schema version 11. Nothing about the outcome taxonomy,
+finding counts, matching or mAP changes (D-017 stands).
+
+**Reasoning.** One prediction stretched across two annotated objects produced a
+`poor_localization` *and* a `false_negative`: two findings for one model error,
+and the second read as "the model never saw this object" when it had covered
+80% of it. That points at the wrong fix — more training data for small objects
+does not help a merge. A finding knows only its own pairing; an image can see
+all of them at once. Measured on the reference data, 4 of 33 false negatives in
+a run are merger artefacts, and 9 of 29 false positives are split detections.
+
+**Masks, never boxes, and no fallback.** An axis-aligned box around a diagonal
+object sweeps across its neighbours: on this data boxes overstate object area
+by 1.2x to 2.9x, and two flights whose masks share 14% had boxes sharing 92%. A
+run without stored outlines is reported as *not measured* rather than analysed
+from boxes — a wrong measurement is worse than a missing one.
+
+**Thresholds are reported, not hidden.** A prediction counts as finding an
+object at `IMAGE_COVER_HIT` (0.50) and as missing it below `IMAGE_COVER_MISS`
+(0.25). The miss threshold is well supported: sweeping 0.05 to 0.30 changes the
+count of untouched objects by zero on one run and by two on another, because
+almost nothing lives in that band — 0.5% of 430 objects. The hit threshold is
+**genuinely sensitive**: merge and split counts move from 8 to 2 across
+0.30-0.90 on one run. It is therefore stored on every row, and every pairwise
+coverage above a floor is persisted, so a consumer can re-threshold without
+re-running anything. This mirrors `run_evaluations` storing its confidence
+sweep: a figure without its protocol is not a measurement.
+
+**`partial_coverage` exists because the two thresholds leave a band.** An
+object reached but not taken — or a prediction that reaches an object without
+taking it — is neither found nor missed. Unnamed, it let an image holding a
+real false negative be reported `clean`; found on image 629, whose second
+object was covered 0.472. The band is named on both sides.
+
+**A `poor_localization` may sit in a `clean` image, and that is not a
+contradiction.** This pass measures mask coverage; the finding-level outcome
+measures box overlap. An outline covering 99% of an object whose box scored
+0.28 IoU is exactly that — the mask was right and the box was loose. Twenty-six
+such images exist in the reference data, and reporting both is the point of a
+second lens (D-036).
+
+**`empty` is separate from `clean`.** An image with nothing to find and nothing
+found is correct behaviour, but folding it into the clean rate would let a test
+set of blank photographs score perfectly.
+
+**Rejected.** *Changing the outcome taxonomy so a merge stops producing a false
+negative* — mAP depends on the current counting and D-017 is deliberate.
+*Replacing the failures view* — both lenses are true and answer different
+questions. *Percentile-calibrating the coverage thresholds like `small_object`
+(D-032)* — coverage is a ratio with a physical meaning, not a dataset-relative
+size, and calibrating per run would make "merged" mean something different in
+every run and destroy cross-run comparison.

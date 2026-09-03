@@ -1076,3 +1076,37 @@ evidence and propose next actions without Model Doctor doing either for it.
 - **Detector family is reported from the job that produced a run, or `null`.**
   Detecting it means loading the checkpoint, which a read-only surface must
   never do. Persisting it is a schema change and its own decision.
+
+## Milestone 12 — Image-level Diagnosis · 2026-09-02
+
+A verdict per photograph beside the verdict per object. Schema version 11.
+
+### Added
+
+- `app/image_diagnosis.py` — ten verdicts per image, measured on outlines, with
+  a pure `classify` taking a coverage matrix and returning a verdict.
+- `image_diagnoses` and `image_coverage`. The second holds the object/prediction
+  pairs behind each verdict, so a merge is traceable to the prediction that
+  caused it rather than inferred.
+- `GET /runs/{id}/image-diagnoses`, `GET /runs/{id}/images/{id}/coverage`; an
+  `images` block on MCP `get_analysis`; an Images screen filterable by verdict
+  and by object count.
+- 29 tests, including that findings, outcome counts and evaluations are
+  unchanged by the pass.
+
+### Fixed
+
+- `run_footprint` counted `image_coverage` by a `run_id` it does not have.
+  It reaches its run through its diagnosis, as `cluster_members` does through
+  its cluster; the existing delete tests caught it.
+
+### Decided
+
+- **`partial_coverage` names the band between the thresholds, on both sides.**
+  Without it an image holding a real false negative was reported clean — found
+  on image 629, whose second object was covered 0.472 by the prediction matched
+  to its neighbour. The same hole existed on the prediction side.
+- **No box fallback.** Boxes overstate diagonal objects by up to 2.9x; a wrong
+  measurement is worse than a missing one.
+- **`empty` is separate from `clean`**, so a blank test set cannot score
+  perfectly.

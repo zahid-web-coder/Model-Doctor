@@ -498,6 +498,33 @@ are addressed by id and the database location comes from configuration alone.
 
 ---
 
+## Milestone 12 — Image-level diagnosis · **Completed**
+
+Answer "how many photographs did the model handle correctly, and what shape was
+the mistake" beside the existing "which object failed and why".
+
+**Delivered.** Schema version 11 adds `image_diagnoses` and `image_coverage`.
+One verdict per image, measured on outlines, with the thresholds that produced
+it and every pairwise coverage stored so it can be re-read at a different one.
+
+Scope:
+
+| Item | Status |
+| --- | --- |
+| `app/image_diagnosis.py` — the pass, with a pure classifier | Completed |
+| Schema version 11: `image_diagnoses`, `image_coverage` | Completed |
+| Merge and split detected on masks; no box fallback | Completed |
+| `partial_coverage` for the band between the thresholds, both sides | Completed |
+| `GET /runs/{id}/image-diagnoses`, `GET /runs/{id}/images/{id}/coverage` | Completed |
+| MCP `get_analysis` gains an `images` block | Completed |
+| Images screen, filterable by verdict and by object count | Completed |
+| 29 tests, including that findings and outcomes are unchanged | Completed |
+
+**Additive, and proven so.** Every finding, outcome count and evaluation across
+all eight stored runs is byte-identical after the pass (D-017, D-040).
+
+---
+
 ## Blocked pending resources
 
 Not milestones, but they gate progress:

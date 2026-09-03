@@ -1,7 +1,7 @@
 import type {
   Run, Outcomes, Finding, Page, FactorRate, Group, GroupMember,
   MaskFinding, ImageRow, Evaluation, Benchmark, HeatmapRow,
-  Recommendation, RootCause,
+  Recommendation, RootCause, ImageDiagnosis,
 } from "./rows";
 import { normaliseOutcomes } from "./rows";
 
@@ -131,6 +131,16 @@ export const api = {
     getOptional<RootCause[]>(`/runs/${id}/root-causes`, []),
 
   /** Which findings in a run have an explanation. Empty is a real answer. */
+  /**
+   * Image-level verdicts. Empty for a run analysed before the pass existed,
+   * which the Images screen reports as "not measured" rather than as clean.
+   */
+  imageDiagnoses: (id: string | number, coverage = false) =>
+    getOptional<ImageDiagnosis[]>(
+      `/runs/${id}/image-diagnoses?coverage=${coverage}`,
+      [],
+    ),
+
   heatmaps: (id: string | number) =>
     getOptional<HeatmapRow[]>(`/runs/${id}/heatmaps`, []),
 

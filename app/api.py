@@ -473,6 +473,36 @@ def create_app() -> FastAPI:
             filename=str(row["filename"]),
         )
 
+    @application.get("/runs/{run_id}/image-diagnoses")
+    def get_image_diagnoses(
+        run_id: int, verdict: str | None = None, coverage: bool = False
+    ) -> list[dict[str, Any]]:
+        """What shape the model's mistake took on each image (schema v11).
+
+        A second lens over the same findings, never a replacement: the
+        outcome counts on each row are the finding-level ones, unchanged.
+        `coverage` attaches the object/prediction pairs behind each verdict,
+        which is how a merge is distinguished from an independent miss.
+        """
+        with read_only() as connection:
+            resolve_run(connection, run_id)
+            if not has_table(connection, "image_diagnoses"):
+                return []
+            return serialise(
+                storage.load_image_diagnoses(
+                    connection, run_id, verdict, with_coverage=coverage
+                )
+            )
+
+    @application.get("/runs/{run_id}/images/{image_id}/coverage")
+    def get_image_coverage(run_id: int, image_id: int) -> list[dict[str, Any]]:
+        """Every measured object/prediction overlap on one image, strongest first."""
+        with read_only() as connection:
+            resolve_run(connection, run_id)
+            if not has_table(connection, "image_coverage"):
+                return []
+            return serialise(storage.load_image_coverage(connection, run_id, image_id))
+
     @application.get("/runs/{run_id}/heatmaps")
     def get_heatmaps(run_id: int, method: str = "grad-cam") -> list[dict[str, Any]]:
         """Every heatmap recorded for a run, joined to the finding it explains.

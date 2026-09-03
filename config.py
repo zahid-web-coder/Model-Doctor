@@ -272,6 +272,37 @@ MIN_RECOMMENDATION_GROUP_SIZE: Final[int] = int(os.getenv("MD_MIN_REC_GROUP", "1
 RECOMMENDATION_OUTCOME_SHARE: Final[float] = float(os.getenv("MD_REC_SHARE", "0.60"))
 
 # ---------------------------------------------------------------------------
+# Image-level diagnosis
+# ---------------------------------------------------------------------------
+# Share of a ground-truth object's mask a prediction must cover before it
+# counts as having *found* that object. Used to detect one prediction spanning
+# several objects (merged) and several predictions on one object (split).
+#
+# **Chosen from the data, and deliberately conservative.** Across 430 objects
+# in two runs the distribution of best-coverage is strongly bimodal: 72% above
+# 0.90, 15% below 0.05, and only 2% between 0.05 and 0.50. 0.50 sits at the top
+# of that valley, so a merge is reported only when a prediction really does
+# cover most of a second object.
+#
+# Merge and split counts *are* sensitive to this value — on one run they move
+# from 8 to 2 as it goes from 0.30 to 0.90 — so it is stored with every
+# diagnosis and the raw pairwise coverages are kept, letting a consumer
+# re-threshold without re-running anything.
+IMAGE_COVER_HIT: Final[float] = float(os.getenv("MD_IMAGE_COVER_HIT", "0.50"))
+
+# Share below which a prediction is treated as not touching an object at all.
+#
+# Well supported: sweeping 0.05 to 0.30 changes the count of untouched objects
+# by zero on one run and by two on another, because almost nothing lives in
+# that band. Any value in it gives the same answer.
+IMAGE_COVER_MISS: Final[float] = float(os.getenv("MD_IMAGE_COVER_MISS", "0.25"))
+
+# Pairs weaker than this are not persisted. Storing every (object, prediction)
+# combination would be quadratic in a crowded image for rows that say only
+# "these do not overlap", which the absence of a row already says.
+IMAGE_COVERAGE_FLOOR: Final[float] = float(os.getenv("MD_IMAGE_COVER_FLOOR", "0.01"))
+
+# ---------------------------------------------------------------------------
 # API layer
 # ---------------------------------------------------------------------------
 # Most runs one MCP `get_analysis` call may compare. A comparison is only

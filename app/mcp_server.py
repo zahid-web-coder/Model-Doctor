@@ -56,6 +56,7 @@ _EVIDENCE_TABLES: dict[str, str] = {
     "mask_findings": "mask_findings",
     "run_benchmarks": "benchmarks",
     "heatmaps": "heatmaps",
+    "image_diagnoses": "image_diagnoses",
 }
 
 #: Every tool here is safe to call repeatedly and changes nothing.
@@ -140,6 +141,8 @@ def _evidence_present(connection: sqlite3.Connection, run_id: int) -> dict[str, 
             )
         elif kind == "heatmaps":
             present[kind] = len(storage.load_heatmaps(connection, run_id))
+        elif kind == "image_diagnoses":
+            present[kind] = bool(storage.load_image_diagnoses(connection, run_id))
     return present
 
 
@@ -394,6 +397,14 @@ def create_server() -> MCPServer:
                         recommendations[rid]
                     ),
                     "benchmarks": comparison.benchmark_summary(benchmarks[rid]),
+                    # A second lens over the same findings: how many whole
+                    # photographs were handled correctly, and what shape the
+                    # mistakes took. None when the pass has not been run.
+                    "images": comparison.image_summary(
+                        storage.load_image_diagnoses(connection, rid)
+                        if storage.has_table(connection, "image_diagnoses")
+                        else []
+                    ),
                 }
                 if include_descriptive_groups:
                     block["descriptive_groups"] = comparison.group_summary(

@@ -1070,3 +1070,72 @@ present "not measured" rather than receive a number that will be read as one.
 `storage.connect_read_only` — the same `mode=ro` opener the HTTP API uses —
 the transport is stdio, runs are addressed by id, and the database location
 comes from `MD_DB_PATH` alone. There is no tool that writes.
+
+## 10. Image-level diagnosis (version 11)
+
+A second lens over the same findings. The tables above say *which object failed
+and in what way*; these say *how many photographs the model handled correctly,
+and when it did not, what shape the mistake took*. Both are true and neither
+derives the other. **No finding, outcome or metric changes** (D-017, D-040).
+
+### `image_diagnoses`
+
+One row per image per run.
+
+| Column | Meaning |
+| --- | --- |
+| `verdict` | One of the ten below |
+| `gt_count`, `pred_count` | Objects annotated, predictions made |
+| `correct` … `wrong_class` | The finding-level counts, carried through unchanged |
+| `merged`, `split` | Whether one prediction spanned several objects, or several landed on one |
+| `objects_untouched` | Objects no prediction reached |
+| `objects_partial` | Objects reached but not taken — between the thresholds |
+| `predictions_partial` | Predictions that reached an object without taking it |
+| `predictions_on_nothing` | Predictions that reached no object |
+| `cover_hit`, `cover_miss` | The thresholds that produced this verdict |
+| `method` | `mask`. There is no box variant, deliberately |
+
+| Verdict | Meaning |
+| --- | --- |
+| `clean` | Every object found, nothing extra |
+| `empty` | Nothing to find and nothing predicted — **not** counted as clean |
+| `zero_prediction` | Objects present, no prediction at all |
+| `merged` | One prediction stretched across several objects |
+| `split` | Several predictions on one object |
+| `merged_and_split` | Both, in one image |
+| `partly_missed` | Some objects found, others untouched |
+| `spurious` | Objects found, plus a prediction on nothing |
+| `partly_missed_and_spurious` | Both |
+| `partial_coverage` | Something sits between the thresholds, on either side |
+
+**Precedence.** `merged`/`split` outrank `partly_missed`: when a prediction
+spans two objects, the object the one-to-one matcher could not pair is a
+*consequence* of the merge, not an independent miss.
+
+**A `poor_localization` may sit in a `clean` image.** This pass measures mask
+coverage; the finding-level outcome measures box overlap. An outline covering
+99% of an object whose box scored 0.28 IoU is exactly that.
+
+### `image_coverage`
+
+The object/prediction pairs behind a verdict, so no aggregate is reported
+without its constituents. `pred_finding_id` is often a *different* finding from
+`truth_finding_id` — that is how a merge becomes visible.
+
+Only pairs above `MD_IMAGE_COVER_FLOOR` are stored; the absence of a row says
+the shapes do not overlap.
+
+```sql
+-- which annotated object was covered by a prediction the matcher gave elsewhere
+SELECT c.truth_finding_id, c.pred_finding_id, c.coverage
+FROM image_coverage c JOIN image_diagnoses d ON d.id = c.image_diagnosis_id
+WHERE d.run_id = ? AND d.verdict = 'merged'
+ORDER BY c.coverage DESC;
+```
+
+**Optional tables.** A run analysed before version 11, or one without stored
+outlines, simply has no rows and every surface reports "not measured".
+
+```bash
+python -m app.image_diagnosis --run 1        # requires app.mask_diagnosis first
+```

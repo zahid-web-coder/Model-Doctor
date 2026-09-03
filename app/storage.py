@@ -50,7 +50,7 @@ logger = get_logger(__name__)
 # Bumped when the schema changes in a way that existing readers must know
 # about. Recorded in the database so a consumer can detect a mismatch instead
 # of failing on a missing column.
-SCHEMA_VERSION: int = 10
+SCHEMA_VERSION: int = 11
 
 SCHEMA_STATEMENTS: tuple[str, ...] = (
     """
@@ -378,7 +378,68 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
     "CREATE INDEX IF NOT EXISTS idx_cluster_members_finding "
     "ON cluster_members(finding_id)",
     "CREATE INDEX IF NOT EXISTS idx_run_evaluations_run ON run_evaluations(run_id)",
+    # Added at schema version 11. A second lens over the *same* findings: one
+    # row per image saying what shape the model's mistake took, where the
+    # finding-level tables say which object failed. Nothing here changes a
+    # finding, an outcome or a count — D-017 and every existing query are
+    # untouched (D-040).
+    #
+    # The thresholds that produced a verdict are stored beside it, for the
+    # reason `run_evaluations` stores its confidence sweep: a figure without
+    # its protocol is not a measurement. Merge and split counts are genuinely
+    # sensitive to `cover_hit`, so a consumer must be able to see what it was.
+    """
+    CREATE TABLE IF NOT EXISTS image_diagnoses (
+        id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id                 INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+        image_id               INTEGER NOT NULL REFERENCES images(id) ON DELETE CASCADE,
+        gt_count               INTEGER NOT NULL,
+        pred_count             INTEGER NOT NULL,
+        correct                INTEGER NOT NULL,
+        false_negative         INTEGER NOT NULL,
+        false_positive         INTEGER NOT NULL,
+        poor_localization      INTEGER NOT NULL,
+        wrong_class            INTEGER NOT NULL,
+        verdict                TEXT    NOT NULL,
+        merged                 INTEGER NOT NULL,
+        split                  INTEGER NOT NULL,
+        objects_untouched      INTEGER NOT NULL,
+        objects_partial        INTEGER NOT NULL DEFAULT 0,
+        predictions_partial    INTEGER NOT NULL DEFAULT 0,
+        predictions_on_nothing INTEGER NOT NULL,
+        cover_hit              REAL    NOT NULL,
+        cover_miss             REAL    NOT NULL,
+        method                 TEXT    NOT NULL,
+        created_at             TEXT    NOT NULL,
+        UNIQUE (run_id, image_id)
+    )
+    """,
+    # The relationships behind a verdict, so no aggregate is reported without
+    # its constituents. One prediction covering two annotated objects is a
+    # *merge*, and this table is what lets a reader see that rather than infer
+    # an independent miss for the object the matcher could not pair.
+    #
+    # Only pairs above `IMAGE_COVERAGE_FLOOR` are stored: a row saying two
+    # shapes do not overlap carries no more than its own absence, and keeping
+    # every combination would be quadratic in a crowded image.
+    """
+    CREATE TABLE IF NOT EXISTS image_coverage (
+        id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+        image_diagnosis_id  INTEGER NOT NULL
+                            REFERENCES image_diagnoses(id) ON DELETE CASCADE,
+        truth_finding_id    INTEGER NOT NULL
+                            REFERENCES findings(id) ON DELETE CASCADE,
+        pred_finding_id     INTEGER NOT NULL
+                            REFERENCES findings(id) ON DELETE CASCADE,
+        coverage            REAL    NOT NULL,
+        UNIQUE (image_diagnosis_id, truth_finding_id, pred_finding_id)
+    )
+    """,
     "CREATE INDEX IF NOT EXISTS idx_run_benchmarks_run ON run_benchmarks(run_id)",
+    "CREATE INDEX IF NOT EXISTS idx_image_diagnoses_run "
+    "ON image_diagnoses(run_id, verdict)",
+    "CREATE INDEX IF NOT EXISTS idx_image_coverage_diag "
+    "ON image_coverage(image_diagnosis_id)",
     "CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status, created_at)",
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_token ON jobs(token)",
 )
@@ -2294,8 +2355,15 @@ def reconcile_stale_jobs(connection: sqlite3.Connection) -> int:
 #:
 #: Used only to *describe* what a delete will remove. The delete itself does not
 #: walk this list — see :func:`delete_run`.
+#:
+#: ``cluster_members`` and ``image_coverage`` reach their run indirectly, through
+#: a cluster and a diagnosis: both record a relationship and carry no ``run_id``
+#: of their own. :func:`run_footprint` counts them through that join, and a
+#: table added here without one would raise on its first count.
 RUN_OWNED_TABLES: tuple[str, ...] = (
     "images",
+    "image_diagnoses",
+    "image_coverage",
     "findings",
     "mask_findings",
     "root_causes",
@@ -2378,6 +2446,14 @@ def run_footprint(connection: sqlite3.Connection, run_id: int) -> dict[str, int]
                 "(SELECT id FROM clusters WHERE run_id = ?)",
                 (run_id,),
             ).fetchone()
+        elif table == "image_coverage":
+            # Reached through its diagnosis, like cluster_members through its
+            # cluster: both record a relationship and carry no run of their own.
+            row = connection.execute(
+                "SELECT COUNT(*) FROM image_coverage WHERE image_diagnosis_id IN "
+                "(SELECT id FROM image_diagnoses WHERE run_id = ?)",
+                (run_id,),
+            ).fetchone()
         else:
             row = connection.execute(
                 f"SELECT COUNT(*) FROM {table} WHERE run_id = ?", (run_id,)
@@ -2443,3 +2519,236 @@ def heatmap_paths(connection: sqlite3.Connection, run_id: int) -> list[str]:
         "SELECT path FROM heatmaps WHERE run_id = ? AND path IS NOT NULL", (run_id,)
     ).fetchall()
     return [str(row[0]) for row in rows]
+
+
+# ---------------------------------------------------------------------------
+# Image-level diagnosis (schema version 11)
+# ---------------------------------------------------------------------------
+@dataclass(frozen=True)
+class ImageCoverageRow:
+    """How much of one annotated object a single prediction covers.
+
+    Attributes:
+        truth_finding_id: The finding carrying the ground-truth object.
+        pred_finding_id: The finding carrying the prediction. This is often a
+            *different* finding — that is the whole point: it is how one
+            prediction spanning two objects becomes visible.
+        coverage: Share of the ground-truth mask intersected, in ``[0, 1]``.
+            Measured on masks, never boxes: an axis-aligned box around a
+            diagonal object sweeps across its neighbours and manufactures
+            overlap that the objects do not have.
+    """
+
+    truth_finding_id: int
+    pred_finding_id: int
+    coverage: float
+
+
+@dataclass(frozen=True)
+class ImageDiagnosisRow:
+    """What shape the model's mistake took on one image.
+
+    A second lens over the same findings. The finding-level tables say which
+    object failed; this says whether the image was handled cleanly, whether one
+    prediction was stretched across several objects, or several predictions
+    landed on one.
+
+    Attributes:
+        verdict: One of :data:`IMAGE_VERDICTS`.
+        cover_hit: Coverage at which a prediction counted as finding an object,
+            stored because merge and split counts are sensitive to it.
+        cover_miss: Coverage below which an object counted as untouched.
+        method: How geometry was compared. ``"mask"`` is the only value; the
+            column exists so a later variant cannot be confused with this one.
+        coverage: The pairs behind the verdict, strongest first.
+    """
+
+    id: int
+    run_id: int
+    image_id: int
+    gt_count: int
+    pred_count: int
+    outcomes: dict[str, int]
+    verdict: str
+    merged: bool
+    split: bool
+    objects_untouched: int
+    objects_partial: int
+    predictions_partial: int
+    predictions_on_nothing: int
+    cover_hit: float
+    cover_miss: float
+    method: str
+    created_at: str
+    coverage: tuple[ImageCoverageRow, ...] = ()
+
+
+def save_image_diagnoses(
+    connection: sqlite3.Connection,
+    run_id: int,
+    entries: Iterable[tuple[int, Mapping[str, Any], Sequence[ImageCoverageRow]]],
+    *,
+    cover_hit: float,
+    cover_miss: float,
+    method: str = "mask",
+) -> int:
+    """Persist one verdict per image, with the pairs that produced it.
+
+    Replaces any previous diagnosis for the same run, because this is a pass
+    over an already-saved run: re-running it with a different threshold must
+    not leave two contradictory verdicts for one image.
+
+    Args:
+        connection: An open connection.
+        run_id: Run being diagnosed.
+        entries: ``(image_id, fields, coverage)`` where ``fields`` carries the
+            counts and verdict, and ``coverage`` the pairwise measurements.
+        cover_hit: Threshold recorded with every row.
+        cover_miss: Threshold recorded with every row.
+        method: Geometry used. Only ``"mask"`` is produced today.
+
+    Returns:
+        How many image diagnoses were written.
+    """
+    connection.execute(
+        "DELETE FROM image_diagnoses WHERE run_id = ?", (run_id,)
+    )  # image_coverage cascades
+    written = 0
+    now = _timestamp()
+    for image_id, fields, coverage in entries:
+        cursor = connection.execute(
+            """
+            INSERT INTO image_diagnoses (
+                run_id, image_id, gt_count, pred_count, correct, false_negative,
+                false_positive, poor_localization, wrong_class, verdict, merged,
+                split, objects_untouched, objects_partial, predictions_partial,
+                predictions_on_nothing, cover_hit, cover_miss, method, created_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                run_id, image_id, fields["gt_count"], fields["pred_count"],
+                fields["correct"], fields["false_negative"],
+                fields["false_positive"], fields["poor_localization"],
+                fields["wrong_class"], fields["verdict"],
+                int(fields["merged"]), int(fields["split"]),
+                fields["objects_untouched"], fields.get("objects_partial", 0),
+                fields.get("predictions_partial", 0),
+                fields["predictions_on_nothing"],
+                cover_hit, cover_miss, method, now,
+            ),
+        )
+        diagnosis_id = cursor.lastrowid
+        connection.executemany(
+            """
+            INSERT INTO image_coverage (
+                image_diagnosis_id, truth_finding_id, pred_finding_id, coverage
+            ) VALUES (?,?,?,?)
+            """,
+            [(diagnosis_id, c.truth_finding_id, c.pred_finding_id, c.coverage)
+             for c in coverage],
+        )
+        written += 1
+    return written
+
+
+def load_image_diagnoses(
+    connection: sqlite3.Connection,
+    run_id: int,
+    verdict: str | None = None,
+    with_coverage: bool = False,
+) -> list[ImageDiagnosisRow]:
+    """Return one row per image, optionally filtered to a single verdict.
+
+    ``with_coverage`` is off by default: the pairs are the evidence behind a
+    verdict and are wanted when inspecting one image, not when listing a run.
+    """
+    if not _table_exists(connection, "image_diagnoses"):
+        return []
+    sql = "SELECT * FROM image_diagnoses WHERE run_id = ?"
+    params: list[Any] = [run_id]
+    if verdict is not None:
+        sql += " AND verdict = ?"
+        params.append(verdict)
+    rows = connection.execute(sql + " ORDER BY image_id", params).fetchall()
+
+    pairs: dict[int, list[ImageCoverageRow]] = {}
+    if with_coverage and rows and _table_exists(connection, "image_coverage"):
+        ids = tuple(int(r["id"]) for r in rows)
+        placeholders = ",".join("?" * len(ids))
+        for c in connection.execute(
+            "SELECT * FROM image_coverage WHERE image_diagnosis_id IN "
+            f"({placeholders}) ORDER BY coverage DESC",
+            ids,
+        ):
+            pairs.setdefault(int(c["image_diagnosis_id"]), []).append(
+                ImageCoverageRow(
+                    truth_finding_id=int(c["truth_finding_id"]),
+                    pred_finding_id=int(c["pred_finding_id"]),
+                    coverage=float(c["coverage"]),
+                )
+            )
+    return [_image_diagnosis_row(r, tuple(pairs.get(int(r["id"]), ()))) for r in rows]
+
+
+def load_image_coverage(
+    connection: sqlite3.Connection, run_id: int, image_id: int
+) -> list[ImageCoverageRow]:
+    """Return the object/prediction pairs measured on one image, strongest first.
+
+    Both tables are checked: the query joins them, so the presence of one
+    without the other — reachable on a partially migrated database — would
+    otherwise raise instead of degrading to "not measured" (SCHEMA.md §6).
+    """
+    if not _table_exists(connection, "image_coverage") or not _table_exists(
+        connection, "image_diagnoses"
+    ):
+        return []
+    rows = connection.execute(
+        """
+        SELECT c.* FROM image_coverage c
+        JOIN image_diagnoses d ON d.id = c.image_diagnosis_id
+        WHERE d.run_id = ? AND d.image_id = ?
+        ORDER BY c.coverage DESC
+        """,
+        (run_id, image_id),
+    ).fetchall()
+    return [
+        ImageCoverageRow(
+            truth_finding_id=int(r["truth_finding_id"]),
+            pred_finding_id=int(r["pred_finding_id"]),
+            coverage=float(r["coverage"]),
+        )
+        for r in rows
+    ]
+
+
+def _image_diagnosis_row(
+    row: sqlite3.Row, coverage: tuple[ImageCoverageRow, ...]
+) -> ImageDiagnosisRow:
+    """Build a record from a stored row."""
+    return ImageDiagnosisRow(
+        id=int(row["id"]),
+        run_id=int(row["run_id"]),
+        image_id=int(row["image_id"]),
+        gt_count=int(row["gt_count"]),
+        pred_count=int(row["pred_count"]),
+        outcomes={
+            "correct": int(row["correct"]),
+            "false_negative": int(row["false_negative"]),
+            "false_positive": int(row["false_positive"]),
+            "poor_localization": int(row["poor_localization"]),
+            "wrong_class": int(row["wrong_class"]),
+        },
+        verdict=str(row["verdict"]),
+        merged=bool(row["merged"]),
+        split=bool(row["split"]),
+        objects_untouched=int(row["objects_untouched"]),
+        objects_partial=int(row["objects_partial"]),
+        predictions_partial=int(row["predictions_partial"]),
+        predictions_on_nothing=int(row["predictions_on_nothing"]),
+        cover_hit=float(row["cover_hit"]),
+        cover_miss=float(row["cover_miss"]),
+        method=str(row["method"]),
+        created_at=str(row["created_at"]),
+        coverage=coverage,
+    )
