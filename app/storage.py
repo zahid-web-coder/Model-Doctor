@@ -50,7 +50,7 @@ logger = get_logger(__name__)
 # Bumped when the schema changes in a way that existing readers must know
 # about. Recorded in the database so a consumer can detect a mismatch instead
 # of failing on a missing column.
-SCHEMA_VERSION: int = 12
+SCHEMA_VERSION: int = 13
 
 SCHEMA_STATEMENTS: tuple[str, ...] = (
     """
@@ -436,11 +436,52 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
         UNIQUE (image_diagnosis_id, truth_finding_id, pred_finding_id)
     )
     """,
+    # One relationship between findings, measured on masks (schema version 13).
+    #
+    # **A relation is not a factor.** A factor is a property of one object,
+    # measured on failures *and* on correct detections, and admitted only when
+    # its lift over that control rate is significant. A relation describes what
+    # a failure *is* — a missed object that another prediction already covers,
+    # a box outcome its own mask contradicts — and by construction it cannot
+    # attach to a correct detection, so it has no control rate and no lift.
+    # Routing one through `factor_rates` would therefore silently discard it.
+    # They are stored apart for that reason, and never enter that pipeline.
+    #
+    # `UNIQUE (run_id, finding_id, relation)` is the anti-double-counting rule
+    # as a constraint rather than a convention: one relationship produces one
+    # row, attributed to one side of it, with `span` recording multiplicity
+    # instead of extra rows.
+    #
+    # The thresholds that produced the row travel with it, as they do on
+    # `image_diagnoses`: a run analysed at one threshold must never be read as
+    # though it had been analysed at another.
+    """
+    CREATE TABLE IF NOT EXISTS finding_relations (
+        id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id              INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+        finding_id          INTEGER NOT NULL
+                            REFERENCES findings(id) ON DELETE CASCADE,
+        relation            TEXT    NOT NULL,
+        direction           TEXT,
+        partner_finding_id  INTEGER REFERENCES findings(id) ON DELETE CASCADE,
+        value               REAL    NOT NULL,
+        best_coverage       REAL,
+        span                INTEGER,
+        threshold           REAL,
+        qualifies           INTEGER NOT NULL,
+        cover_hit           REAL    NOT NULL,
+        method              TEXT    NOT NULL DEFAULT 'mask',
+        created_at          TEXT    NOT NULL,
+        UNIQUE (run_id, finding_id, relation)
+    )
+    """,
     "CREATE INDEX IF NOT EXISTS idx_run_benchmarks_run ON run_benchmarks(run_id)",
     "CREATE INDEX IF NOT EXISTS idx_image_diagnoses_run "
     "ON image_diagnoses(run_id, verdict)",
     "CREATE INDEX IF NOT EXISTS idx_image_coverage_diag "
     "ON image_coverage(image_diagnosis_id)",
+    "CREATE INDEX IF NOT EXISTS idx_finding_relations_run "
+    "ON finding_relations(run_id, relation)",
     "CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status, created_at)",
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_token ON jobs(token)",
 )
@@ -2476,6 +2517,7 @@ RUN_OWNED_TABLES: tuple[str, ...] = (
     "clusters",
     "cluster_members",
     "recommendations",
+    "finding_relations",
     "heatmaps",
     "embeddings",
     "factor_rates",
@@ -2823,6 +2865,155 @@ def load_image_coverage(
             truth_finding_id=int(r["truth_finding_id"]),
             pred_finding_id=int(r["pred_finding_id"]),
             coverage=float(r["coverage"]),
+        )
+        for r in rows
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Finding relations (schema version 13)
+# ---------------------------------------------------------------------------
+@dataclass(frozen=True)
+class FindingRelationRow:
+    """One measured relationship between findings.
+
+    **Additive evidence, never a reclassification.** The finding keeps the
+    outcome the matcher gave it; this says something further about *why* that
+    outcome looks the way it does — that the missed object is covered by a
+    prediction the matcher assigned elsewhere, or that a box-based verdict
+    disagrees with the mask underneath it.
+
+    Attributes:
+        finding_id: The finding this is attributed to. Which side of a
+            relationship gets the row is fixed per relation, so one
+            relationship can never be counted twice.
+        relation: One of :data:`RELATIONS`.
+        direction: Which way a two-sided relation went, or ``None``.
+        partner_finding_id: The other finding involved, or ``None`` for a
+            relation a finding has with itself.
+        value: The continuous measurement, in ``[0, 1]``.
+        best_coverage: Strongest coverage behind the relation, where that is a
+            different quantity from ``value``.
+        span: How many objects are involved, for a relation that can span more
+            than one. Multiplicity is recorded here rather than as extra rows.
+        threshold: The value ``qualifies`` was decided at, or ``None`` when the
+            relation has no threshold of its own.
+        qualifies: Whether the measurement met ``threshold``.
+        cover_hit: The run's stored coverage threshold, carried so a row is
+            never read as though it had been measured at another.
+        method: Geometry used. Only ``"mask"`` is produced today.
+    """
+
+    finding_id: int
+    relation: str
+    value: float
+    qualifies: bool
+    cover_hit: float
+    direction: str | None = None
+    partner_finding_id: int | None = None
+    best_coverage: float | None = None
+    span: int | None = None
+    threshold: float | None = None
+    method: str = "mask"
+
+
+def save_finding_relations(
+    connection: sqlite3.Connection,
+    run_id: int,
+    rows: Iterable[FindingRelationRow],
+) -> int:
+    """Replace this run's relations with the ones given.
+
+    Replaces rather than appends, for the same reason
+    :func:`save_image_diagnoses` does: this is a pass over an already-saved
+    run, and re-running it at a different threshold must not leave two
+    contradictory rows for one finding.
+
+    Writes to ``finding_relations`` and nothing else. No finding, outcome,
+    metric, factor rate, cluster or image verdict is touched by this call.
+
+    Args:
+        connection: An open connection.
+        run_id: Run whose relations these are.
+        rows: The relations to store.
+
+    Returns:
+        How many rows were written.
+    """
+    connection.execute("DELETE FROM finding_relations WHERE run_id = ?", (run_id,))
+    stamp = _timestamp()
+    written = 0
+    for row in rows:
+        connection.execute(
+            """
+            INSERT INTO finding_relations (
+                run_id, finding_id, relation, direction, partner_finding_id,
+                value, best_coverage, span, threshold, qualifies, cover_hit,
+                method, created_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                run_id,
+                row.finding_id,
+                row.relation,
+                row.direction,
+                row.partner_finding_id,
+                row.value,
+                row.best_coverage,
+                row.span,
+                row.threshold,
+                1 if row.qualifies else 0,
+                row.cover_hit,
+                row.method,
+                stamp,
+            ),
+        )
+        written += 1
+    return written
+
+
+def load_finding_relations(
+    connection: sqlite3.Connection,
+    run_id: int,
+    relation: str | None = None,
+) -> list[FindingRelationRow]:
+    """Return a run's relations, ordered by finding then relation.
+
+    Empty for a run analysed before the pass existed, which a caller must
+    report as not measured rather than as "no relationships found" — the same
+    distinction ``images.error`` exists to preserve (SCHEMA.md §6).
+    """
+    if not _table_exists(connection, "finding_relations"):
+        return []
+    clauses = ["run_id = ?"]
+    params: list[Any] = [run_id]
+    if relation is not None:
+        clauses.append("relation = ?")
+        params.append(relation)
+    rows = connection.execute(
+        f"SELECT * FROM finding_relations WHERE {' AND '.join(clauses)} "
+        "ORDER BY finding_id, relation",
+        params,
+    ).fetchall()
+    return [
+        FindingRelationRow(
+            finding_id=int(r["finding_id"]),
+            relation=str(r["relation"]),
+            value=float(r["value"]),
+            qualifies=bool(r["qualifies"]),
+            cover_hit=float(r["cover_hit"]),
+            direction=r["direction"],
+            partner_finding_id=(
+                None
+                if r["partner_finding_id"] is None
+                else int(r["partner_finding_id"])
+            ),
+            best_coverage=(
+                None if r["best_coverage"] is None else float(r["best_coverage"])
+            ),
+            span=None if r["span"] is None else int(r["span"]),
+            threshold=None if r["threshold"] is None else float(r["threshold"]),
+            method=str(r["method"]),
         )
         for r in rows
     ]

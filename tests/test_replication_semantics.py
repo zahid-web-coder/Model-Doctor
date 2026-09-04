@@ -542,9 +542,20 @@ class TestNothingElseMoved:
             }
         assert after == before
 
-    def test_the_schema_version_did_not_move(self) -> None:
-        """This step stores nothing, so it is not a migration."""
-        assert storage.SCHEMA_VERSION == 12
+    def test_replication_semantics_store_nothing(self) -> None:
+        """The fingerprint is derived at read time; it has no table of its own.
+
+        Pinned as an absence rather than a version number, which later steps
+        move for their own reasons — schema 13 added `finding_relations`, and
+        that says nothing about whether *this* step began storing something.
+        """
+        statements = " ".join(storage.SCHEMA_STATEMENTS).lower()
+        assert "fingerprint" not in statements
+        assert "reproduction" not in statements
+        assert not any(
+            "fingerprint" in column for _, column, _ in storage._ADDED_COLUMNS
+        )
+        assert "runs" not in {table for table, _, _ in storage._ADDED_COLUMNS[1:]}
 
     def test_the_outcome_taxonomy_is_unchanged(self) -> None:
         """The five outcomes are out of scope for this step, and stay put."""

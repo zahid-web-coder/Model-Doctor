@@ -224,14 +224,30 @@ def classify(
     }
 
 
-def _mask(polygon: Sequence[Sequence[float]], width: int, height: int):
-    """Rasterise one stored polygon. Imported lazily; the readers need no OpenCV."""
+def rasterise(polygon: Sequence[Sequence[float]], width: int, height: int):
+    """Rasterise one stored polygon. Imported lazily; the readers need no OpenCV.
+
+    **Public because a second pass must measure the same way.** Relations
+    compare their geometry against the coverage this module already stores, and
+    two rasterisers — or a rasteriser against vector areas — would disagree in
+    the third decimal and make the two sets of numbers uncomparable. Whatever
+    ``fillPoly`` does with an awkward ring, everything measuring this run does
+    identically.
+
+    Stored polygons are a single ring of at least three points: both detector
+    families reduce a mask to its largest component on the way in, so holes and
+    multiple parts cannot reach here.
+    """
     import cv2
     import numpy as np
 
     canvas = np.zeros((height, width), np.uint8)
     cv2.fillPoly(canvas, [np.array(polygon, np.int32).reshape(-1, 1, 2)], 1)
     return canvas
+
+
+#: Retained so nothing that imported the private name breaks. Same function.
+_mask = rasterise
 
 
 def build_evidence(
