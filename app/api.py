@@ -40,7 +40,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
 import config
-from app import storage
+from app import comparison, storage
 from app.clustering import DISCRIMINATING_METHOD
 from app.explainability import preview_path
 from app.similarity import SimilarityError, nearest_neighbours
@@ -508,6 +508,52 @@ def create_app() -> FastAPI:
                 storage.load_image_diagnoses(
                     connection, run_id, verdict, with_coverage=coverage
                 )
+            )
+
+    @application.get("/runs/{run_id}/relations")
+    def get_relations(
+        run_id: int, relation: str | None = None, finding_id: int | None = None
+    ) -> list[dict[str, Any]]:
+        """Measured relationships between this run's findings (schema v13).
+
+        **Additive evidence, never a reclassification.** Every finding keeps
+        the outcome the matcher gave it; a relation says something further
+        about the shape of that failure — that a missed object is covered by a
+        prediction assigned elsewhere, or that a box verdict disagrees with the
+        mask under it. No outcome count, rate or mAP figure is affected, and
+        nothing here may be subtracted from one.
+
+        ``duplicate_prediction`` is not among the stored relations: it is a
+        provisional reading of ``prediction_on_matched_object``, carried on
+        each row as ``qualifies`` with the two bounds that decided it. A
+        consumer that disagrees with those bounds has ``value`` and
+        ``best_coverage`` and can re-read them.
+
+        Empty for a run measured before the pass existed, which a caller must
+        report as not measured rather than as "no relationships found".
+        """
+        with read_only() as connection:
+            resolve_run(connection, run_id)
+            if not has_table(connection, "finding_relations"):
+                return []
+            rows = storage.load_finding_relations(connection, run_id, relation)
+            if finding_id is not None:
+                rows = [r for r in rows if r.finding_id == finding_id]
+            return serialise(rows)
+
+    @application.get("/runs/{run_id}/relations/summary")
+    def get_relation_summary(run_id: int) -> dict[str, Any] | None:
+        """Aggregate counts per relation, with the provisional reading beside them.
+
+        ``None`` when the pass has not run — distinguishable from a run that
+        was measured and had nothing, which returns zero counts.
+        """
+        with read_only() as connection:
+            resolve_run(connection, run_id)
+            if not has_table(connection, "finding_relations"):
+                return None
+            return comparison.relation_summary(
+                storage.load_finding_relations(connection, run_id)
             )
 
     @application.get("/runs/{run_id}/images/{image_id}/coverage")

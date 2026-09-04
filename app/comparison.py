@@ -111,6 +111,14 @@ CAVEATS: tuple[str, ...] = (
     "Runs sharing a fingerprint are re-executions of one configuration, not "
     "independent observations: their agreement is reproduction, and only a "
     "run with a different fingerprint can replicate a pattern.",
+    "A relation describes the shape of a failure — which prediction covers "
+    "which object — and is not a proven cause. It is measured geometry, and "
+    "the causal claim belongs to the reader (D-031).",
+    "duplicate_prediction is a provisional reading of the continuous "
+    "prediction_on_matched_object measurement, not a stored classification. It "
+    "does not establish suppression settings, decoding, assignment order, "
+    "architecture or any other mechanism as the cause; none of those is "
+    "measured.",
 )
 
 #: How to fill each kind of missing evidence. The command is the remedy.
@@ -122,6 +130,7 @@ REMEDIES: Mapping[str, str] = {
     "recommendations": "python -m app.recommendations --run {run_id}",
     "mask_findings": "python -m app.mask_diagnosis --run {run_id}",
     "image_diagnoses": "python -m app.image_diagnosis --run {run_id}",
+    "relations": "python -m app.relations --run {run_id}",
 }
 
 
@@ -723,6 +732,103 @@ def cross_run(
         "group_replication": replication,
         "shared_actionable_recommendations": shared or [],
     }
+
+
+#: The order relations are reported in: the two that need no threshold first.
+RELATION_ORDER: tuple[str, ...] = (
+    "merge_candidate",
+    "box_mask_disagreement",
+    "prediction_on_matched_object",
+)
+
+
+def relation_summary(rows: Sequence[Any]) -> dict[str, Any] | None:
+    """Aggregate one run's finding relations, or ``None`` when not measured.
+
+    **Relations sit beside the outcome counts, never inside them.** A false
+    negative carrying a ``merge_candidate`` is still a false negative in every
+    count, rate and mAP figure; what the relation adds is that a prediction
+    assigned elsewhere covers it, which is a different problem from never
+    having seen it. Nothing here may be subtracted from an outcome total.
+
+    ``duplicate_prediction`` is reported as an *interpretation* of
+    ``prediction_on_matched_object``: the continuous measurement is summarised
+    on its own, and the provisional reading is reported beside it with the
+    bounds that produced it. A consumer that disagrees with those bounds has
+    the distribution and can re-read it.
+
+    ``None`` rather than an empty summary when the pass has not run, so "not
+    measured" and "measured, found nothing" stay distinguishable (SCHEMA.md §6).
+    """
+    if not rows:
+        return None
+
+    by_relation: dict[str, list[Any]] = {}
+    for row in rows:
+        by_relation.setdefault(row.relation, []).append(row)
+
+    counts = {
+        name: len(by_relation.get(name, ())) for name in RELATION_ORDER
+    }
+    # Directions belong to the relation that has them, not to a flat tally.
+    directions: dict[str, dict[str, int]] = {}
+    for name, group in by_relation.items():
+        seen: dict[str, int] = {}
+        for row in group:
+            if row.direction:
+                seen[row.direction] = seen.get(row.direction, 0) + 1
+        if seen:
+            directions[name] = seen
+
+    summary: dict[str, Any] = {
+        "total": len(rows),
+        "counts": counts,
+        "directions": directions,
+    }
+
+    measured_rows = by_relation.get("prediction_on_matched_object", [])
+    if measured_rows:
+        values = sorted(r.value for r in measured_rows)
+        qualifying = [r for r in measured_rows if r.qualifies]
+        bounds = next(
+            (
+                (r.threshold, r.coverage_floor)
+                for r in measured_rows
+                if r.threshold is not None
+            ),
+            (None, None),
+        )
+        summary["prediction_on_matched_object"] = {
+            "measured": len(values),
+            "median": values[len(values) // 2],
+            "at_or_below_0.01": sum(1 for v in values if v <= 0.01),
+            "at_or_above_0.50": sum(1 for v in values if v >= 0.50),
+            "span_2_or_more": sum(1 for r in measured_rows if (r.span or 0) >= 2),
+        }
+        summary["duplicate_prediction"] = {
+            "count": len(qualifying),
+            "share_of_measured": (
+                round(len(qualifying) / len(measured_rows), 4)
+                if measured_rows
+                else None
+            ),
+            "status": "provisional",
+            "rule": {
+                "prediction_on_matched_object_at_least": bounds[0],
+                "best_coverage_at_least": bounds[1],
+            },
+            "means": (
+                "the prediction lies substantially on ground truth another "
+                "prediction was already assigned to, and covers some of it"
+            ),
+            "does_not_mean": (
+                "no mechanism has been identified: suppression settings, "
+                "decoding, assignment order and a model genuinely proposing "
+                "two objects are all consistent with this measurement, and "
+                "none of them is measured here"
+            ),
+        }
+    return summary
 
 
 def evidence_gaps(

@@ -57,6 +57,7 @@ _EVIDENCE_TABLES: dict[str, str] = {
     "run_benchmarks": "benchmarks",
     "heatmaps": "heatmaps",
     "image_diagnoses": "image_diagnoses",
+    "finding_relations": "relations",
 }
 
 #: Every tool here is safe to call repeatedly and changes nothing.
@@ -75,8 +76,18 @@ set of runs in one comparison-friendly structure.
 Treat every figure as evidence and keep your own reasoning separate from it.
 Outcome counts are not COCO mAP and will not agree with it. Factors are
 correlations against a control rate, not proven causes. A recommendation's
-`status` says how much weight it can bear: only `replicated` and `provisional`
-are actionable. `null` means not measured, never zero."""
+`status` says how much weight it can bear: only `replicated`, `reproduced` and
+`provisional` are actionable, and `reproduced` means the only runs that agreed
+were re-executions of the same configuration. `null` means not measured, never
+zero.
+
+The `relations` block describes how two findings relate — which prediction
+covers which object — rather than which condition co-occurred with a failure.
+It is measured geometry, not a cause. `duplicate_prediction` inside it is a
+provisional reading of the continuous `prediction_on_matched_object`
+measurement; it does not establish suppression settings, decoding, assignment
+order, architecture or anything else as the mechanism, and none of those is
+measured."""
 
 
 @contextmanager
@@ -143,6 +154,8 @@ def _evidence_present(connection: sqlite3.Connection, run_id: int) -> dict[str, 
             present[kind] = len(storage.load_heatmaps(connection, run_id))
         elif kind == "image_diagnoses":
             present[kind] = bool(storage.load_image_diagnoses(connection, run_id))
+        elif kind == "relations":
+            present[kind] = bool(storage.load_finding_relations(connection, run_id))
     return present
 
 
@@ -403,6 +416,14 @@ def create_server() -> MCPServer:
                     "images": comparison.image_summary(
                         storage.load_image_diagnoses(connection, rid)
                         if storage.has_table(connection, "image_diagnoses")
+                        else []
+                    ),
+                    # A third lens: not which object failed, nor what shape the
+                    # image's mistake took, but how two findings relate — which
+                    # prediction covers which object. None when unmeasured.
+                    "relations": comparison.relation_summary(
+                        storage.load_finding_relations(connection, rid)
+                        if storage.has_table(connection, "finding_relations")
                         else []
                     ),
                 }
