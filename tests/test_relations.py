@@ -30,12 +30,20 @@ from app import relations, storage
 from app.relations import (
     BOX_MASK_DISAGREEMENT,
     BOX_OK_MASK_FAILS,
+    DUPLICATE_COVERAGE_FLOOR,
+    DUPLICATE_MIN_ONOBJECT,
+    DUPLICATE_PREDICTION,
+    DUPLICATE_STATUS,
     MASK_OK_BOX_FAILS,
     MERGE_CANDIDATE,
+    PREDICTION_ON_MATCHED_OBJECT,
     RelationError,
     box_mask_disagreements,
     build_geometry,
+    is_duplicate_like,
+    matched_union,
     merge_candidates,
+    prediction_on_matched_objects,
 )
 from app.storage import RunContext
 
@@ -279,6 +287,396 @@ class TestBoxMaskDisagreement:
         assert found == []
 
 
+class TestPredictionOnMatchedObject:
+    """The continuous measurement, and what it deliberately does not do."""
+
+    def test_a_prediction_entirely_on_a_found_object_measures_one(self) -> None:
+        """All of it lies on an object the model already found."""
+        found = prediction_on_matched_objects(
+            geometry(
+                [
+                    row(1, "correct", square(0, 0, 100, 100), square(0, 0, 50, 50)),
+                    row(2, "false_positive", None, square(10, 10, 40, 40)),
+                ]
+            ),
+            HIT,
+        )
+        assert len(found) == 1
+        assert found[0].finding_id == 2
+        assert found[0].relation == PREDICTION_ON_MATCHED_OBJECT
+        assert found[0].value == pytest.approx(1.0)
+
+    def test_a_prediction_touching_nothing_measures_zero_and_is_still_recorded(
+        self,
+    ) -> None:
+        """Zero is a measurement.
+
+        Dropping these rows would leave the stored distribution unable to say
+        how many predictions land nowhere near a found object — which is most
+        of them, and the reason the distribution has a shape at all.
+        """
+        found = prediction_on_matched_objects(
+            geometry(
+                [
+                    row(1, "correct", square(0, 0, 20, 20), square(0, 0, 20, 20)),
+                    row(2, "false_positive", None, square(60, 60, 90, 90)),
+                ]
+            ),
+            HIT,
+        )
+        assert len(found) == 1
+        assert found[0].value == 0.0
+        assert found[0].partner_finding_id is None
+
+    def test_an_unmatched_object_does_not_count_as_already_found(self) -> None:
+        """The semantic case this measurement turns on.
+
+        A prediction landing on a *missed* object is not evidence that the
+        model already found it — nothing found it. Including false negatives in
+        the union would make every spurious prediction on a missed object look
+        like a redundant copy of a detection that never happened. Run 5's
+        #1191 is exactly this: its only overlap is with the unmatched #1193,
+        and it must measure 0.000.
+        """
+        found = prediction_on_matched_objects(
+            geometry(
+                [
+                    row(1, "false_negative", square(0, 0, 100, 100)),
+                    row(2, "false_positive", None, square(10, 10, 40, 40)),
+                ]
+            ),
+            HIT,
+        )
+        assert len(found) == 1
+        assert found[0].value == 0.0, "an unmatched object is not an already-found one"
+
+    def test_a_partly_overlapping_prediction_measures_the_share(self) -> None:
+        """The measurement is continuous, not a yes or no."""
+        found = prediction_on_matched_objects(
+            geometry(
+                [
+                    row(1, "correct", square(0, 0, 100, 50), square(0, 0, 100, 50)),
+                    # Half of it lies on the object, half below it.
+                    row(2, "false_positive", None, square(0, 25, 100, 75)),
+                ]
+            ),
+            HIT,
+        )
+        assert found[0].value == pytest.approx(0.5, abs=0.02)
+
+    def test_overlapping_annotations_cannot_push_it_above_one(self) -> None:
+        """The union-versus-sum case.
+
+        Two annotations sharing pixels would, under a sum of pairwise
+        intersections, count the shared area twice and report more than all of
+        a prediction lying on annotated ground.
+        """
+        found = prediction_on_matched_objects(
+            geometry(
+                [
+                    row(1, "correct", square(0, 0, 60, 100), square(0, 0, 60, 100)),
+                    row(2, "correct", square(40, 0, 100, 100), square(40, 0, 100, 100)),
+                    row(3, "false_positive", None, square(0, 0, 100, 100)),
+                ]
+            ),
+            HIT,
+        )
+        assert len(found) == 1
+        assert found[0].value <= 1.0
+        assert found[0].value == pytest.approx(1.0)
+
+    def test_only_false_positives_are_measured(self) -> None:
+        """A matched prediction is not an unmatched one."""
+        found = prediction_on_matched_objects(
+            geometry(
+                [
+                    row(1, "correct", square(0, 0, 50, 50), square(0, 0, 50, 50)),
+                    row(
+                        2,
+                        "poor_localization",
+                        square(60, 60, 90, 90),
+                        square(60, 60, 90, 90),
+                    ),
+                ]
+            ),
+            HIT,
+        )
+        assert found == []
+
+    def test_a_zero_area_prediction_produces_no_row(self) -> None:
+        """No denominator, so no measurement — not a zero."""
+        off_canvas = square(2 * SIZE, 2 * SIZE, 3 * SIZE, 3 * SIZE)
+        found = prediction_on_matched_objects(
+            geometry(
+                [
+                    row(1, "correct", square(0, 0, 50, 50), square(0, 0, 50, 50)),
+                    row(2, "false_positive", None, off_canvas),
+                ]
+            ),
+            HIT,
+        )
+        assert found == []
+
+    def test_the_measurement_does_not_depend_on_the_interpretation(self) -> None:
+        """The value is the geometry; `qualifies` is a reading of it.
+
+        Step 5 stored these rows with nothing classified. Step 6 added a
+        provisional rule, and the measured value must be identical either way —
+        which is what makes re-reading at other bounds a query rather than a
+        re-run.
+        """
+        found = prediction_on_matched_objects(
+            geometry(
+                [
+                    row(1, "correct", square(0, 0, 100, 100), square(0, 0, 50, 50)),
+                    row(2, "false_positive", None, square(10, 10, 40, 40)),
+                ]
+            ),
+            HIT,
+        )
+        assert found[0].value == pytest.approx(1.0)
+        assert found[0].threshold is not None, "the bound that decided it is stored"
+
+    def test_the_best_covered_object_is_named(self) -> None:
+        """The partner is the object this prediction sits on most.
+
+        Object 1 extends below the prediction and is half covered; object 2 is
+        covered entirely. Both clear the hit threshold, so the span is two and
+        the partner is the stronger of them.
+        """
+        found = prediction_on_matched_objects(
+            geometry(
+                [
+                    row(1, "correct", square(0, 0, 10, 80), square(0, 0, 10, 80)),
+                    row(2, "correct", square(0, 0, 100, 40), square(0, 0, 100, 40)),
+                    row(3, "false_positive", None, square(0, 0, 100, 40)),
+                ]
+            ),
+            HIT,
+        )
+        assert found[0].partner_finding_id == 2
+        assert found[0].best_coverage == pytest.approx(1.0)
+        assert found[0].span == 2, "it substantially covers both"
+
+
+class TestTheProvisionalDuplicateRule:
+    """`duplicate_prediction` as a reading of the stored measurement.
+
+    Every case here was chosen from the reference database and inspected as an
+    image before the rule was written, so the fixtures reproduce shapes that
+    were judged by looking rather than by the number being tested.
+    """
+
+    def measure(self, rows):
+        """Measure one constructed image at the standard hit threshold."""
+        return prediction_on_matched_objects(geometry(rows), HIT)
+
+    def test_an_obvious_duplicate_qualifies(self) -> None:
+        """Two outlines on one found object — run 5 #1165's shape."""
+        got = self.measure(
+            [
+                row(1, "correct", square(0, 0, 80, 80), square(0, 0, 80, 80)),
+                row(2, "false_positive", None, square(5, 5, 75, 75)),
+            ]
+        )
+        assert len(got) == 1
+        assert got[0].qualifies is True
+        assert is_duplicate_like(got[0])
+
+    def test_a_diffuse_prediction_covering_nothing_does_not(self) -> None:
+        """Run 4 #830: onobject 0.265 but it covers no object above 2.5%.
+
+        The guard exists for exactly this. Without it a prediction spread over
+        several objects' edges would read as a duplicate of all of them.
+        """
+        # A large found object, and a small prediction clipping its edge: half
+        # the prediction is on found ground, yet it covers 2% of the object.
+        got = self.measure(
+            [
+                row(1, "correct", square(0, 0, 90, 100), square(0, 0, 90, 100)),
+                row(2, "false_positive", None, square(80, 0, 100, 20)),
+            ]
+        )
+        assert len(got) == 1
+        assert got[0].value >= DUPLICATE_MIN_ONOBJECT, "it is on found ground"
+        assert got[0].best_coverage < DUPLICATE_COVERAGE_FLOOR, "but covers nothing"
+        assert got[0].qualifies is False
+        assert not is_duplicate_like(got[0])
+
+    def test_a_fragment_inside_a_found_object_qualifies(self) -> None:
+        """A band or sliver inside a staircase that was already found.
+
+        Run 5 #1212 and #1091 cover 16% and 7% of their objects. A fragment
+        is still a second detection of something already detected,
+        which is why the guard sits far below `cover_hit`. Requiring
+        `best_coverage >= cover_hit` would drop these.
+        """
+        got = self.measure(
+            [
+                row(1, "correct", square(0, 0, 100, 100), square(0, 0, 100, 100)),
+                row(2, "false_positive", None, square(0, 0, 100, 12)),
+            ]
+        )
+        assert len(got) == 1
+        assert got[0].value == pytest.approx(1.0), "wholly inside the object"
+        assert got[0].best_coverage < 0.25, "yet covers little of it"
+        assert got[0].qualifies is True
+        assert not (got[0].best_coverage >= HIT), (
+            "a cover_hit rule would have excluded this fragment"
+        )
+
+    def test_the_1022_versus_1223_distinction(self) -> None:
+        """The pair that decided the rule, reproduced as geometry.
+
+        #1022 is a prediction sprawling across the frame that happens to
+        contain a small object: high coverage of it, but almost none of the
+        prediction is on found ground. #1223 is a second outline on a small
+        object, four times its area. Coverage alone calls both duplicates;
+        looking at the images says only the second is one.
+        """
+        sprawl = self.measure(
+            [
+                row(1, "correct", square(0, 0, 9, 100), square(0, 0, 9, 100)),
+                row(2, "false_positive", None, square(0, 0, 100, 100)),
+            ]
+        )[0]
+        second_outline = self.measure(
+            [
+                row(1, "correct", square(0, 0, 50, 50), square(0, 0, 50, 50)),
+                row(2, "false_positive", None, square(0, 0, 100, 50)),
+            ]
+        )[0]
+        assert sprawl.best_coverage >= 0.75, "the small object is well covered"
+        assert sprawl.qualifies is False, "#1022: a sprawl, not a duplicate"
+        assert second_outline.best_coverage >= 0.75
+        assert second_outline.qualifies is True, "#1223: a second outline"
+
+    def test_the_threshold_boundary(self) -> None:
+        """Inclusive at the bound, and nothing qualifies just below it."""
+        r = storage.FindingRelationRow(
+            finding_id=1,
+            relation=PREDICTION_ON_MATCHED_OBJECT,
+            value=DUPLICATE_MIN_ONOBJECT,
+            qualifies=True,
+            cover_hit=HIT,
+            best_coverage=DUPLICATE_COVERAGE_FLOOR,
+        )
+        assert is_duplicate_like(r)
+        from dataclasses import replace
+
+        assert not is_duplicate_like(replace(r, value=DUPLICATE_MIN_ONOBJECT - 1e-9))
+        assert not is_duplicate_like(
+            replace(r, best_coverage=DUPLICATE_COVERAGE_FLOOR - 1e-9)
+        )
+
+    def test_an_unmatched_object_cannot_make_a_duplicate(self) -> None:
+        """Run 5 #1191: its only overlap is with an object nothing found.
+
+        Landing on a *missed* object is not a second detection of anything.
+        """
+        got = self.measure(
+            [
+                row(1, "false_negative", square(0, 0, 100, 100)),
+                row(2, "false_positive", None, square(10, 10, 90, 90)),
+            ]
+        )
+        assert got[0].value == 0.0
+        assert got[0].qualifies is False
+
+    def test_span_stays_a_separate_qualifier(self) -> None:
+        """Run 5 #1287: one prediction over two flights found individually.
+
+        `span` is recorded and is not part of the rule. Three measurements in
+        the whole reference database carry it, which is far too few to gate on,
+        and what it raises is a question about annotation granularity rather
+        than about duplication.
+        """
+        got = self.measure(
+            [
+                row(1, "correct", square(0, 0, 45, 100), square(0, 0, 45, 100)),
+                row(2, "correct", square(55, 0, 100, 100), square(55, 0, 100, 100)),
+                row(3, "false_positive", None, square(0, 0, 100, 100)),
+            ]
+        )
+        assert got[0].span == 2
+        assert got[0].qualifies is True
+        # The rule reaches the same verdict with span ignored entirely.
+        assert is_duplicate_like(got[0])
+
+    def test_confidence_is_never_consulted(self) -> None:
+        """It carries no discriminating power and is not a condition.
+
+        Measured across 184 false positives: mean 0.522 among duplicate-like
+        and 0.520 among the rest, with a best achievable accuracy equal to the
+        base rate.
+        """
+        import inspect
+
+        source = inspect.getsource(relations.prediction_on_matched_objects)
+        source += inspect.getsource(is_duplicate_like)
+        assert "confidence" not in source
+
+    def test_the_rule_is_reported_as_provisional(self) -> None:
+        """It describes; it does not yet license anything."""
+        assert DUPLICATE_STATUS == "provisional"
+        assert DUPLICATE_PREDICTION == "duplicate_prediction"
+
+    def test_the_label_is_not_a_stored_relation(self) -> None:
+        """One relationship, one row. The label is a reading of that row."""
+        assert DUPLICATE_PREDICTION not in relations.RELATIONS
+
+    def test_both_bounds_travel_with_the_row(self) -> None:
+        """A reader must be able to see what produced the flag."""
+        got = self.measure(
+            [
+                row(1, "correct", square(0, 0, 80, 80), square(0, 0, 80, 80)),
+                row(2, "false_positive", None, square(5, 5, 75, 75)),
+            ]
+        )
+        assert got[0].threshold == DUPLICATE_MIN_ONOBJECT
+        assert got[0].coverage_floor == DUPLICATE_COVERAGE_FLOOR
+
+    def test_a_caller_may_read_it_at_different_bounds(self) -> None:
+        """The stored measurement is unchanged by how it is interpreted."""
+        got = self.measure(
+            [
+                row(1, "correct", square(0, 0, 100, 100), square(0, 0, 100, 100)),
+                row(2, "false_positive", None, square(0, 0, 100, 12)),
+            ]
+        )[0]
+        assert is_duplicate_like(got)
+        assert not is_duplicate_like(got, coverage_floor=HIT), (
+            "the same row reads differently under a stricter guard"
+        )
+
+
+class TestMatchedUnion:
+    """The union itself, since everything above rests on it."""
+
+    def test_only_matched_objects_are_in_it(self) -> None:
+        """A missed object contributes no pixels to the union."""
+        union = matched_union(
+            geometry(
+                [
+                    row(1, "correct", square(0, 0, 10, 10), square(0, 0, 10, 10)),
+                    row(2, "false_negative", square(50, 50, 90, 90)),
+                ]
+            )
+        )
+        assert union is not None
+        assert int(union.sum()) == pytest.approx(int(union.sum()))
+        # The missed object's area must not appear in the union.
+        assert union[70, 70] == 0
+        assert union[5, 5] == 1
+
+    def test_an_image_with_nothing_matched_has_no_union(self) -> None:
+        """Absent, not empty: there is nothing to measure against."""
+        union = matched_union(
+            geometry([row(1, "false_negative", square(0, 0, 50, 50))])
+        )
+        assert union is None
+
+
 class TestGeometrySafety:
     """What the pass does when geometry cannot be measured."""
 
@@ -450,9 +848,10 @@ class TestGoldenInvariants:
         changed = {t for t in tables if before[t] != after[t]}
         assert changed == {"finding_relations"}, f"unexpected writes to {changed}"
 
-    def test_the_schema_reports_thirteen(self) -> None:
-        """The new table is a schema change, and it is recorded."""
-        assert storage.SCHEMA_VERSION == 13
+    def test_the_schema_records_the_relation_work(self) -> None:
+        """13 added the table; 14 widened it for the second bound."""
+        assert storage.SCHEMA_VERSION == 14
+        assert ("finding_relations", "coverage_floor", "REAL") in storage._ADDED_COLUMNS
 
     def test_the_outcome_taxonomy_is_untouched(self) -> None:
         """Relations are additive evidence; the five outcomes are the matcher's."""

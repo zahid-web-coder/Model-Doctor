@@ -50,7 +50,7 @@ logger = get_logger(__name__)
 # Bumped when the schema changes in a way that existing readers must know
 # about. Recorded in the database so a consumer can detect a mismatch instead
 # of failing on a missing column.
-SCHEMA_VERSION: int = 13
+SCHEMA_VERSION: int = 14
 
 SCHEMA_STATEMENTS: tuple[str, ...] = (
     """
@@ -468,6 +468,7 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
         best_coverage       REAL,
         span                INTEGER,
         threshold           REAL,
+        coverage_floor      REAL,
         qualifies           INTEGER NOT NULL,
         cover_hit           REAL    NOT NULL,
         method              TEXT    NOT NULL DEFAULT 'mask',
@@ -656,6 +657,7 @@ def connect_read_only(path: Path | None = None):
 #: existed.
 _ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("runs", "name", "TEXT"),
+    ("finding_relations", "coverage_floor", "REAL"),
 )
 
 
@@ -2898,7 +2900,13 @@ class FindingRelationRow:
             than one. Multiplicity is recorded here rather than as extra rows.
         threshold: The value ``qualifies`` was decided at, or ``None`` when the
             relation has no threshold of its own.
-        qualifies: Whether the measurement met ``threshold``.
+        coverage_floor: The second bound a two-part rule was decided at, or
+            ``None``. Stored beside ``threshold`` for the same reason
+            ``image_diagnoses`` stores both of its own: a row must carry every
+            number that produced it, or a later reader cannot tell why a
+            measurement did or did not qualify.
+        qualifies: Whether the measurement met the rule. What that rule *means*
+            is the caller's to name; this only records that it was met.
         cover_hit: The run's stored coverage threshold, carried so a row is
             never read as though it had been measured at another.
         method: Geometry used. Only ``"mask"`` is produced today.
@@ -2914,6 +2922,7 @@ class FindingRelationRow:
     best_coverage: float | None = None
     span: int | None = None
     threshold: float | None = None
+    coverage_floor: float | None = None
     method: str = "mask"
 
 
@@ -2948,9 +2957,9 @@ def save_finding_relations(
             """
             INSERT INTO finding_relations (
                 run_id, finding_id, relation, direction, partner_finding_id,
-                value, best_coverage, span, threshold, qualifies, cover_hit,
-                method, created_at
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+                value, best_coverage, span, threshold, coverage_floor,
+                qualifies, cover_hit, method, created_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
                 run_id,
@@ -2962,6 +2971,7 @@ def save_finding_relations(
                 row.best_coverage,
                 row.span,
                 row.threshold,
+                row.coverage_floor,
                 1 if row.qualifies else 0,
                 row.cover_hit,
                 row.method,
@@ -2995,6 +3005,7 @@ def load_finding_relations(
         "ORDER BY finding_id, relation",
         params,
     ).fetchall()
+    columns = set(rows[0].keys()) if rows else set()
     return [
         FindingRelationRow(
             finding_id=int(r["finding_id"]),
@@ -3013,6 +3024,13 @@ def load_finding_relations(
             ),
             span=None if r["span"] is None else int(r["span"]),
             threshold=None if r["threshold"] is None else float(r["threshold"]),
+            # Absent from databases written before schema 14, so read
+            # defensively rather than by subscript.
+            coverage_floor=(
+                float(r["coverage_floor"])
+                if "coverage_floor" in columns and r["coverage_floor"] is not None
+                else None
+            ),
             method=str(r["method"]),
         )
         for r in rows

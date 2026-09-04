@@ -60,9 +60,57 @@ MATCHED_OUTCOMES: tuple[str, ...] = ("correct", "poor_localization", "wrong_clas
 MERGE_CANDIDATE: str = "merge_candidate"
 BOX_MASK_DISAGREEMENT: str = "box_mask_disagreement"
 
-#: Every relation this module can produce. ``duplicate_prediction`` is named in
-#: the design and deliberately absent here.
-RELATIONS: tuple[str, ...] = (MERGE_CANDIDATE, BOX_MASK_DISAGREEMENT)
+#: How much of an unmatched prediction lies on objects the model already found.
+#:
+#: **Named for what it measures, not for what it might mean.** The obvious name
+#: would be ``duplicate_prediction``, and the obvious name would be a verdict:
+#: it would assert that a prediction overlapping a found object is a redundant
+#: copy of it, on a boundary nobody has agreed. This measures the quantity and
+#: stops. Whether some share of it constitutes a duplicate is a later decision,
+#: made against a threshold that will have to be argued for.
+#:
+#: Every row this produces carries ``qualifies = False``. Nothing is classified.
+PREDICTION_ON_MATCHED_OBJECT: str = "prediction_on_matched_object"
+
+#: Every relation this module stores. ``duplicate_prediction`` is deliberately
+#: absent: it is a *reading* of :data:`PREDICTION_ON_MATCHED_OBJECT`, not a row
+#: of its own, so one relationship still produces exactly one row.
+RELATIONS: tuple[str, ...] = (
+    MERGE_CANDIDATE,
+    BOX_MASK_DISAGREEMENT,
+    PREDICTION_ON_MATCHED_OBJECT,
+)
+
+#: The name for a :data:`PREDICTION_ON_MATCHED_OBJECT` measurement that meets
+#: the rule below. A label a reader applies, never an outcome and never a cause.
+DUPLICATE_PREDICTION: str = "duplicate_prediction"
+
+#: How much weight that label can bear. `provisional` in the sense
+#: :mod:`app.recommendations` uses: worth reporting, not yet worth acting on.
+DUPLICATE_STATUS: str = "provisional"
+
+#: How much of the prediction must lie on ground the model already found.
+#:
+#: Chosen inside the empty interval [0.0900, 0.2249] measured across 184 false
+#: positives from four distinct configurations, three checkpoints and two
+#: datasets. Every value in that interval selects the same set, so the exact
+#: number is inconsequential — which is the point of putting it in the gap.
+DUPLICATE_MIN_ONOBJECT: float = 0.15
+
+#: How much of *some one* found object it must cover.
+#:
+#: **A guard, not a second threshold.** To duplicate an object a prediction has
+#: to substantially overlap that object; a prediction spread thinly across
+#: several objects' edges duplicates none of them. Set far below the run's
+#: ``cover_hit`` on purpose: it excludes "touches nothing", never "covers a
+#: little". Raising it to ``cover_hit`` was measured and is *worse* — it drops
+#: fragments and half-bands that are visibly second detections of an object
+#: already found.
+#:
+#: Rests on a single observed case in the reference database, and is the
+#: weakest part of this rule. Recorded here so that is visible rather than
+#: buried in a commit message.
+DUPLICATE_COVERAGE_FLOOR: float = 0.05
 
 #: The mask covers the object; the box did not match it.
 MASK_OK_BOX_FAILS: str = "mask_ok_box_fails"
@@ -100,6 +148,50 @@ def _coverage(truth_mask: Any, pred_mask: Any) -> float | None:
     if not area:
         return None
     return int((truth_mask & pred_mask).sum()) / area
+
+
+def is_duplicate_like(
+    row: storage.FindingRelationRow,
+    min_onobject: float = DUPLICATE_MIN_ONOBJECT,
+    coverage_floor: float = DUPLICATE_COVERAGE_FLOOR,
+) -> bool:
+    """Whether one measurement reads as a duplicate under the provisional rule.
+
+    **An interpretation, not a measurement.** The stored row is the same either
+    way; this says how to read it, and a caller passing different bounds gets a
+    different reading of the identical number. That is why no threshold is
+    baked into what is written.
+
+    Says nothing about *why* the prediction exists. Suppression settings,
+    decoding, assignment order and a model genuinely proposing two objects are
+    all consistent with a measurement like this, and none of them is measured
+    here.
+    """
+    if row.relation != PREDICTION_ON_MATCHED_OBJECT:
+        return False
+    return row.value >= min_onobject and (row.best_coverage or 0.0) >= coverage_floor
+
+
+def matched_union(geometry: ImageGeometry) -> Any | None:
+    """The ground truth on this image that some prediction is already assigned to.
+
+    **A bitwise OR, never a sum of pairwise intersections.** Two annotations may
+    overlap each other — adjacent flights of one staircase share a boundary —
+    and adding their intersections with a prediction would count the shared
+    pixels twice, producing a fraction above 1.0 for a prediction that lies
+    entirely on annotated ground. The union is exact and cannot do that.
+
+    Only matched objects contribute. An object the matcher could not pair is a
+    failure of its own, and a prediction landing on it is not evidence that the
+    model already found it — which is the whole claim this measurement exists to
+    support. Returns ``None`` when nothing on the image is matched.
+    """
+    union = None
+    for finding_id, mask in sorted(geometry.truth.items()):
+        if geometry.outcome.get(finding_id) not in MATCHED_OUTCOMES:
+            continue
+        union = mask if union is None else (union | mask)
+    return union
 
 
 def build_geometry(rows: Sequence[Any], width: int, height: int) -> ImageGeometry:
@@ -265,6 +357,80 @@ def box_mask_disagreements(
     return found
 
 
+def prediction_on_matched_objects(
+    geometry: ImageGeometry, cover_hit: float
+) -> list[storage.FindingRelationRow]:
+    """Measure how much of each unmatched prediction lies on found objects.
+
+    ``onobject_matched(p) = |p AND union(matched truths)| / |p|``, with the
+    union taken by :func:`matched_union` and the denominator the prediction's
+    own area — the one quantity ``image_coverage`` does not store, since its
+    coverage divides by the *object's* area instead.
+
+    **A row for every measurable false positive, including the zeros.** A
+    prediction touching nothing matched measures 0.0, and that is a
+    measurement: dropping it would leave the stored distribution unable to say
+    how many predictions land nowhere near a found object, which is most of
+    them. Only a prediction whose mask has no area at all is skipped — an
+    undefined ratio is not a zero one.
+
+    ``qualifies`` records whether the measurement meets
+    :func:`is_duplicate_like`'s provisional rule, with both bounds stored beside
+    it so a later reader can see what produced the flag and re-read the value
+    against different ones. The measurement itself is unaffected by the rule.
+
+    ``span`` stays a separate qualifier rather than part of the rule: a
+    prediction covering several already-found objects raises a question about
+    annotation granularity, and there are three such measurements in the whole
+    reference database — far too few to put inside a threshold.
+    """
+    union = matched_union(geometry)
+    found: list[storage.FindingRelationRow] = []
+
+    for finding_id, pred_mask in sorted(geometry.predicted.items()):
+        if geometry.outcome.get(finding_id) != "false_positive":
+            continue
+        area = int(pred_mask.sum())
+        if not area:
+            continue
+
+        on_object = 0.0 if union is None else int((pred_mask & union).sum()) / area
+
+        # Which found object this prediction sits on most, and how many it
+        # covers substantially. Both are measured against matched truths only,
+        # for the same reason the union is.
+        best, partner, span = 0.0, None, 0
+        for other_id, truth_mask in sorted(geometry.truth.items()):
+            if geometry.outcome.get(other_id) not in MATCHED_OUTCOMES:
+                continue
+            share = _coverage(truth_mask, pred_mask)
+            if share is None:
+                continue
+            if share > best:
+                best, partner = share, other_id
+            if share >= cover_hit:
+                span += 1
+
+        found.append(
+            storage.FindingRelationRow(
+                finding_id=finding_id,
+                relation=PREDICTION_ON_MATCHED_OBJECT,
+                value=on_object,
+                qualifies=(
+                    on_object >= DUPLICATE_MIN_ONOBJECT
+                    and best >= DUPLICATE_COVERAGE_FLOOR
+                ),
+                cover_hit=cover_hit,
+                partner_finding_id=partner,
+                best_coverage=best,
+                span=span,
+                threshold=DUPLICATE_MIN_ONOBJECT,
+                coverage_floor=DUPLICATE_COVERAGE_FLOOR,
+            )
+        )
+    return found
+
+
 def measure_image(
     rows: Sequence[Any], width: int, height: int, cover_hit: float, cover_miss: float
 ) -> list[storage.FindingRelationRow]:
@@ -275,8 +441,10 @@ def measure_image(
     order.
     """
     geometry = build_geometry(rows, width, height)
-    return merge_candidates(geometry, cover_hit) + box_mask_disagreements(
-        geometry, cover_hit, cover_miss
+    return (
+        merge_candidates(geometry, cover_hit)
+        + box_mask_disagreements(geometry, cover_hit, cover_miss)
+        + prediction_on_matched_objects(geometry, cover_hit)
     )
 
 
