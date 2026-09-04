@@ -422,8 +422,20 @@ def create_server() -> MCPServer:
                     [runs[rid] for rid in ids], evaluations, benchmarks
                 ),
                 "per_run": per_run,
+                # Fingerprints are passed so replication is judged only between
+                # differently configured runs. Without them a group present in
+                # three re-executions of one command reads as replicated three
+                # times over.
                 "cross_run": comparison.cross_run(
-                    base, outcomes, evaluations, factors, groups, recommendations
+                    base,
+                    outcomes,
+                    evaluations,
+                    factors,
+                    groups,
+                    recommendations,
+                    fingerprints={
+                        rid: comparison.run_fingerprint(runs[rid]) for rid in ids
+                    },
                 ),
                 "evidence_gaps": comparison.evidence_gaps(ids, present),
                 "caveats": list(comparison.CAVEATS),

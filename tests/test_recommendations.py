@@ -389,10 +389,13 @@ def test_a_run_without_factor_rates_cannot_confirm_a_pattern(
 
     with storage.connect(database) as connection:
         candidates = storage.load_runs_for_model(connection, "sha-for-tests")
-        usable = comparable_runs(connection, bare_run, candidates)
+        independent, reproductions = comparable_runs(
+            connection, bare_run, candidates
+        )
 
-        assert bare_run not in usable
-        for run in usable:
+        assert bare_run not in independent
+        assert bare_run not in reproductions
+        for run in (*independent, *reproductions):
             assert storage.load_factor_rates(connection, run)
 
 

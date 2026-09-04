@@ -35,7 +35,11 @@ from typing import Any
 import config
 from app import storage
 from app.clustering import DISCRIMINATING_METHOD, UNEXPLAINED_LABEL
-from app.comparison import factor_qualifies, outcomes_agree
+from app.comparison import (
+    factor_qualifies,
+    outcomes_agree,
+    partition_by_fingerprint,
+)
 from utils.exceptions import ModelDoctorError
 from utils.logging_utils import get_logger
 
@@ -49,11 +53,20 @@ class RecommendationError(ModelDoctorError):
 # Evidence status. Ordered from strongest to weakest; the first two are
 # actionable and the last two are deliberately not.
 REPLICATED: str = "replicated"
+#: Agreed with by re-executions of this run's own configuration, and nothing
+#: else. Evidentially a single observation: inference is deterministic, so a
+#: run with the same fingerprint cannot disagree, and its agreement confirms
+#: only that the command was run twice. Named rather than folded into
+#: `provisional` so a reader can see that the agreement exists and why it does
+#: not count.
+REPRODUCED: str = "reproduced"
 PROVISIONAL: str = "provisional"
 CONFLICTING: str = "conflicting"
 INSUFFICIENT: str = "insufficient_evidence"
 
-ACTIONABLE_STATUSES: frozenset[str] = frozenset({REPLICATED, PROVISIONAL})
+ACTIONABLE_STATUSES: frozenset[str] = frozenset(
+    {REPLICATED, REPRODUCED, PROVISIONAL}
+)
 
 # Rule identifiers, stored verbatim in `recommendations.rule`. Part of what a
 # consumer reads, so changing one is a contract change.
@@ -84,6 +97,13 @@ class GroupEvidence:
     excluded_factors: tuple[tuple[str, float | None, float], ...]
     comparison_runs: tuple[int, ...]
     outcome_agrees: bool | None
+    #: Runs that re-execute this run's own configuration. They are carried so
+    #: the rationale can say they exist without counting them as agreement.
+    reproduction_runs: tuple[int, ...] = ()
+    #: Whether those re-executions match. Expected to be True; False means two
+    #: identical configurations produced different groups, which is a
+    #: data-integrity problem rather than a disagreement about the pattern.
+    reproductions_agree: bool | None = None
 
     @property
     def false_negative_share(self) -> float:
@@ -108,31 +128,57 @@ def _qualifies(lift: float | None, p_value: float) -> bool:
 
 def comparable_runs(
     connection: Any, run_id: int, candidate_run_ids: Sequence[int]
-) -> list[int]:
-    """Return which other runs can actually confirm or contradict a pattern.
+) -> tuple[list[int], list[int]]:
+    """Split other runs into those that can test a pattern and those that repeat it.
 
-    A run only counts if it has measured factor rates. A run analysed before
+    Two filters, for two different ways of manufacturing confidence.
+
+    A run only counts if it has measured factor rates: a run analysed before
     those existed cannot agree or disagree, and treating its silence as
-    agreement would manufacture replication out of missing data.
+    agreement would invent replication out of missing data.
+
+    A run only counts as *independent* if its fingerprint differs. Inference is
+    deterministic, so a re-execution of the same checkpoint, dataset, split and
+    thresholds returns the same numbers by construction — runs 5, 6, 7 and 10
+    of the reference database differ by exactly zero on every measured
+    quantity. Counting those as confirmations turned one observation into four.
+
+    Returns:
+        ``(independent, reproductions)``, both sorted. Only the first may
+        decide whether a pattern replicated.
     """
-    return [
+    subject = storage.load_run(connection, run_id)
+    usable = [
         other
         for other in candidate_run_ids
         if other != run_id and storage.load_factor_rates(connection, other)
     ]
+    if subject is None:
+        return sorted(usable), []
+    records = [
+        run for run in (storage.load_run(connection, o) for o in usable) if run
+    ]
+    return partition_by_fingerprint(subject, records)
 
 
 def gather_evidence(
-    connection: Any, run_id: int, comparison_run_ids: Sequence[int]
+    connection: Any,
+    run_id: int,
+    comparison_run_ids: Sequence[int],
+    reproduction_run_ids: Sequence[int] = (),
 ) -> list[GroupEvidence]:
     """Collect the facts each rule needs, for every discriminating group.
 
     Args:
         connection: An open database connection.
         run_id: Run whose groups are being examined.
-        comparison_run_ids: Other runs of the same model, used to decide
-            whether a pattern replicates. Runs without measured factor rates
-            contribute nothing — missing data is not evidence of qualification.
+        comparison_run_ids: Independently configured runs of the same model,
+            used to decide whether a pattern replicates. Runs without measured
+            factor rates contribute nothing — missing data is not evidence of
+            qualification.
+        reproduction_run_ids: Runs re-executing this run's own configuration.
+            Reported so a reader knows they exist, and never allowed to decide
+            replication: a deterministic re-run cannot disagree.
 
     Returns:
         One record per group, ordered largest first.
@@ -150,6 +196,14 @@ def gather_evidence(
         }
         if other_rates:
             comparisons[other] = other_rates
+
+    # Kept in a separate list, never merged into `comparisons`: the two are
+    # asked the same question but only one of them may answer it.
+    reproductions = [
+        other
+        for other in reproduction_run_ids
+        if other != run_id and storage.load_factor_rates(connection, other)
+    ]
 
     evidence: list[GroupEvidence] = []
     for group in groups:
@@ -191,6 +245,12 @@ def gather_evidence(
                 comparison_runs=tuple(sorted(comparisons)),
                 outcome_agrees=_outcome_agrees(
                     connection, group.label, outcomes, group.size, comparisons
+                ),
+                reproduction_runs=tuple(sorted(reproductions)),
+                # The same test, run separately, so a re-execution's agreement
+                # is visible without ever being mixed into the verdict above.
+                reproductions_agree=_outcome_agrees(
+                    connection, group.label, outcomes, group.size, reproductions
                 ),
             )
         )
@@ -272,21 +332,58 @@ def _rationale(evidence: GroupEvidence, headline: str) -> str:
             False: "which disagree on the outcome mix",
             None: "which have no comparable group",
         }[evidence.outcome_agrees]
-        parts.append(f"Compared against run(s) {runs}, {agreement}.")
+        parts.append(
+            f"Compared against independently configured run(s) {runs}, "
+            f"{agreement}."
+        )
     else:
         parts.append(
-            "No other run of this model has measured factor rates, so this "
-            "rests on a single observation."
+            "No independently configured run of this model has measured "
+            "factor rates, so this rests on a single observation."
         )
+    # Named but never counted: a reader who knows four runs exist should be
+    # told what happened to the other three, not left to assume they were
+    # overlooked.
+    if evidence.reproduction_runs:
+        repeats = ", ".join(str(r) for r in evidence.reproduction_runs)
+        outcome = {
+            True: "reproduce it exactly, which repeats the observation rather "
+            "than confirming it",
+            False: "re-execute the same configuration yet differ, which is a "
+            "data-integrity problem rather than a failed replication",
+            None: "re-execute the same configuration but have no comparable "
+            "group",
+        }[evidence.reproductions_agree]
+        parts.append(f"Run(s) {repeats} {outcome}.")
     return " ".join(parts)
 
 
 def _status_for(evidence: GroupEvidence) -> str:
-    """Decide how much weight a group's pattern can bear."""
+    """Decide how much weight a group's pattern can bear.
+
+    **Only a run with a different fingerprint can replicate.** A re-execution
+    of the same configuration returns the same numbers by construction, so its
+    agreement is reproduction and is reported as such. Four cases:
+
+    * an independent run disagrees        -> conflicting
+    * every independent run agrees        -> replicated
+    * no independent run, but a
+      re-execution agrees                 -> reproduced
+    * nothing to compare against          -> provisional
+
+    A re-execution that *disagrees* is not a failed replication — it means two
+    identical configurations produced different groups, which is a problem with
+    the data rather than with the pattern. It is reported as conflicting so it
+    cannot be acted on until someone has looked.
+    """
     if evidence.outcome_agrees is False:
         return CONFLICTING
     if evidence.outcome_agrees is True:
         return REPLICATED
+    if evidence.reproductions_agree is False:
+        return CONFLICTING
+    if evidence.reproductions_agree is True:
+        return REPRODUCED
     return PROVISIONAL
 
 
@@ -485,14 +582,26 @@ def recommend_run(connection: Any, run_id: int) -> RecommendationReport:
         )
 
     candidates = storage.load_runs_for_model(connection, run.model_sha256)
-    comparison_runs = comparable_runs(connection, run_id, candidates)
-    if len(candidates) - 1 > len(comparison_runs):
+    comparison_runs, reproduction_runs = comparable_runs(
+        connection, run_id, candidates
+    )
+    counted = len(comparison_runs) + len(reproduction_runs)
+    if len(candidates) - 1 > counted:
         logger.info(
             "Ignoring %d run(s) of this model with no measured factor rates; "
             "missing data cannot confirm a pattern",
-            len(candidates) - 1 - len(comparison_runs),
+            len(candidates) - 1 - counted,
         )
-    evidence = gather_evidence(connection, run_id, comparison_runs)
+    if reproduction_runs:
+        logger.info(
+            "Run(s) %s re-execute run %d's configuration; they are reported "
+            "but cannot replicate it",
+            ", ".join(str(r) for r in reproduction_runs),
+            run_id,
+        )
+    evidence = gather_evidence(
+        connection, run_id, comparison_runs, reproduction_runs
+    )
 
     entries = []
     actionable = 0

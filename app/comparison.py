@@ -106,8 +106,11 @@ CAVEATS: tuple[str, ...] = (
     "reader (D-031).",
     "lift is null when undefined, never infinity; map_small, map_medium and "
     "map_large are null when the dataset has no objects in that band.",
-    "Recommendations carry an evidence status; only replicated and "
-    "provisional are actionable (D-035).",
+    "Recommendations carry an evidence status; only replicated, reproduced "
+    "and provisional are actionable (D-035).",
+    "Runs sharing a fingerprint are re-executions of one configuration, not "
+    "independent observations: their agreement is reproduction, and only a "
+    "run with a different fingerprint can replicate a pattern.",
 )
 
 #: How to fill each kind of missing evidence. The command is the remedy.
@@ -148,6 +151,89 @@ def outcomes_agree(
         fisher_exact_two_sided(here_misses, here_size, there_misses, there_size)
         >= SIGNIFICANCE
     )
+
+
+#: The fields that make two runs the same experiment.
+#:
+#: Everything an operator could change that would make the inference different.
+#: Two runs agreeing on all of them cannot disagree about anything, because
+#: inference is deterministic — so their agreement is not evidence.
+FINGERPRINT_FIELDS: tuple[str, ...] = (
+    "model_sha256",
+    "dataset",
+    "split",
+    "image_size",
+    "confidence_threshold",
+    "match_iou_threshold",
+    "localization_iou_floor",
+)
+
+
+def run_fingerprint(run: RunRecord) -> str:
+    """Return what makes this run's configuration distinct.
+
+    **Two runs with the same fingerprint are re-executions, not observations.**
+    Runs 5, 6, 7 and 10 of the reference database share a checkpoint, a
+    dataset, a split and every threshold, and return byte-identical outcome
+    counts, mAP, factor lifts, group sizes and image verdicts — deltas of
+    exactly zero on all of them. Treating that as three confirmations of run 5
+    manufactures confidence out of a repeated command.
+
+    The dataset is identified by directory name rather than by full path, which
+    is deliberately the conservative direction: the same data reached by two
+    paths must not read as two observations. The reverse error — two different
+    datasets sharing a directory name — understates independence, which costs a
+    weaker claim rather than a false one. No dataset content hash is stored;
+    ``comparability`` says so for the same reason.
+    """
+    return "|".join(
+        [
+            run.model_sha256,
+            dataset_name(run),
+            run.split,
+            str(run.image_size),
+            f"{run.confidence_threshold:.6g}",
+            f"{run.match_iou_threshold:.6g}",
+            f"{run.localization_iou_floor:.6g}",
+        ]
+    )
+
+
+def partition_by_fingerprint(
+    subject: RunRecord, others: Sequence[RunRecord]
+) -> tuple[list[int], list[int]]:
+    """Split candidate runs into those that can replicate and those that repeat.
+
+    Args:
+        subject: The run whose pattern is being tested.
+        others: Candidate comparison runs, which may include the subject.
+
+    **One representative per distinct configuration.** Excluding re-executions
+    of the *subject* is only half of it: runs 5, 6, 7 and 10 are also copies of
+    each other, so comparing run 4 against all four would count one observation
+    four times at one remove. Each distinct fingerprint contributes exactly one
+    independent run — the lowest id, so the choice is stable across calls — and
+    every further copy joins the reproductions.
+
+    Returns:
+        ``(independent, reproductions)`` as sorted id lists. Each entry in
+        ``independent`` has a fingerprint differing from the subject's and from
+        every other entry, so it could confirm or contradict. ``reproductions``
+        re-execute a configuration already accounted for — the subject's own, or
+        one an independent run already represents — and can do neither.
+    """
+    mine = run_fingerprint(subject)
+    seen: dict[str, int] = {}
+    reproductions: list[int] = []
+    for other in sorted(others, key=lambda r: r.id):
+        if other.id == subject.id:
+            continue
+        fingerprint = run_fingerprint(other)
+        if fingerprint == mine or fingerprint in seen:
+            reproductions.append(other.id)
+            continue
+        seen[fingerprint] = other.id
+    return sorted(seen.values()), sorted(reproductions)
 
 
 def comparable_evaluations(a: EvaluationRow, b: EvaluationRow) -> bool:
@@ -482,7 +568,30 @@ def comparability(
             "over the same objects."
         )
 
+    # Which of the runs being compared are re-executions of each other. Stated
+    # here because a reader looking at a table of deltas that are all zero
+    # should be told why they are zero, rather than concluding the pattern is
+    # unusually stable.
+    groups_by_print: dict[str, list[int]] = {}
+    for r in runs:
+        groups_by_print.setdefault(run_fingerprint(r), []).append(r.id)
+    repeated = {
+        fp: sorted(ids) for fp, ids in groups_by_print.items() if len(ids) > 1
+    }
+    if repeated:
+        described = "; ".join(
+            ", ".join(f"#{i}" for i in ids) for ids in repeated.values()
+        )
+        warnings.append(
+            f"These runs re-execute one configuration ({described}); their "
+            "deltas are structurally zero and carry no replication weight."
+        )
+
     return {
+        "independent_configurations": len(groups_by_print),
+        "reproduction_groups": [
+            {"fingerprint_of": ids[0], "runs": ids} for ids in repeated.values()
+        ],
         "same_model": len(shas) == 1,
         "same_dataset": {
             "by_name": len(datasets) == 1,
@@ -510,6 +619,7 @@ def cross_run(
     factors: Mapping[int, Sequence[FactorRateRow]],
     groups: Mapping[int, Sequence[GroupRow]],
     recommendations: Mapping[int, Sequence[RecommendationRow]],
+    fingerprints: Mapping[int, str] | None = None,
 ) -> dict[str, Any]:
     """Return every run measured against the baseline, and what replicates.
 
@@ -517,6 +627,14 @@ def cross_run(
     improvement and a positive mAP delta is one too. Group replication uses the
     same test the recommendations engine uses, on the same counts, so this
     module and that one cannot disagree about whether a pattern held.
+
+    **Replication is judged only between runs of different configurations.**
+    When ``fingerprints`` is given, each label's runs are split into those that
+    could confirm the baseline's group and those that merely re-execute its
+    configuration, and ``outcome_agrees`` is decided on the first set alone.
+    Without it, every run is treated as independent — which is what this
+    function did before the distinction existed, and is why a group present in
+    runs 5, 7 and 10 read as replicated three times over.
     """
     base_counts = normalise_outcomes(outcomes.get(baseline_id, {}))
     base_eval = {e.task: e for e in evaluations.get(baseline_id, ())}
@@ -554,21 +672,37 @@ def cross_run(
     replication: dict[str, Any] = {}
     for label, present in by_label.items():
         present.sort(key=lambda p: p[0])
+        first_rid, first = present[0]
+        # Anything sharing the anchor's fingerprint repeats it rather than
+        # testing it. With no fingerprints supplied nothing is a reproduction,
+        # which preserves the previous behaviour exactly.
+        anchor = fingerprints.get(first_rid) if fingerprints else None
+        independent: list[int] = []
+        reproductions: list[int] = []
+        for rid, _ in present[1:]:
+            same = anchor is not None and fingerprints.get(rid) == anchor
+            (reproductions if same else independent).append(rid)
+
         verdict: bool | None = None
-        if len(present) > 1:
-            first_rid, first = present[0]
-            first_miss = normalise_outcomes(first.outcomes)["false_negative"]
-            verdicts = [
-                outcomes_agree(
-                    first_miss, first.size,
-                    normalise_outcomes(g.outcomes)["false_negative"], g.size,
-                )
-                for _, g in present[1:]
-                if g.size and first.size
-            ]
-            verdict = all(verdicts) if verdicts else None
+        # Judged on independent runs alone: a re-execution cannot disagree, so
+        # counting its agreement would turn a repeated command into evidence.
+        verdicts = [
+            outcomes_agree(
+                normalise_outcomes(first.outcomes)["false_negative"],
+                first.size,
+                normalise_outcomes(g.outcomes)["false_negative"],
+                g.size,
+            )
+            for rid, g in present[1:]
+            if rid in independent and g.size and first.size
+        ]
+        if verdicts:
+            verdict = all(verdicts)
+
         replication[label] = {
             "present_in": [rid for rid, _ in present],
+            "independent_runs": independent,
+            "reproductions": reproductions,
             "sizes": {rid: g.size for rid, g in present},
             "outcome_agrees": verdict,
         }
