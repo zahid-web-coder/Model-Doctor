@@ -7,6 +7,7 @@ asserted directly rather than left to code review.
 
 from __future__ import annotations
 
+import importlib
 import io
 import zipfile
 from pathlib import Path
@@ -288,6 +289,64 @@ class TestStageCommands:
         ]
         assert "explainability" in yolo
         assert "explainability" not in rfdetr
+
+    def test_the_additive_passes_run_and_in_a_workable_order(
+        self, tmp_path: Path
+    ) -> None:
+        """Image diagnosis and relations run, and in that order.
+
+        The order is a requirement, not a preference: ``app.relations`` takes
+        its coverage thresholds from the stored image diagnosis and refuses to
+        run without one. Both also come after mask-diagnosis, whose outlines
+        relations measures on.
+        """
+        names = [n for n, _ in jobs.stage_commands(self._request("yolo", tmp_path), 1)]
+        assert names.index("mask-diagnosis") < names.index("image-diagnosis")
+        assert names.index("image-diagnosis") < names.index("relations")
+
+    def test_both_families_get_the_additive_passes(self, tmp_path: Path) -> None:
+        """Neither pass is family-specific, unlike explainability."""
+        for detector in ("yolo", "rfdetr"):
+            names = [
+                n for n, _ in jobs.stage_commands(self._request(detector, tmp_path), 1)
+            ]
+            assert "image-diagnosis" in names, detector
+            assert "relations" in names, detector
+
+    def test_the_declared_stages_cover_what_the_worker_runs(
+        self, tmp_path: Path
+    ) -> None:
+        """``JOB_STAGES`` is what the dashboard derives progress from.
+
+        A stage the worker runs but the tuple omits would make a job report
+        progress against a list it is not following. Explainability is the one
+        conditional stage, so the tuple is a superset rather than an equality.
+        """
+        request = self._request("yolo", tmp_path)
+        produced = [n for n, _ in jobs.stage_commands(request, None)]
+        produced += [n for n, _ in jobs.stage_commands(request, 1)]
+        assert set(produced) <= set(storage.JOB_STAGES)
+        ordering = [s for s in storage.JOB_STAGES if s in set(produced)]
+        assert ordering == produced, "JOB_STAGES disagrees with execution order"
+
+    def test_every_stage_accepts_the_arguments_it_is_given(
+        self, tmp_path: Path
+    ) -> None:
+        """Each stage's flags are parsed by that stage's own parser.
+
+        The modules do not agree on a spelling — ``app.relations`` takes
+        ``--database`` where the others take ``--db`` — so a plausible-looking
+        flag is not evidence that the stage would start. Parsing with the real
+        parser is.
+        """
+        for _, command in jobs.stage_commands(self._request("yolo", tmp_path), 1):
+            if "-m" not in command:
+                continue  # a script, covered by the entry-point test
+            module = importlib.import_module(command[command.index("-m") + 1])
+            parser = getattr(module, "build_parser", None)
+            if parser is None:
+                continue
+            parser().parse_args(command[command.index("-m") + 2:])
 
     def test_every_command_invokes_an_existing_entry_point(
         self, tmp_path: Path

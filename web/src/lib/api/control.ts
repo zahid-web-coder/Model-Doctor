@@ -220,6 +220,8 @@ export const STAGE_LABEL: Record<string, string> = {
   "root-cause": "Root causes",
   clustering: "Clustering",
   recommendations: "Recommendations",
+  "image-diagnosis": "Whole-image verdicts",
+  relations: "Finding relationships",
   explainability: "Attention heatmaps",
 };
 

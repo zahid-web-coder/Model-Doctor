@@ -112,6 +112,23 @@ def stage_commands(
         ("recommendations", [
             python, "-m", "app.recommendations", "--run", run, "--db", database,
         ]),
+        # Both passes are additive evidence: nothing earlier in this list reads
+        # what they write, so recommendations, clusters, factors and outcome
+        # counts are the same numbers whether these run or not.
+        #
+        # The order between them is not a preference. `app.relations` refuses
+        # to run without a stored image diagnosis, because it takes its
+        # coverage thresholds from that pass rather than choosing its own, so
+        # image-diagnosis must precede it.
+        ("image-diagnosis", [
+            python, "-m", "app.image_diagnosis", "--run", run, "--db", database,
+        ]),
+        # `--database`, not `--db`: this module's flag differs from the others,
+        # and a test parses every stage's arguments with that module's own
+        # parser so the difference cannot be silently mistyped here.
+        ("relations", [
+            python, "-m", "app.relations", "--run", run, "--database", database,
+        ]),
     ]
     if request.detector in EXPLAINABLE_FAMILIES:
         stages.append((

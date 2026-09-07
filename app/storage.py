@@ -2397,6 +2397,8 @@ JOB_STAGES: tuple[str, ...] = (
     "root-cause",
     "clustering",
     "recommendations",
+    "image-diagnosis",
+    "relations",
     "explainability",
 )
 
