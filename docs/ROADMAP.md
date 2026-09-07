@@ -525,9 +525,112 @@ all eight stored runs is byte-identical after the pass (D-017, D-040).
 
 ---
 
+## Milestone 13 — Relationship-aware diagnosis · **Completed (foundation)**
+
+The finding-level pass says which object failed; the image-level pass says what
+shape a photograph's mistake took. Neither can say that *this* missed object is
+covered by the prediction the matcher gave to *that* one. Relations are a third
+lens over the same findings, and they change none of them.
+
+Scope:
+
+| Item | Status |
+| --- | --- |
+| Replication semantics: fingerprint, `reproduced` distinct from `replicated` | Completed |
+| `app/relations.py` — the pass, with pure per-relation rules | Completed |
+| Schema 13: `finding_relations`; schema 14: `coverage_floor` | Completed |
+| `merge_candidate`, `box_mask_disagreement` — no new thresholds | Completed |
+| `prediction_on_matched_object` — continuous, union measured as a bitwise OR | Completed |
+| `duplicate_prediction` — provisional reading, not a stored relation | Completed |
+| `GET /runs/{id}/relations`, `GET /runs/{id}/relations/summary` | Completed |
+| MCP `get_analysis` gains a `relations` block; `list_runs` an availability flag | Completed |
+| 124 tests across the pass, the surface and the replication rules | Completed |
+| UI | Deliberately not started |
+
+**Validated against the reference database, 2026-09-04.** The pass is
+deterministic and idempotent — findings are visited in id order, rasterisation
+is integer, and re-running replaces rather than appends. It produced **391 rows
+across all eight runs**, and every one of the ten existing analysis tables —
+`findings`, `mask_findings`, `root_causes`, `factor_rates`, `clusters`,
+`cluster_members`, `recommendations`, `run_evaluations`, `image_diagnoses`,
+`image_coverage` — is byte-identical afterwards. Outcome counts, mAP, factor
+rates, clusters and image verdicts are unchanged (D-017, D-040).
+
+**Nothing consumes it.** No recommendation rule reads a relation, no relation
+reaches `root_causes` or `factor_rates`, and no cluster changes. Relations are
+additive evidence reported beside the outcome counts and never subtracted from
+them.
+
+**No causal claim is made anywhere.** A relation is measured geometry.
+`duplicate_prediction` is a provisional reading of the continuous
+`prediction_on_matched_object` measurement, carried with both bounds that
+produced it, and the payload states in as many words that no mechanism has been
+identified — suppression settings, decoding, assignment order and a model
+genuinely proposing two objects are all consistent with the measurement, and
+none of them is measured.
+
+**The evidence reaches a reasoning consumer.** A live MCP round trip
+reproduced the whole run 4 versus run 5 investigation from the tool alone, with
+no filesystem access: that raising inference size from 448 to 640 costs
+precision (0.798 → 0.613) far more than recall (0.782 → 0.713), and that **30
+of the 41 additional false positives are duplicate-labelled** while split images
+go 9 → 41 and merged images stay at 5. Every conclusion matched the earlier
+analysis that had required reading the database directly.
+
+**Out-of-sample validation: run 12, the same checkpoint at 448px on `val`.**
+Runs 4 and 5 were the only independent pair this checkpoint had, and they differ
+in exactly the variable under suspicion, so nothing separated a resolution
+effect from run-to-run variation. Run 12 fixes `image_size` and varies the data.
+Duplicate-like behaviour held its share without being asked to — **55.2%, 62.9%
+and 65.7% of measured false positives across the three independent
+configurations**, overlapping binomial intervals, the same bimodal shape and the
+same ~30% floor mass. `box_ok_mask_fails` fired for the first time, once. The
+checkpoint is named `best__3_.pt` and was selected on this split, so its
+accuracy figures there are optimistically biased and are not read as a
+generalisation result; the *shape* of the duplicate distribution is not
+something model selection optimised for, and that is what the experiment tested.
+
+**Calibration: the original justification for `0.15` was falsified, and the rule
+was kept for a different reason.** The threshold had been placed inside an empty
+interval [0.0900, 0.2249]. Pooled over the three configurations that interval
+holds two values and the widest gap collapses to 0.0648 — narrower than random
+scatter typically produces, two thirds of simulated arrangements giving a wider
+one. It is now documented as **an operational cutoff in a sparse middle region,
+not an empirically established boundary**. It is frozen rather than re-chosen
+because every value in [0.0905, 0.2245] selects the identical set, so no
+available alternative is measurably different, and re-fitting on the data that
+falsified the first choice would be fitting to the latest run.
+
+**Visual validation of the `0.05` guard, on out-of-sample cases.** Sixteen
+labelled rows covering under 25% of any one object were reviewed against their
+images — nine from run 12, none previously inspected — with polygon integrity
+and both stored measurements verified by independent rasterisation first. None
+was diffuse or spurious; twelve read as an extra prediction on an object already
+found; the case nearest the floor, at coverage 0.055, lies 97.7% inside the
+accepted prediction. The guard is no longer resting on a single case, and
+raising it is contraindicated.
+
+**What the label covers is broader than its name.** Of the 106 labelled rows,
+86% are redundant duplicates, 9% are complementary fragments on the same object,
+and a small bounded class is annotation or matcher granularity — one row in 106
+covers a truth the run recorded as missed. Splitting the label is a naming
+decision with its own evidence to gather, not a threshold to move. Until then
+`duplicate_prediction` stays **provisional**, gates nothing, and no mechanism is
+claimed: suppression settings, decoding, assignment order and a model genuinely
+proposing two objects all remain consistent with the measurement, and none of
+them is measured.
+
+---
+
 ## Blocked pending resources
 
 Not milestones, but they gate progress:
 
-Nothing is currently blocked. A model and dataset are both available, and every
-implemented capability has been exercised against them.
+A model and dataset are both available, and every implemented capability has
+been exercised against them.
+
+**One conclusion is gated rather than blocked.** Promoting
+`duplicate_prediction` beyond provisional needs an observation this database
+cannot supply: a run of the same checkpoint at a fixed inference size on data
+it was not calibrated against, and ideally a second checkpoint on the staircase
+dataset — all five staircase runs share `546ee2af`.

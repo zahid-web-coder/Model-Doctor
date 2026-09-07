@@ -21,12 +21,15 @@ attaches only to a failure by construction, so it has no control rate, its lift
 is undefined, and :func:`app.comparison.factor_qualifies` would reject it. It is
 stored apart and never enters that pipeline.
 
-**Two relations here, deliberately.** Both reuse thresholds the run already
-stored, so nothing in this module involves a judgement call about where a
-boundary sits. ``duplicate_prediction`` needs a threshold of its own and is not
-implemented yet: its continuous distribution has been measured but the boundary
-rests on four configurations, and a number chosen now would be one nobody could
-later argue with.
+**Two of the three relations invent no threshold.** ``merge_candidate`` and
+``box_mask_disagreement`` reuse bounds the run already stored, so neither
+involves a judgement call about where a boundary sits.
+``prediction_on_matched_object`` is the exception: it is stored as a continuous
+measurement, and ``duplicate_prediction`` — a *reading* of that measurement, not
+a row of its own — is the one place in this module where a number had to be
+chosen. It is `provisional` for that reason, gates nothing, and carries both of
+its bounds on every row it labels. See :data:`DUPLICATE_MIN_ONOBJECT` for what
+that choice does and does not rest on.
 
 Nothing here writes to any table but ``finding_relations``.
 """
@@ -83,6 +86,33 @@ RELATIONS: tuple[str, ...] = (
 
 #: The name for a :data:`PREDICTION_ON_MATCHED_OBJECT` measurement that meets
 #: the rule below. A label a reader applies, never an outcome and never a cause.
+#:
+#: **The name is narrower than the phenomenon, and the taxonomy stays
+#: provisional for that reason.** What the rule actually selects is *an extra
+#: prediction associated with an object the model had already found*. Measured
+#: over the 106 labelled rows in runs 4, 5 and 12, that population is not one
+#: thing:
+#:
+#: * **redundant duplicates — 91 of 106 (86%).** The prediction lies at least
+#:   half inside the prediction the matcher already accepted. "Duplicate" is the
+#:   right word for these.
+#: * **complementary fragments — 10 of 106 (9%).** The prediction sits on the
+#:   same annotated object but barely touches the accepted one, covering a part
+#:   it left out: the bottom steps of a flight whose top was found, the strip
+#:   below where the first mask stopped. Still an extra prediction for one
+#:   object, but nothing is duplicated.
+#: * **annotation and matcher granularity — a bounded error class.** The
+#:   prediction is a defensible reading of the scene that the annotation or the
+#:   assignment settled differently: a dogleg staircase annotated as one object
+#:   and detected as two flights, or a prediction that fully covers a truth this
+#:   run recorded as missed. Calling these duplicates describes the annotation,
+#:   not the prediction. Two turned up among sixteen reviewed images; exactly
+#:   one of the 106 covers an unmatched truth at or above ``cover_hit``, so the
+#:   class is real and small, not systemic.
+#:
+#: Splitting the label along those lines is a naming decision with its own
+#: evidence to gather, not a threshold to move. Until it is made, every row
+#: carries the single provisional label and the caveat travels with it.
 DUPLICATE_PREDICTION: str = "duplicate_prediction"
 
 #: How much weight that label can bear. `provisional` in the sense
@@ -91,10 +121,28 @@ DUPLICATE_STATUS: str = "provisional"
 
 #: How much of the prediction must lie on ground the model already found.
 #:
-#: Chosen inside the empty interval [0.0900, 0.2249] measured across 184 false
-#: positives from four distinct configurations, three checkpoints and two
-#: datasets. Every value in that interval selects the same set, so the exact
-#: number is inconsequential — which is the point of putting it in the gap.
+#: **An operational cutoff in a sparse middle region, not an empirically
+#: established boundary.** It was originally placed inside an empty interval
+#: [0.0900, 0.2249], and that justification did not survive. Pooling the three
+#: independent configurations of one checkpoint (runs 4, 5 and 12; 169
+#: measurements) put two values inside the interval and collapsed the widest gap
+#: to 0.0648 — *narrower* than random scatter typically produces over the same
+#: range, with two thirds of simulated arrangements giving a wider one. On the
+#: two configurations it was chosen from, the interval was already only
+#: suggestive, never significant. Read plainly: there is no evidence of a
+#: natural boundary here, at 0.15 or anywhere else in the middle.
+#:
+#: The number is nonetheless close to inert, for a different reason than the one
+#: first claimed. The distribution is strongly bimodal — 30% of measurements at
+#: the floor, 57% above 0.50, only 14% in between — and every value in
+#: [0.0905, 0.2245] selects the identical set, because
+#: :data:`DUPLICATE_COVERAGE_FLOOR` removes what lies near the cutoff on both
+#: sides. Across the whole plausible range 0.01 to 0.50 the selection moves by
+#: 14 rows in 169, roughly half the sensitivity of the guard.
+#:
+#: So it is frozen at 0.15 not because it is right but because no value
+#: available is measurably different, and re-choosing one on the same data that
+#: falsified the first choice would be fitting to the latest run.
 DUPLICATE_MIN_ONOBJECT: float = 0.15
 
 #: How much of *some one* found object it must cover.
@@ -107,9 +155,16 @@ DUPLICATE_MIN_ONOBJECT: float = 0.15
 #: fragments and half-bands that are visibly second detections of an object
 #: already found.
 #:
-#: Rests on a single observed case in the reference database, and is the
-#: weakest part of this rule. Recorded here so that is visible rather than
-#: buried in a commit message.
+#: **This was the weakest part of the rule and is no longer.** It once rested on
+#: a single observed case. Sixteen labelled rows covering less than 25% of any
+#: one object were then reviewed against their images, nine of them from a split
+#: the rule was never derived on: **none was diffuse or spurious**, and twelve
+#: read as an extra prediction on an object already found. The case nearest the
+#: floor, at coverage 0.055, lies 97.7% inside the prediction the matcher had
+#: already accepted — so raising the floor even to 0.06 would discard a real
+#: one. Low coverage among these rows means "detected a piece of it", not
+#: "detected nothing": they are single steps of multi-step flights and end
+#: slices of foreshortened slabs.
 DUPLICATE_COVERAGE_FLOOR: float = 0.05
 
 #: The mask covers the object; the box did not match it.
