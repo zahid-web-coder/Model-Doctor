@@ -50,7 +50,7 @@ logger = get_logger(__name__)
 # Bumped when the schema changes in a way that existing readers must know
 # about. Recorded in the database so a consumer can detect a mismatch instead
 # of failing on a missing column.
-SCHEMA_VERSION: int = 14
+SCHEMA_VERSION: int = 15
 
 SCHEMA_STATEMENTS: tuple[str, ...] = (
     """
@@ -508,6 +508,13 @@ class RunContext:
     match_iou_threshold: float
     localization_iou_floor: float
     image_size: int
+    #: Schema 15. What was passed to the detector, not what it did with it —
+    #: a value can be passed and ignored, which is exactly what
+    #: :mod:`app.capabilities` exists to detect. ``None`` when the caller did
+    #: not record one.
+    nms_iou_threshold: float | None = None
+    inference_max_detections: int | None = None
+    inference_library_version: str | None = None
 
 
 @dataclass(frozen=True)
@@ -528,6 +535,13 @@ class RunRecord:
     #: string: clearing a name restores the id as the run's only identity,
     #: and "" would render as a run with an invisible name.
     name: str | None = None
+    #: Schema 15 provenance. ``None`` means *not recorded*, and is never
+    #: replaced by a configured default when read: what an environment held
+    #: when a months-old run executed is not recoverable from what it holds
+    #: now, and a plausible substitute would be indistinguishable from a fact.
+    nms_iou_threshold: float | None = None
+    inference_max_detections: int | None = None
+    inference_library_version: str | None = None
 
 
 @dataclass(frozen=True)
@@ -658,6 +672,18 @@ def connect_read_only(path: Path | None = None):
 _ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("runs", "name", "TEXT"),
     ("finding_relations", "coverage_floor", "REAL"),
+    # Schema 15. What Model Doctor *passed* at inference, which nothing else
+    # records. Everything a checkpoint can answer about itself — its family,
+    # its head, whether that head is end-to-end, the size it was trained at —
+    # is deliberately absent: `app.detectors.detect_family` established that
+    # duplicating a fact the weights already hold only creates two versions of
+    # it that can disagree. These three cannot be recovered from the weights.
+    # `inference_max_detections` is named apart from
+    # `run_evaluations.max_detections`, which is COCOeval's `maxDets` and a
+    # different number entirely.
+    ("runs", "nms_iou_threshold", "REAL"),
+    ("runs", "inference_max_detections", "INTEGER"),
+    ("runs", "inference_library_version", "TEXT"),
 )
 
 
@@ -756,8 +782,9 @@ def save_run(connection: sqlite3.Connection, context: RunContext) -> int:
         INSERT INTO runs (
             created_at, model_path, model_sha256, dataset_yaml, split,
             confidence_threshold, match_iou_threshold, localization_iou_floor,
-            image_size
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            image_size, nms_iou_threshold, inference_max_detections,
+            inference_library_version
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             _timestamp(),
@@ -769,6 +796,9 @@ def save_run(connection: sqlite3.Connection, context: RunContext) -> int:
             context.match_iou_threshold,
             context.localization_iou_floor,
             context.image_size,
+            context.nms_iou_threshold,
+            context.inference_max_detections,
+            context.inference_library_version,
         ),
     )
     run_id = int(cursor.lastrowid)
@@ -908,6 +938,22 @@ def _row_to_run(row: sqlite3.Row) -> RunRecord:
         # read defensively rather than by subscript. `in` on the row itself
         # would search its *values*, so the column list is asked explicitly.
         name=row["name"] if "name" in columns else None,
+        # Absent before schema 15, and NULL on every run written before it.
+        # Read defensively for the same reason `name` is, and left as None
+        # rather than defaulted: see `RunRecord`.
+        nms_iou_threshold=(
+            row["nms_iou_threshold"] if "nms_iou_threshold" in columns else None
+        ),
+        inference_max_detections=(
+            row["inference_max_detections"]
+            if "inference_max_detections" in columns
+            else None
+        ),
+        inference_library_version=(
+            row["inference_library_version"]
+            if "inference_library_version" in columns
+            else None
+        ),
     )
 
 
@@ -1174,6 +1220,9 @@ def build_run_context(
     match_iou: float,
     localization_floor: float,
     image_size: int,
+    nms_iou: float | None = None,
+    max_detections: int | None = None,
+    library_version: str | None = None,
 ) -> RunContext:
     """Assemble a :class:`RunContext`, hashing the model file.
 
@@ -1185,6 +1234,16 @@ def build_run_context(
         match_iou: IoU at which a pair counted as correctly localised.
         localization_floor: Floor for the poor-localisation pass.
         image_size: Inference image size.
+        nms_iou: NMS IoU threshold *passed* to the detector. Recording it says
+            nothing about whether the model acted on it — a value can be
+            forwarded and ignored, which is what :mod:`app.capabilities`
+            determines. Omitted rather than defaulted when the caller does not
+            know it.
+        max_detections: Detection cap passed at inference. Distinct from
+            ``run_evaluations.max_detections``, which is COCOeval's ``maxDets``.
+        library_version: Version of the inference library that ran. Not the
+            version recorded inside the checkpoint, which is the one that
+            *trained* it and is routinely older.
 
     Returns:
         A populated run context.
@@ -1198,6 +1257,9 @@ def build_run_context(
         match_iou_threshold=match_iou,
         localization_iou_floor=localization_floor,
         image_size=image_size,
+        nms_iou_threshold=nms_iou,
+        inference_max_detections=max_detections,
+        inference_library_version=library_version,
     )
 
 

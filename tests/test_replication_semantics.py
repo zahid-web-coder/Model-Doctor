@@ -555,7 +555,19 @@ class TestNothingElseMoved:
         assert not any(
             "fingerprint" in column for _, column, _ in storage._ADDED_COLUMNS
         )
-        assert "runs" not in {table for table, _, _ in storage._ADDED_COLUMNS[1:]}
+        # Pinned by meaning rather than by position in the tuple, which later
+        # steps append to: schema 15 added inference provenance to `runs`, and
+        # a positional slice would have read that as this step storing
+        # something. What matters is that no column on `runs` records
+        # replication state — the fingerprint is still derived at read time.
+        run_columns = {
+            column for table, column, _ in storage._ADDED_COLUMNS if table == "runs"
+        }
+        assert not any(
+            word in column
+            for column in run_columns
+            for word in ("fingerprint", "reproduc", "replicat")
+        )
 
     def test_the_outcome_taxonomy_is_unchanged(self) -> None:
         """The five outcomes are out of scope for this step, and stay put."""

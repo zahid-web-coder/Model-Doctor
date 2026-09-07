@@ -849,8 +849,14 @@ class TestGoldenInvariants:
         assert changed == {"finding_relations"}, f"unexpected writes to {changed}"
 
     def test_the_schema_records_the_relation_work(self) -> None:
-        """13 added the table; 14 widened it for the second bound."""
-        assert storage.SCHEMA_VERSION == 14
+        """13 added the table; 14 widened it for the second bound.
+
+        Pinned as the presence of the relation work rather than as the current
+        version number, which later steps move for reasons of their own —
+        schema 15 recorded inference provenance, and that says nothing about
+        whether *this* step's schema is intact.
+        """
+        assert storage.SCHEMA_VERSION >= 14
         assert ("finding_relations", "coverage_floor", "REAL") in storage._ADDED_COLUMNS
 
     def test_the_outcome_taxonomy_is_untouched(self) -> None:

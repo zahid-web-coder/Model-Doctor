@@ -41,7 +41,7 @@ from mcp.types import ToolAnnotations
 from pydantic import Field
 
 import config
-from app import comparison, storage
+from app import capabilities, comparison, storage
 from app.clustering import DISCRIMINATING_METHOD, FACTOR_SIGNATURE_METHOD
 from utils.logging_utils import get_logger
 
@@ -461,6 +461,62 @@ def create_server() -> MCPServer:
                 "evidence_gaps": comparison.evidence_gaps(ids, present),
                 "caveats": list(comparison.CAVEATS),
             }
+
+    @server.tool(
+        name="experiment_feasibility",
+        title="Can varying this knob change anything?",
+        description=(
+            "Whether an inference parameter can move these runs' output at "
+            "all, asked before an experiment is designed rather than "
+            "discovered after it is run. Reports three separate facts per run: "
+            "whether the detector accepts the parameter, whether Model "
+            "Doctor's own path forwards it to the model, and whether changing "
+            "it changes the output — which are routinely different answers. "
+            "`actuation` is 'actuates', 'inert' or 'unknown'; 'unknown' is "
+            "never a synonym for 'inert', and an observed absence of effect "
+            "without an architectural reason stays 'unknown'. Use it to avoid "
+            "spending runs on a parameter nothing reads. It proposes no "
+            "experiment and draws no conclusion about the model."
+        ),
+        annotations=_READ_ONLY,
+    )
+    def experiment_feasibility(
+        knob: Annotated[
+            str,
+            Field(
+                description=(
+                    "Inference knob to interrogate: "
+                    f"{' or '.join(repr(k) for k in capabilities.KNOBS)}."
+                )
+            ),
+        ],
+        run_ids: Annotated[
+            list[int],
+            Field(
+                description="Runs the experiment would span, by id.",
+                min_length=1,
+            ),
+        ],
+        probe: Annotated[
+            bool,
+            Field(
+                description=(
+                    "Run the bounded empirical probe as well as reading the "
+                    "architecture. On by default. Turning it off is faster and "
+                    "loads no images, at the cost of an 'unknown' wherever the "
+                    "architecture alone does not settle the question."
+                )
+            ),
+        ] = True,
+    ) -> dict[str, Any]:
+        ids = _resolve_run_ids(run_ids)
+        with _database() as connection:
+            try:
+                return capabilities.experiment_feasibility(
+                    connection, knob, ids, probe=probe
+                )
+            except capabilities.CapabilityError as error:
+                raise ToolError(str(error)) from error
 
     return server
 

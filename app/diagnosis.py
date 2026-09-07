@@ -42,6 +42,7 @@ from collections import Counter, defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from enum import Enum
+from importlib import metadata
 from pathlib import Path
 
 if __package__ in (None, ""):  # pragma: no cover - import-path bootstrap
@@ -59,6 +60,44 @@ from utils.matching import SimilarityFn, match_annotations
 from utils.resources import find_images, format_report, verify_all
 
 logger = get_logger(__name__)
+
+
+#: Which distribution actually runs inference, per detector family. An
+#: RF-DETR run is not executed by Ultralytics, and recording Ultralytics'
+#: version against one would be precisely the plausible-looking substitute
+#: this column exists to avoid.
+_INFERENCE_LIBRARIES: dict[str, str] = {"yolo": "ultralytics", "rfdetr": "rfdetr"}
+
+
+def _inference_library_version(family: str | None) -> str | None:
+    """Return the version of the library that ran inference, or ``None``.
+
+    Deliberately not the version stored inside a checkpoint: that is the
+    version that *trained* the weights and is routinely older than the one
+    running them. Confusing the two would make a run look reproducible on a
+    stack it never touched.
+
+    The version is read from installed distribution metadata rather than a
+    module attribute, because not every one of these packages defines
+    ``__version__``.
+
+    Args:
+        family: Detector family as the caller gave it, resolved here the same
+            way :func:`app.detectors.build_detector` resolves it so the two
+            cannot disagree about which library a run used.
+
+    Returns:
+        ``"<distribution> <version>"``, or ``None`` when the family is
+        unknown or the version cannot be read.
+    """
+    resolved = (family or config.DETECTOR_FAMILY).strip().lower()
+    package = _INFERENCE_LIBRARIES.get(resolved)
+    if package is None:
+        return None
+    try:
+        return f"{package} {metadata.version(package)}"
+    except Exception:  # pragma: no cover - depends on the environment
+        return None
 
 
 class Outcome(Enum):
@@ -737,6 +776,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             ),
             localization_floor=config.LOCALIZATION_IOU_FLOOR,
             image_size=detector.image_size,
+            # Schema 15. Recorded because nothing else can recover them, and
+            # because a run that cannot say what it passed cannot afterwards
+            # be asked whether varying it would have mattered.
+            nms_iou=detector.iou,
+            max_detections=config.MAX_DETECTIONS,
+            library_version=_inference_library_version(args.detector),
         )
         with storage.connect(db_path) as connection:
             run_id = storage.save_dataset_diagnosis(connection, context, summary)
