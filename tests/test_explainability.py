@@ -9,7 +9,7 @@ The YOLO-specific adapter is tested against synthetic head output, so its
 anchor arithmetic and scalar selection are verified without a forward pass.
 
 The split mirrors the modules: the generic engine lives in ``utils.cam``, the
-detector-specific adapter in ``app.explainability``.
+detector-specific adapter in ``model_doctor.app.explainability``.
 """
 
 from __future__ import annotations
@@ -25,9 +25,9 @@ from torch import nn
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app.explainability import Yolo26SegAdapter, _anchor_centres
-from utils.cam import GradCAM, Letterbox, prepare_image, render_overlay
-from utils.exceptions import ExplainabilityError
+from model_doctor.app.explainability import Yolo26SegAdapter, _anchor_centres
+from model_doctor.utils.cam import GradCAM, Letterbox, prepare_image, render_overlay
+from model_doctor.utils.exceptions import ExplainabilityError
 
 
 class TinyNet(nn.Module):

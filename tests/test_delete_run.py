@@ -15,10 +15,10 @@ from pathlib import Path
 
 import pytest
 
-import config
-from app import storage
-from app.control import _remove_within_results
-from utils.exceptions import ModelDoctorError, ResourceNotFoundError
+from model_doctor import config
+from model_doctor.app import storage
+from model_doctor.app.control import _remove_within_results
+from model_doctor.utils.exceptions import ModelDoctorError, ResourceNotFoundError
 
 
 def _run_ids(connection: sqlite3.Connection) -> list[int]:

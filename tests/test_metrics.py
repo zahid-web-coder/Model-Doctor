@@ -16,7 +16,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app.inference import ValidationMetrics, format_metrics
+from model_doctor.app.inference import ValidationMetrics, format_metrics
 
 
 class _Box:

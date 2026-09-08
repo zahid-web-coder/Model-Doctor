@@ -20,8 +20,8 @@ from pathlib import Path
 
 import pytest
 
-from app import storage
-from app.storage import RunContext
+from model_doctor.app import storage
+from model_doctor.app.storage import RunContext
 
 CONTEXT = RunContext(
     model_path="/weights/best.pt",
@@ -206,7 +206,7 @@ class TestTheReaderStaysReadOnly:
 
     def test_the_read_api_still_declares_no_non_get_route(self) -> None:
         """The rename lives on the control API, and must stay there."""
-        from app.api import create_app
+        from model_doctor.app.api import create_app
 
         methods = {
             method
@@ -223,11 +223,11 @@ class TestTheReaderStaysReadOnly:
         """A name is only useful if the screens reading runs can see it."""
         from fastapi.testclient import TestClient
 
-        from app.api import create_app
+        from model_doctor.app.api import create_app
 
         with storage.connect(database) as connection:
             storage.rename_run(connection, 1, "448px baseline")
-        monkeypatch.setattr("config.DB_PATH", database)
+        monkeypatch.setattr("model_doctor.config.DB_PATH", database)
         client = TestClient(create_app())
         rows = client.get("/runs").json()
         assert rows[0]["name"] == "448px baseline"
@@ -241,9 +241,9 @@ class TestTheRoute:
         """A control app pointed at a database holding one unnamed run."""
         from fastapi.testclient import TestClient
 
-        from app.control import create_app
+        from model_doctor.app.control import create_app
 
-        monkeypatch.setattr("config.DB_PATH", database)
+        monkeypatch.setattr("model_doctor.config.DB_PATH", database)
         return TestClient(create_app())
 
     def test_a_rename_is_applied_and_echoed(self, client, database: Path) -> None:

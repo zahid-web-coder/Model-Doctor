@@ -13,10 +13,14 @@ from pathlib import Path
 
 import pytest
 
-import config
-from app import storage
-from app.clustering import DISCRIMINATING_METHOD, UNEXPLAINED_LABEL, group_run
-from app.recommendations import (
+from model_doctor import config
+from model_doctor.app import storage
+from model_doctor.app.clustering import (
+    DISCRIMINATING_METHOD,
+    UNEXPLAINED_LABEL,
+    group_run,
+)
+from model_doctor.app.recommendations import (
     BACKLOG_RULE,
     CONFLICTING,
     INSUFFICIENT,
@@ -32,7 +36,7 @@ from app.recommendations import (
     evaluate,
     recommend_run,
 )
-from app.storage import RunContext
+from model_doctor.app.storage import RunContext
 
 
 def _evidence(**overrides) -> GroupEvidence:
@@ -375,7 +379,7 @@ def test_a_run_without_groups_explains_what_to_do(tmp_path: Path) -> None:
                 image_size=640,
             ),
         )
-        with pytest.raises(RecommendationError, match="app.clustering"):
+        with pytest.raises(RecommendationError, match="model_doctor.app.clustering"):
             recommend_run(connection, run_id)
 
 

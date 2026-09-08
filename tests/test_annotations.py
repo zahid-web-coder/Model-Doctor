@@ -14,9 +14,9 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app.inference import Detection
-from utils.annotations import ObjectAnnotation, polygon_to_bbox
-from utils.dataset import load_ground_truth
+from model_doctor.app.inference import Detection
+from model_doctor.utils.annotations import ObjectAnnotation, polygon_to_bbox
+from model_doctor.utils.dataset import load_ground_truth
 
 
 # ---------------------------------------------------------------------------

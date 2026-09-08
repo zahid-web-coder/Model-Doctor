@@ -12,16 +12,16 @@ from pathlib import Path
 
 import pytest
 
-import config
-from app import storage
-from app.mask_diagnosis import (
+from model_doctor import config
+from model_doctor.app import storage
+from model_doctor.app.mask_diagnosis import (
     MASK_CORRECT,
     MASK_NO_OVERLAP,
     MASK_POOR,
     classify_mask,
 )
-from app.storage import RunContext
-from utils.masks import annotation_mask_iou, mask_iou, polygon_bounds
+from model_doctor.app.storage import RunContext
+from model_doctor.utils.masks import annotation_mask_iou, mask_iou, polygon_bounds
 
 SQUARE = [[0, 0], [10, 0], [10, 10], [0, 10]]
 SHIFTED = [[5, 0], [15, 0], [15, 10], [5, 10]]
@@ -68,7 +68,7 @@ def test_a_thin_annulus_scores_far_below_its_bounding_box() -> None:
     ring = [[0, 0], [100, 0], [100, 4], [0, 4]]  # a thin horizontal bar
     shifted_ring = [[0, 6], [100, 6], [100, 10], [0, 10]]
 
-    from utils.geometry import BoxGeometryMixin, box_iou
+    from model_doctor.utils.geometry import BoxGeometryMixin, box_iou
 
     class Box(BoxGeometryMixin):
         def __init__(self, x1, y1, x2, y2):

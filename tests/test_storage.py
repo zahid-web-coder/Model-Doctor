@@ -17,9 +17,9 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app import storage
-from app.diagnosis import DatasetDiagnosis, Outcome, diagnose_image
-from utils.annotations import ObjectAnnotation
+from model_doctor.app import storage
+from model_doctor.app.diagnosis import DatasetDiagnosis, Outcome, diagnose_image
+from model_doctor.utils.annotations import ObjectAnnotation
 
 
 def _truth(x1, y1, x2, y2, cls: int = 0) -> ObjectAnnotation:
@@ -235,7 +235,7 @@ def test_image_rows_record_dimensions_and_counts(tmp_path: Path) -> None:
 
 def test_errored_image_is_recorded_not_dropped(tmp_path: Path) -> None:
     """"Processed and found nothing" must differ from "never processed"."""
-    from app.diagnosis import ImageDiagnosis
+    from model_doctor.app.diagnosis import ImageDiagnosis
 
     failed = DatasetDiagnosis(
         diagnoses=[ImageDiagnosis(image_path=Path("bad.jpg"), error="unreadable")]

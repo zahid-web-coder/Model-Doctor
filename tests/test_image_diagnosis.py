@@ -12,16 +12,16 @@ from pathlib import Path
 
 import pytest
 
-import config
-from app import storage
-from app.image_diagnosis import (
+from model_doctor import config
+from model_doctor.app import storage
+from model_doctor.app.image_diagnosis import (
     IMAGE_VERDICTS,
     ImageDiagnosisError,
     ImageEvidence,
     analyse_run,
     classify,
 )
-from app.storage import RunContext
+from model_doctor.app.storage import RunContext
 
 HIT, MISS = 0.50, 0.25
 
@@ -364,7 +364,7 @@ class TestSummary:
         self, run_with_masks: tuple[Path, int]
     ) -> None:
         """Empty images are reported separately from clean."""
-        from app.comparison import image_summary
+        from model_doctor.app.comparison import image_summary
 
         database, run_id = run_with_masks
         with storage.connect(database) as connection:
@@ -378,6 +378,6 @@ class TestSummary:
 
     def test_no_diagnoses_summarise_to_none_not_zero(self) -> None:
         """Not measured must not read as measured-and-perfect."""
-        from app.comparison import image_summary
+        from model_doctor.app.comparison import image_summary
 
         assert image_summary([]) is None

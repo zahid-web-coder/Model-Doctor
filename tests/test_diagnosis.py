@@ -15,14 +15,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app.diagnosis import (
+from model_doctor.app.diagnosis import (
     DatasetDiagnosis,
     Outcome,
     diagnose_image,
     format_dataset_diagnosis,
     format_image_diagnosis,
 )
-from utils.annotations import ObjectAnnotation
+from model_doctor.utils.annotations import ObjectAnnotation
 
 IMAGE = Path("frame.jpg")
 
@@ -312,8 +312,8 @@ class TestFalsePositivesVersusUnlabelledImages:
         a false positive sits on an annotated image or an empty one — and the
         response to each is different.
         """
-        from app import storage
-        from app.diagnosis import DatasetDiagnosis
+        from model_doctor.app import storage
+        from model_doctor.app.diagnosis import DatasetDiagnosis
 
         annotated = diagnose_image(
             Path("annotated.jpg"),

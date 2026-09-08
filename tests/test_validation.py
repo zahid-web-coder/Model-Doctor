@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from app import validation
+from model_doctor.app import validation
 
 
 def _dataset(root: Path, *, labels: str = "0 0.5 0.5 0.2 0.2\n", split: str = "test",

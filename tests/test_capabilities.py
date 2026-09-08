@@ -31,8 +31,8 @@ from pathlib import Path
 
 import pytest
 
-from app import capabilities, storage
-from app.capabilities import (
+from model_doctor.app import capabilities, storage
+from model_doctor.app.capabilities import (
     ACTUATES,
     BOTH,
     EMPIRICAL,
@@ -51,7 +51,7 @@ from app.capabilities import (
     select_probe_images,
     verdict_for_run,
 )
-from app.storage import RunContext
+from model_doctor.app.storage import RunContext
 
 # The reference checkpoint. Its identity is asserted, not assumed: these tests
 # make claims about a specific architecture, and a same-named file with
@@ -409,7 +409,7 @@ def test_new_runs_record_provenance_and_old_ones_keep_null(tmp_path: Path) -> No
 
 def test_fingerprint_is_unchanged_by_the_new_provenance(tmp_path: Path) -> None:
     """Adding an inert knob to the fingerprint would manufacture independence."""
-    from app import comparison
+    from model_doctor.app import comparison
 
     path = tmp_path / "f.db"
     with storage.connect(path) as connection:
@@ -421,7 +421,7 @@ def test_fingerprint_is_unchanged_by_the_new_provenance(tmp_path: Path) -> None:
 
 
 def test_heterogeneous_checkpoints_are_reported_not_judged(tmp_path: Path) -> None:
-    """Whether that invalidates a comparison is app.comparison's existing job."""
+    """Whether that invalidates a comparison is model_doctor.app.comparison's job."""
     path = tmp_path / "h.db"
     with storage.connect(path) as connection:
         storage.save_run(connection, _context(model_sha256="a" * 64))
@@ -463,12 +463,12 @@ def test_report_shape_is_stable(database: Path) -> None:
 
 def test_mcp_exposes_the_tool(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Present on the read-only surface, and annotated as read-only."""
-    from app import mcp_server
+    from model_doctor.app import mcp_server
 
     path = tmp_path / "mcp.db"
     with storage.connect(path) as connection:
         storage.save_run(connection, _context())
-    monkeypatch.setattr("config.DB_PATH", path)
+    monkeypatch.setattr("model_doctor.config.DB_PATH", path)
     server = mcp_server.create_server()
     names = {tool.name for tool in server._tool_manager.list_tools()}
     assert "experiment_feasibility" in names

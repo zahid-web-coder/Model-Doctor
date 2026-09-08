@@ -17,8 +17,8 @@ from pathlib import Path
 
 import pytest
 
-import config
-from app import workspace
+from model_doctor import config
+from model_doctor.app import workspace
 
 
 @pytest.fixture

@@ -15,15 +15,20 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import config
-from app.inference import Detection, ImagePrediction, build_parser, format_detections
-from utils import resources
-from utils.dataset import (
+from model_doctor import config
+from model_doctor.app.inference import (
+    Detection,
+    ImagePrediction,
+    build_parser,
+    format_detections,
+)
+from model_doctor.utils import resources
+from model_doctor.utils.dataset import (
     label_path_for_image,
     load_dataset_config,
     load_ground_truth,
 )
-from utils.exceptions import DatasetConfigError
+from model_doctor.utils.exceptions import DatasetConfigError
 
 
 # ---------------------------------------------------------------------------

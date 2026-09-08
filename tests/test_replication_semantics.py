@@ -26,9 +26,9 @@ from typing import Any
 
 import pytest
 
-from app import comparison, storage
-from app.clustering import DISCRIMINATING_METHOD
-from app.recommendations import (
+from model_doctor.app import comparison, storage
+from model_doctor.app.clustering import DISCRIMINATING_METHOD
+from model_doctor.app.recommendations import (
     ACTIONABLE_STATUSES,
     CONFLICTING,
     PROVISIONAL,
@@ -39,7 +39,7 @@ from app.recommendations import (
     comparable_runs,
     gather_evidence,
 )
-from app.storage import RunContext
+from model_doctor.app.storage import RunContext
 
 BASE = dict(
     model_path="/weights/best.pt",
@@ -466,7 +466,7 @@ class TestAgainstADatabase:
 
     def test_the_rationale_distinguishes_the_two(self, tmp_path: Path) -> None:
         """A reader must be told the other runs exist and why they do not count."""
-        from app.recommendations import _rationale
+        from model_doctor.app.recommendations import _rationale
 
         database = tmp_path / "wording.db"
         first = seed(database)
@@ -571,7 +571,7 @@ class TestNothingElseMoved:
 
     def test_the_outcome_taxonomy_is_unchanged(self) -> None:
         """The five outcomes are out of scope for this step, and stay put."""
-        from app.diagnosis import Outcome
+        from model_doctor.app.diagnosis import Outcome
 
         assert {o.value for o in Outcome} == {
             "correct",

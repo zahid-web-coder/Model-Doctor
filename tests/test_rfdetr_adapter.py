@@ -1,7 +1,7 @@
 """Tests for the RF-DETR adapter and detector selection.
 
 The adapter's job is to make a second library produce the same
-:class:`~app.inference.Detection` objects as the first, so the parts worth
+:class:`~model_doctor.app.inference.Detection` objects as the first, so the parts worth
 testing are the conversions and the boundaries — not the network.
 
 Following the pattern in ``test_metrics.py``: the result shape is read off a
@@ -20,16 +20,20 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import config
-from app.detectors import (
+from model_doctor import config
+from model_doctor.app.detectors import (
     SUPPORTED_FAMILIES,
     build_detector,
     default_image_size,
     detect_family,
 )
-from app.inference import Detector
-from app.rfdetr_adapter import RESOLUTION_MULTIPLE, RFDetrDetector, _mask_to_polygon
-from utils.exceptions import ModelLoadError
+from model_doctor.app.inference import Detector
+from model_doctor.app.rfdetr_adapter import (
+    RESOLUTION_MULTIPLE,
+    RFDetrDetector,
+    _mask_to_polygon,
+)
+from model_doctor.utils.exceptions import ModelLoadError
 
 
 class _Detections:
@@ -198,7 +202,7 @@ def test_illegal_resolution_is_rejected_with_a_useful_message() -> None:
 
 def test_missing_checkpoint_reports_the_path() -> None:
     """A missing file is a clear message, never a traceback."""
-    from utils.exceptions import ResourceNotFoundError
+    from model_doctor.utils.exceptions import ResourceNotFoundError
 
     detector = RFDetrDetector(model_path="does/not/exist.pt", image_size=480)
 
@@ -328,7 +332,7 @@ def test_mask_pass_defaults_to_the_run_s_own_checkpoint(monkeypatch, tmp_path) -
     to predictions the run never made, and report them as its own.
     """
     torch = pytest.importorskip("torch")
-    from app import mask_diagnosis
+    from model_doctor.app import mask_diagnosis
 
     weights = tmp_path / "rf.pt"
     torch.save({"rfdetr_version": "1.8.3", "state_dict": {}}, weights)
@@ -381,7 +385,7 @@ def test_heatmaps_refuse_for_an_rfdetr_run_without_a_model_flag(
     that means nothing, which is worse than none because it gets believed.
     """
     torch = pytest.importorskip("torch")
-    from app import explainability
+    from model_doctor.app import explainability
 
     weights = tmp_path / "rf.pt"
     torch.save({"rfdetr_version": "1.8.3", "state_dict": {}}, weights)

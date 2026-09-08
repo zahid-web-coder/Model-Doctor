@@ -15,9 +15,9 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-import config
-from app import jobs, storage, workspace
-from app.control import create_app
+from model_doctor import config
+from model_doctor.app import jobs, storage, workspace
+from model_doctor.app.control import create_app
 
 
 @pytest.fixture
@@ -70,8 +70,8 @@ class TestTheReadApiStaysReadOnly:
     """The guarantee this feature was most likely to break."""
 
     def test_the_read_api_still_declares_no_write_route(self) -> None:
-        """app.api must remain GET-only after the control API exists."""
-        from app.api import create_app as create_reader
+        """model_doctor.app.api must remain GET-only after the control API exists."""
+        from model_doctor.app.api import create_app as create_reader
 
         methods: set[str] = set()
         for route in create_reader().routes:
@@ -79,12 +79,20 @@ class TestTheReadApiStaysReadOnly:
         assert methods <= {"GET", "HEAD"}, f"a write route appeared: {methods}"
 
     def test_the_reader_still_opens_the_database_read_only(self) -> None:
-        """The structural half of the guarantee, not just the route list."""
+        """The structural half of the guarantee, not just the route list.
+
+        The open moved into ``service`` when the engine gained a non-HTTP
+        caller, so the chain is checked rather than one function's text: the
+        API's reader must go through ``service``, and ``service`` must reach
+        the ``mode=ro`` opener in ``storage``.
+        """
         import inspect
 
-        from app import api
+        from model_doctor.app import api, service, storage
 
-        assert "mode=ro" in inspect.getsource(api.read_only)
+        assert "service.read_only" in inspect.getsource(api.read_only)
+        assert "connect_read_only" in inspect.getsource(service.read_only)
+        assert "mode=ro" in inspect.getsource(storage.connect_read_only)
 
 
 class TestCapabilities:
@@ -92,7 +100,7 @@ class TestCapabilities:
 
     def test_lists_only_families_with_an_adapter(self, client: TestClient) -> None:
         """Lists only families with an adapter."""
-        from app.detectors import SUPPORTED_FAMILIES
+        from model_doctor.app.detectors import SUPPORTED_FAMILIES
 
         body = client.get("/capabilities").json()
         assert [d["family"] for d in body["detectors"]] == list(SUPPORTED_FAMILIES)
@@ -295,7 +303,8 @@ class TestStageCommands:
     ) -> None:
         """Image diagnosis and relations run, and in that order.
 
-        The order is a requirement, not a preference: ``app.relations`` takes
+        The order is a requirement, not a preference: ``model_doctor.app.relations``
+        takes
         its coverage thresholds from the stored image diagnosis and refuses to
         run without one. Both also come after mask-diagnosis, whose outlines
         relations measures on.
@@ -334,7 +343,7 @@ class TestStageCommands:
     ) -> None:
         """Each stage's flags are parsed by that stage's own parser.
 
-        The modules do not agree on a spelling — ``app.relations`` takes
+        The modules do not agree on a spelling — ``model_doctor.app.relations`` takes
         ``--database`` where the others take ``--db`` — so a plausible-looking
         flag is not evidence that the stage would start. Parsing with the real
         parser is.

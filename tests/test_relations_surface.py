@@ -23,9 +23,9 @@ from fastapi.testclient import TestClient
 from mcp.client._memory import InMemoryTransport
 from mcp.client.session import ClientSession
 
-import config
-from app import comparison, relations, storage
-from app.storage import RunContext
+from model_doctor import config
+from model_doctor.app import comparison, relations, storage
+from model_doctor.app.storage import RunContext
 
 SIZE = 100
 
@@ -42,7 +42,7 @@ def measured(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, int
     unmatched predictions — one that duplicates a found object and one that
     touches nothing.
     """
-    from app.image_diagnosis import analyse_run as diagnose
+    from model_doctor.app.image_diagnosis import analyse_run as diagnose
 
     database = tmp_path / "surface.db"
     with storage.connect(database) as connection:
@@ -111,7 +111,7 @@ def measured(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, int
 
 def call(tool: str, arguments: dict[str, Any] | None = None) -> Any:
     """One MCP tool call over the in-memory transport."""
-    from app.mcp_server import create_server
+    from model_doctor.app.mcp_server import create_server
 
     async def go() -> Any:
         async with (
@@ -131,7 +131,7 @@ class TestTheHttpSurface:
 
     def client(self) -> TestClient:
         """A client on the read API, pointed at the fixture database."""
-        from app.api import create_app
+        from model_doctor.app.api import create_app
 
         return TestClient(create_app())
 
@@ -212,7 +212,7 @@ class TestTheHttpSurface:
 
     def test_the_reader_still_declares_no_non_get_route(self) -> None:
         """Adding a surface must not add a way to write through it (D-037)."""
-        from app.api import create_app
+        from model_doctor.app.api import create_app
 
         methods = {
             method
@@ -250,7 +250,7 @@ class TestPartnerIntegrityOverTheApi:
     ) -> None:
         """Every partner id resolves to a finding beside it on the image."""
         database, run_id = measured
-        from app.api import create_app
+        from model_doctor.app.api import create_app
 
         client = TestClient(create_app())
         rows = client.get(f"/runs/{run_id}/relations").json()

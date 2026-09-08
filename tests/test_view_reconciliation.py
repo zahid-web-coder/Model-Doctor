@@ -28,9 +28,9 @@ from pathlib import Path
 
 import pytest
 
-from app import storage
-from app.image_diagnosis import analyse_run
-from app.storage import RunContext
+from model_doctor.app import storage
+from model_doctor.app.image_diagnosis import analyse_run
+from model_doctor.app.storage import RunContext
 
 #: Outcomes that reference an annotated object.
 ANNOTATED = ("correct", "wrong_class", "poor_localization", "false_negative")

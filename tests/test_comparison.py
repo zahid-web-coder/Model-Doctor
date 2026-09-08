@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import pytest
 
-from app import comparison as c
-from app.storage import (
+from model_doctor.app import comparison as c
+from model_doctor.app.storage import (
     BenchmarkRow,
     EvaluationRow,
     FactorRateRow,
@@ -122,7 +122,7 @@ class TestReplication:
 
     def test_matches_the_recommendations_engine(self) -> None:
         """The engine delegates here; a change breaks both or neither."""
-        from app import recommendations
+        from model_doctor.app import recommendations
         assert recommendations.outcomes_agree is c.outcomes_agree
         assert recommendations.factor_qualifies is c.factor_qualifies
 

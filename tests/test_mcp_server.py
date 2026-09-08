@@ -22,11 +22,11 @@ import pytest
 from mcp.client._memory import InMemoryTransport
 from mcp.client.session import ClientSession
 
-import config
-from app import storage
-from app.clustering import DISCRIMINATING_METHOD
-from app.mcp_server import create_server
-from app.storage import RunContext
+from model_doctor import config
+from model_doctor.app import storage
+from model_doctor.app.clustering import DISCRIMINATING_METHOD
+from model_doctor.app.mcp_server import create_server
+from model_doctor.app.storage import RunContext
 
 SAME_MODEL = "5" * 64
 OTHER_MODEL = "9" * 64
@@ -365,7 +365,7 @@ class TestRefusals:
         """A missing database carries the command that makes one."""
         monkeypatch.setattr(config, "DB_PATH", tmp_path / "absent.db")
         text = _error_text(_call("list_runs"))
-        assert "app.diagnosis" in text
+        assert "model_doctor.app.diagnosis" in text
 
 
 class TestReadOnly:
@@ -420,7 +420,7 @@ def test_importing_the_server_loads_neither_torch_nor_fastapi() -> None:
         [
             sys.executable,
             "-c",
-            "import sys; import app.mcp_server; "
+            "import sys; import model_doctor.app.mcp_server; "
             "print(sorted(m for m in ('torch', 'ultralytics', 'fastapi') "
             "if m in sys.modules))",
         ],
@@ -430,5 +430,5 @@ def test_importing_the_server_loads_neither_torch_nor_fastapi() -> None:
         check=True,
     )
     assert result.stdout.strip() == "[]", (
-        f"importing app.mcp_server loaded {result.stdout.strip()}"
+        f"importing model_doctor.app.mcp_server loaded {result.stdout.strip()}"
     )

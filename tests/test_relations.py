@@ -26,8 +26,8 @@ from typing import Any
 
 import pytest
 
-from app import relations, storage
-from app.relations import (
+from model_doctor.app import relations, storage
+from model_doctor.app.relations import (
     BOX_MASK_DISAGREEMENT,
     BOX_OK_MASK_FAILS,
     DUPLICATE_COVERAGE_FLOOR,
@@ -45,7 +45,7 @@ from app.relations import (
     merge_candidates,
     prediction_on_matched_objects,
 )
-from app.storage import RunContext
+from model_doctor.app.storage import RunContext
 
 HIT, MISS = 0.50, 0.25
 SIZE = 100
@@ -729,7 +729,7 @@ class TestGeometrySafety:
 @pytest.fixture()
 def analysed(tmp_path: Path) -> tuple[Path, int]:
     """A run with an image diagnosis, so relations have a threshold to use."""
-    from app.image_diagnosis import analyse_run as diagnose
+    from model_doctor.app.image_diagnosis import analyse_run as diagnose
 
     database = tmp_path / "relations.db"
     with storage.connect(database) as connection:
@@ -861,7 +861,7 @@ class TestGoldenInvariants:
 
     def test_the_outcome_taxonomy_is_untouched(self) -> None:
         """Relations are additive evidence; the five outcomes are the matcher's."""
-        from app.diagnosis import Outcome
+        from model_doctor.app.diagnosis import Outcome
 
         assert {o.value for o in Outcome} == {
             "correct",
@@ -948,7 +948,7 @@ class TestPassBehaviour:
         stored threshold, and the relation pass must follow it rather than any
         constant of its own.
         """
-        from app.image_diagnosis import analyse_run as diagnose
+        from model_doctor.app.image_diagnosis import analyse_run as diagnose
 
         database = tmp_path / "threshold.db"
         with storage.connect(database) as connection:

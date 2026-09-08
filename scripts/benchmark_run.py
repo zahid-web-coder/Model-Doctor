@@ -87,12 +87,12 @@ def _project() -> tuple:
     Returns the handful of names this script needs, so the import cost lands
     after :data:`PROCESS_STARTED` rather than before it.
     """
-    import config
-    from app import evaluation, storage
-    from app.detectors import build_detector, detect_family
-    from app.storage import file_sha256
-    from utils.dataset import load_dataset_config
-    from utils.logging_utils import get_logger
+    from model_doctor import config
+    from model_doctor.app import evaluation, storage
+    from model_doctor.app.detectors import build_detector, detect_family
+    from model_doctor.app.storage import file_sha256
+    from model_doctor.utils.dataset import load_dataset_config
+    from model_doctor.utils.logging_utils import get_logger
 
     return (
         config, evaluation, storage, build_detector, detect_family,

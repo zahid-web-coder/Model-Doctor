@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from utils.statistics import fisher_exact_two_sided, lift, percentile
+from model_doctor.utils.statistics import fisher_exact_two_sided, lift, percentile
 
 
 # ---------------------------------------------------------------------------

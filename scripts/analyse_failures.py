@@ -5,8 +5,10 @@ wrong, and on what kind of object — which is the question Model Doctor exists
 to answer.
 
 Nothing here is a new metric. It drives the project's existing
-:func:`app.diagnosis.diagnose_image` for the outcome taxonomy and the existing
-:mod:`app.root_cause` factor detectors for the conditions, then reports each
+:func:`model_doctor.app.diagnosis.diagnose_image` for the outcome taxonomy and the
+existing
+:mod:`model_doctor.app.root_cause` factor detectors for the conditions, then reports
+each
 factor's rate on failures against its rate on correct detections with the
 project's own :func:`utils.statistics.lift` and Fisher test. A factor that is
 common on failures *and* common on correct detections explains nothing, and the
@@ -31,8 +33,8 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app.diagnosis import diagnose_image
-from app.root_cause import (
+from model_doctor.app.diagnosis import diagnose_image
+from model_doctor.app.root_cause import (
     BlurFactor,
     CrowdingFactor,
     EdgeTruncationFactor,
@@ -41,9 +43,9 @@ from app.root_cause import (
     SmallObjectFactor,
     ThinStructureFactor,
 )
-from utils.annotations import ObjectAnnotation
-from utils.logging_utils import get_logger
-from utils.statistics import fisher_exact_two_sided, lift
+from model_doctor.utils.annotations import ObjectAnnotation
+from model_doctor.utils.logging_utils import get_logger
+from model_doctor.utils.statistics import fisher_exact_two_sided, lift
 
 logger = get_logger(__name__)
 

@@ -20,7 +20,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app import evaluation, storage
+from model_doctor.app import evaluation, storage
 
 pytest.importorskip("pycocotools", reason="pycocotools is a core requirement")
 
