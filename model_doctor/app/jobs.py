@@ -200,7 +200,8 @@ class JobRunner:
             try:
                 self.run(request)
             except Exception:  # noqa: BLE001 - a worker must never die
-                logger.exception("Job %s crashed the worker loop", request.token)
+                job_id = request.token
+                logger.exception("Job %s crashed the worker loop", job_id)
             finally:
                 self._queue.task_done()
 
@@ -228,7 +229,8 @@ class JobRunner:
                 self._run_stage(request, name, command)
 
         except Exception as error:  # noqa: BLE001 - reported, not raised
-            logger.warning("Job %s failed: %s", request.token, error)
+            job_id = request.token
+            logger.warning("Job %s failed: %s", job_id, error)
             self._record(
                 request.token,
                 status="failed",
@@ -243,7 +245,8 @@ class JobRunner:
 
     def _run_stage(self, request: JobRequest, name: str, command: list[str]) -> None:
         """Run one stage, capturing its output and raising on failure."""
-        logger.info("Job %s: %s", request.token, name)
+        job_id = request.token
+        logger.info("Job %s: %s", job_id, name)
         log_file = request.workspace / "logs" / f"{name}.log"
         log_file.parent.mkdir(parents=True, exist_ok=True)
 
@@ -282,7 +285,8 @@ class JobRunner:
             with storage.connect() as connection:
                 storage.update_job(connection, token, **fields)
         except Exception:  # noqa: BLE001 - progress reporting is not the work
-            logger.exception("Could not update job %s", token)
+            job_id = token
+            logger.exception("Could not update job %s", job_id)
 
     @staticmethod
     def _verify_usable(database: Path, run_id: int) -> None:

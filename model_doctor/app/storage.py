@@ -1172,11 +1172,12 @@ def load_findings_page(
     if image_id is not None:
         clauses.append("image_id = ?")
         params.append(image_id)
-    rows = connection.execute(
-        f"SELECT * FROM findings WHERE {' AND '.join(clauses)} "
-        "ORDER BY id LIMIT ? OFFSET ?",
-        (*params, limit, offset),
-    ).fetchall()
+    sql = (
+        "SELECT * FROM findings WHERE "
+        + " AND ".join(clauses)
+        + " ORDER BY id LIMIT ? OFFSET ?"
+    )
+    rows = connection.execute(sql, (*params, limit, offset)).fetchall()
     return [_finding_record(row) for row in rows]
 
 
@@ -3076,11 +3077,12 @@ def load_finding_relations(
     if relation is not None:
         clauses.append("relation = ?")
         params.append(relation)
-    rows = connection.execute(
-        f"SELECT * FROM finding_relations WHERE {' AND '.join(clauses)} "
-        "ORDER BY finding_id, relation",
-        params,
-    ).fetchall()
+    sql = (
+        "SELECT * FROM finding_relations WHERE "
+        + " AND ".join(clauses)
+        + " ORDER BY finding_id, relation"
+    )
+    rows = connection.execute(sql, params).fetchall()
     columns = set(rows[0].keys()) if rows else set()
     return [
         FindingRelationRow(
