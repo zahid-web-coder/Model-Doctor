@@ -73,10 +73,28 @@ class MaskDiagnosisReport:
     images_unreadable: int
     mean_mask_iou: float | None
     mean_box_iou: float | None
+    #: False when the model predicts no outlines at all. That is a detection
+    #: model, and having nothing to measure is a property of the model rather
+    #: than a fault in the run — so it is reported, not raised.
+    applicable: bool = True
 
     def describe(self) -> str:
         """Render the report, leading with the disagreement that motivates it."""
         width = 70
+        if not self.applicable:
+            return "\n".join([
+                "",
+                "Mask-level diagnosis",
+                "=" * width,
+                f"  Run                    : {self.run_id}",
+                f"  Findings examined      : {self.findings_examined}",
+                "",
+                "  Not applicable: this model predicts boxes, not outlines.",
+                "  Mask-level diagnosis measures how well predicted outlines",
+                "  agree with annotated ones, and a detection model has none.",
+                "=" * width,
+                "",
+            ])
         lines = [
             "",
             "Mask-level diagnosis",
@@ -281,10 +299,25 @@ def diagnose_masks(
                     disagreements += 1
 
     if not outlines_seen:
-        raise MaskDiagnosisError(
-            "The model produced no outlines, so there is nothing to measure at "
-            "mask level. This is expected for a detection model; mask "
-            "diagnosis applies to segmentation models only."
+        # A detection model has no outlines by construction. Raising here made
+        # the job runner — which treats any non-zero exit as a failed job — end
+        # the whole analysis at this stage with a message saying nothing was
+        # wrong. Nothing is written, because there is nothing measured to write.
+        logger.info(
+            "Run %d used a model that predicts no outlines; mask-level "
+            "diagnosis does not apply to it.",
+            run_id,
+        )
+        return MaskDiagnosisReport(
+            run_id=run_id,
+            findings_examined=len(rows),
+            measured=0,
+            unmeasurable=len(entries),
+            disagreements=0,
+            images_unreadable=unreadable,
+            mean_mask_iou=None,
+            mean_box_iou=None,
+            applicable=False,
         )
 
     written = storage.save_mask_findings(connection, run_id, entries)
@@ -423,10 +456,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             logger.error("%s", exc)
             return 1
 
-        comparison = format_class_comparison(connection, run_id)
+        comparison = (
+            format_class_comparison(connection, run_id) if report.applicable else ""
+        )
 
     print(report.describe())
-    print(comparison)
+    if comparison:
+        print(comparison)
     return 0
 
 

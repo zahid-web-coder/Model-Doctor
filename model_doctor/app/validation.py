@@ -308,19 +308,30 @@ def validate_dataset(
     )
     result.facts["image_count"] = images
 
-    labels_dir = images_dir.parent / _LABELS_DIR
-    result.add(
-        "Labels directory exists",
-        labels_dir.is_dir(),
-        str(labels_dir.name) if labels_dir.is_dir() else (
-            f"No {_LABELS_DIR}/ beside {images_dir.name}/. Ground truth is "
-            "required: without it there is nothing to diagnose failures "
-            "against."
-        ),
-    )
-    if not labels_dir.is_dir():
-        return result
+    from model_doctor.utils import ground_truth as gt
 
+    layout = gt.detect_format(images_dir)
+    result.add(
+        "Ground truth is present, in a layout this project reads",
+        layout is not None,
+        {
+            gt.FORMAT_YOLO: f"{_LABELS_DIR}/ beside {images_dir.name}/",
+            gt.FORMAT_COCO: "a COCO annotation file in the split",
+        }.get(layout or "", (
+            f"Neither a {_LABELS_DIR}/ directory beside {images_dir.name}/ nor "
+            f"one of {', '.join(gt.COCO_ANNOTATION_NAMES)} in the split. Ground "
+            "truth is required: without it there is nothing to diagnose "
+            "failures against."
+        )),
+    )
+    if layout is None:
+        return result
+    result.facts["dataset_format"] = layout
+
+    if layout == gt.FORMAT_COCO:
+        return _validate_coco_split(result, images_dir, gt)
+
+    labels_dir = gt.labels_dir(images_dir) or (images_dir.parent / _LABELS_DIR)
     parsed, bad = _inspect_labels(labels_dir, max(dataset.class_names, default=0))
     result.add(
         "Label files parse as YOLO annotations",
@@ -328,6 +339,64 @@ def validate_dataset(
         f"{parsed} label file(s) read" if not bad else "; ".join(bad[:3]),
     )
     result.facts["label_files"] = parsed
+    return result
+
+
+def _validate_coco_split(result: ValidationResult, images_dir: Path, gt: Any):
+    """Check a COCO split the way the YOLO branch checks a label directory.
+
+    Two things have to hold before a run is worth starting: the annotation file
+    parses and declares its classes, and it actually describes the images that
+    are on disk. The second is the one that matters most — a file naming a
+    different set of images would leave every prediction unmatched and report a
+    model that finds nothing, which looks like a model problem and is not.
+    """
+    annotation = gt.annotation_file(images_dir)
+    try:
+        class_names, _ = gt.read_coco_categories(annotation)
+    except Exception as error:  # noqa: BLE001 - surfaced verbatim to the operator
+        result.add("Annotation file declares its classes", False, str(error))
+        return result
+
+    result.add(
+        "Annotation file declares its classes",
+        True,
+        f"{len(class_names)} class(es): "
+        f"{', '.join(list(class_names.values())[:6])}",
+    )
+    result.facts["class_names"] = class_names
+
+    import json
+
+    try:
+        raw = json.loads(annotation.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        result.add("Annotation file is readable", False, str(error))
+        return result
+
+    from model_doctor import config
+
+    on_disk = {
+        path.name
+        for path in images_dir.iterdir()
+        if path.is_file() and path.suffix.lower() in config.IMAGE_EXTENSIONS
+    }
+    described = {
+        Path(str(record.get("file_name", ""))).name
+        for record in (raw.get("images") or [])
+    }
+    matched = on_disk & described
+    result.add(
+        "Annotations describe the images in the split",
+        bool(matched),
+        f"{len(matched)} of {len(on_disk)} image(s) annotated" if matched else (
+            f"{annotation.name} names none of the {len(on_disk)} image(s) in "
+            f"{images_dir.name}. Diagnosing against it would report every "
+            "prediction as spurious."
+        ),
+    )
+    result.facts["annotation_file"] = str(annotation)
+    result.facts["annotated_images"] = len(matched)
     return result
 
 

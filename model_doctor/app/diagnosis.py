@@ -55,7 +55,6 @@ from model_doctor.utils.annotations import ObjectAnnotation
 from model_doctor.utils.dataset import (
     DatasetConfig,
     load_dataset_config,
-    load_ground_truth,
 )
 from model_doctor.utils.exceptions import (
     DatasetConfigError,
@@ -63,6 +62,10 @@ from model_doctor.utils.exceptions import (
     ResourceNotFoundError,
 )
 from model_doctor.utils.geometry import box_iou
+from model_doctor.utils.ground_truth import (
+    open_ground_truth,
+    verify_class_names,
+)
 from model_doctor.utils.logging_utils import get_logger
 from model_doctor.utils.matching import SimilarityFn, match_annotations
 from model_doctor.utils.resources import find_images, format_report, verify_all
@@ -633,10 +636,32 @@ def diagnose_split(
             f"{', '.join(dataset.splits) or 'none'}"
         )
 
+    # Ground truth is opened once for the split, in whichever format the split
+    # is actually in. A split whose annotations cannot be located raises here
+    # rather than reading as one that legitimately has none — which would report
+    # every prediction as spurious and call the run a success.
+    source = open_ground_truth(split_dir, dataset.class_names)
+
+    # The dataset's classes must be the model's classes. Compared before a
+    # single image is read, because a mismatch mislabels every finding while
+    # the run still succeeds, and that is the most expensive way to be wrong.
+    #
+    # The model is loaded here rather than on the first image. A detector only
+    # knows its class names once loaded, so deferring meant the comparison read
+    # nothing and passed — the check existed and never ran. Loading is
+    # idempotent and was going to happen a line later anyway.
+    detector.load()
+    verify_class_names(source, detector.class_names)
+
     images = find_images(split_dir)
     if limit:
         images = images[:limit]
-    logger.info("Diagnosing %d image(s) from split '%s'", len(images), split)
+    logger.info(
+        "Diagnosing %d image(s) from split '%s' with %s ground truth",
+        len(images),
+        split,
+        source.format,
+    )
 
     diagnoses: list[ImageDiagnosis] = []
     for index, image_path in enumerate(images, start=1):
@@ -647,11 +672,8 @@ def diagnose_split(
             )
             continue
 
-        truths = load_ground_truth(
-            image_path,
-            prediction.image_width,
-            prediction.image_height,
-            dataset.class_names,
+        truths = source.annotations_for(
+            image_path, prediction.image_width, prediction.image_height
         )
         diagnosis = diagnose_image(
             image_path,

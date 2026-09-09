@@ -170,6 +170,8 @@ def load_dataset_config(path: Path | None = None) -> DatasetConfig:
             len(class_names),
         )
 
+    class_names = _class_names_for(class_names, splits, yaml_path)
+
     logger.info(
         "Loaded dataset config: %d classes, splits present: %s",
         len(class_names),
@@ -181,6 +183,59 @@ def load_dataset_config(path: Path | None = None) -> DatasetConfig:
         splits=splits,
         source_path=yaml_path,
     )
+
+
+def _class_names_for(
+    declared: dict[int, str], splits: dict[str, Path], yaml_path: Path
+) -> dict[int, str]:
+    """Return the names to use, preferring a COCO split's own categories.
+
+    A YOLO dataset's ``data.yaml`` is written by whoever made the dataset and is
+    the only record of its classes, so it is trusted unchanged — nothing about
+    the existing path moves.
+
+    A COCO dataset is different. Ramanujan generates a descriptor for one so
+    that the rest of the system has a file to point at, and that generated
+    ``names`` is a single placeholder rather than the real classes. Believing it
+    would label every finding ``object``. The annotation file beside the images
+    is the authority for such a split, and it is read here.
+
+    Args:
+        declared: ``names`` as the descriptor gave them.
+        splits: Resolved split directories.
+        yaml_path: The descriptor, named in the log so a surprising answer can
+            be traced back to the file it came from.
+    """
+    from model_doctor.utils import ground_truth
+
+    for _key, split_dir in sorted(splits.items()):
+        if ground_truth.detect_format(split_dir) != ground_truth.FORMAT_COCO:
+            continue
+        annotation = ground_truth.annotation_file(split_dir)
+        if annotation is None:  # pragma: no cover - detect_format found it
+            continue
+        try:
+            names, _ = ground_truth.read_coco_categories(annotation)
+        except DatasetConfigError as error:
+            logger.warning(
+                "%s is a COCO split but its categories are unreadable (%s); "
+                "keeping the descriptor's names.",
+                split_dir,
+                error,
+            )
+            return declared
+        if names != declared:
+            logger.info(
+                "%s is a COCO split; taking class names from %s rather than "
+                "%s. Descriptor said %s; the annotations say %s.",
+                split_dir,
+                annotation.name,
+                yaml_path.name,
+                list(declared.values())[:6],
+                list(names.values())[:6],
+            )
+        return names
+    return declared
 
 
 def label_path_for_image(image_path: Path) -> Path:

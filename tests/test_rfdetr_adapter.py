@@ -32,6 +32,9 @@ from model_doctor.app.rfdetr_adapter import (
     RESOLUTION_MULTIPLE,
     RFDetrDetector,
     _mask_to_polygon,
+    resolution_multiple,
+    resolve_variant,
+    snap_resolution,
 )
 from model_doctor.utils.exceptions import ModelLoadError
 
@@ -435,6 +438,9 @@ def test_device_reaches_rfdetr_at_construction(monkeypatch, tmp_path) -> None:
 
     module = types.ModuleType("rfdetr")
     module.RFDETRSegNano = _Stub
+    # The adapter reads the variant from the checkpoint and falls back to the
+    # library's own base class when the file names none — as a stub does not.
+    module.RFDETR = _Stub
     monkeypatch.setitem(sys.modules, "rfdetr", module)
 
     detector = RFDetrDetector(model_path=weights, image_size=480, device="cpu")
@@ -460,9 +466,172 @@ def test_each_device_is_passed_through_verbatim(monkeypatch, tmp_path) -> None:
     weights.write_bytes(b"stub")
     module = types.ModuleType("rfdetr")
     module.RFDETRSegNano = _Stub
+    # The adapter reads the variant from the checkpoint and falls back to the
+    # library's own base class when the file names none — as a stub does not.
+    module.RFDETR = _Stub
     monkeypatch.setitem(sys.modules, "rfdetr", module)
 
     for device in ("cpu", "mps", "cuda:0"):
         RFDetrDetector(model_path=weights, image_size=480, device=device).load()
 
     assert seen == ["cpu", "mps", "cuda:0"]
+
+
+# ---------------------------------------------------------------------------
+# Variant resolution — which RF-DETR a checkpoint actually is
+# ---------------------------------------------------------------------------
+class TestVariantResolution:
+    """One adapter serves every size, detection and segmentation alike.
+
+    The variant decides two things that used to be hardcoded to Seg Nano: the
+    class that loads the file, and the resolution stride its backbone requires.
+    Both are read from the checkpoint and the library rather than assumed.
+    """
+
+    def _checkpoint(self, tmp_path, name="best.pt", **payload):
+        """Write a checkpoint that ``torch.load(weights_only=True)`` can read."""
+        import torch
+
+        path = tmp_path / name
+        torch.save(payload, path)
+        return path
+
+    def test_model_name_in_the_checkpoint_wins(self, tmp_path) -> None:
+        pytest.importorskip("rfdetr")
+        path = self._checkpoint(tmp_path, model_name="RFDETRSegMedium")
+        variant, why = resolve_variant(path)
+        assert variant == "RFDETRSegMedium"
+        assert "model_name" in why
+
+    def test_a_detection_variant_resolves_too(self, tmp_path) -> None:
+        """Detection is not a special case; it is another name in the same map."""
+        pytest.importorskip("rfdetr")
+        path = self._checkpoint(tmp_path, model_name="RFDETRMedium")
+        assert resolve_variant(path)[0] == "RFDETRMedium"
+
+    def test_legacy_checkpoints_fall_back_to_their_starter_weights(
+        self, tmp_path
+    ) -> None:
+        """Older files record no model_name, only what they fine-tuned from."""
+        pytest.importorskip("rfdetr")
+        path = self._checkpoint(
+            tmp_path, args={"pretrain_weights": "rf-detr-seg-medium.pt"}
+        )
+        assert resolve_variant(path)[0] == "RFDETRSegMedium"
+
+    def test_an_unset_sentinel_is_not_treated_as_a_file_name(self, tmp_path) -> None:
+        """Roboflow's starter weights record "none", which names no variant."""
+        pytest.importorskip("rfdetr")
+        path = self._checkpoint(tmp_path, args={"pretrain_weights": "none"})
+        assert resolve_variant(path)[0] is None
+
+    def test_an_unreadable_file_is_reported_not_raised(self, tmp_path) -> None:
+        """Unidentifiable is a state the loader handles, not an error."""
+        path = tmp_path / "junk.pt"
+        path.write_bytes(b"not a checkpoint")
+        variant, why = resolve_variant(path)
+        assert variant is None
+        assert why
+
+    def test_each_variant_reports_its_own_stride(self) -> None:
+        """The rule differs per size, which is why it cannot be a constant."""
+        pytest.importorskip("rfdetr")
+        assert resolution_multiple("RFDETRSegNano") == 12
+        assert resolution_multiple("RFDETRSegMedium") == 24
+        assert resolution_multiple("RFDETRMedium") == 32
+
+    def test_an_unknown_variant_keeps_the_documented_fallback(self) -> None:
+        assert resolution_multiple(None) == RESOLUTION_MULTIPLE
+        assert resolution_multiple("RFDETRNotAThing") == RESOLUTION_MULTIPLE
+
+
+class TestResolutionSnapping:
+    """A size the backbone cannot take is adjusted, not refused."""
+
+    def test_a_legal_size_is_left_alone(self) -> None:
+        assert snap_resolution(432, 24) == 432
+
+    def test_an_illegal_size_rounds_up_to_the_next_legal_one(self) -> None:
+        """448 is what Ramanujan records for a Seg Medium; 456 is what it ran at."""
+        assert snap_resolution(448, 24) == 456
+
+    def test_it_never_returns_zero(self) -> None:
+        assert snap_resolution(1, 24) == 24
+
+    def test_seg_medium_at_448_loads_at_456(self, monkeypatch, tmp_path) -> None:
+        """The whole point, end to end: the medium model must be loadable.
+
+        448 is not divisible by 24, and refusing it would reject exactly the
+        checkpoints this work exists to read — the trainer snaps the same way
+        and records the pre-snap number.
+        """
+        pytest.importorskip("rfdetr")
+        import torch
+
+        weights = tmp_path / "best.pt"
+        torch.save({"model_name": "RFDETRSegMedium"}, weights)
+
+        captured: dict[str, object] = {}
+
+        class _Stub:
+            class_names = ["column", "beam"]
+
+            @classmethod
+            def from_checkpoint(cls, path, **kwargs):  # noqa: ARG003
+                captured.update(kwargs)
+                return cls()
+
+        module = types.ModuleType("rfdetr")
+        module.RFDETRSegMedium = _Stub
+        module.RFDETR = _Stub
+        monkeypatch.setitem(sys.modules, "rfdetr", module)
+
+        detector = RFDetrDetector(model_path=weights, image_size=448, device="cpu")
+        detector.load()
+
+        assert captured["resolution"] == 456, "snapped to the variant's stride"
+        assert detector.image_size == 456, (
+            "the detector reports the size it actually used, so the run records "
+            "it and the mask pass can reproduce it"
+        )
+        assert detector.class_names == {0: "column", 1: "beam"}
+
+    def test_an_unidentifiable_file_still_refuses_a_bad_size(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        """Snapping needs a known rule. Without one, refuse rather than guess."""
+        weights = tmp_path / "junk.pt"
+        weights.write_bytes(b"not a checkpoint")
+        detector = RFDetrDetector(model_path=weights, image_size=500)
+        with pytest.raises(ModelLoadError, match=f"multiple of {RESOLUTION_MULTIPLE}"):
+            detector.load()
+
+    def test_the_variant_class_is_preferred_over_the_base(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        """A named variant loads through its own class, not a generic one."""
+        pytest.importorskip("rfdetr")
+        import torch
+
+        weights = tmp_path / "best.pt"
+        torch.save({"model_name": "RFDETRSegNano"}, weights)
+        used: list[str] = []
+
+        def _make(label):
+            class _Stub:
+                class_names = ["column"]
+
+                @classmethod
+                def from_checkpoint(cls, path, **kwargs):  # noqa: ARG003
+                    used.append(label)
+                    return cls()
+
+            return _Stub
+
+        module = types.ModuleType("rfdetr")
+        module.RFDETRSegNano = _make("variant")
+        module.RFDETR = _make("base")
+        monkeypatch.setitem(sys.modules, "rfdetr", module)
+
+        RFDetrDetector(model_path=weights, image_size=312).load()
+        assert used == ["variant"]

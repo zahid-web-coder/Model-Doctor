@@ -39,6 +39,7 @@ from model_doctor.app import evaluation, storage
 from model_doctor.app.detectors import build_detector, detect_family
 from model_doctor.app.storage import file_sha256
 from model_doctor.utils.dataset import load_dataset_config
+from model_doctor.utils.ground_truth import open_ground_truth
 from model_doctor.utils.logging_utils import get_logger
 
 logger = get_logger(__name__)
@@ -172,11 +173,16 @@ def main(argv: list[str] | None = None) -> int:
                 f"Available: {', '.join(dataset.splits) or 'none'}"
             )
 
-        ground_truth = evaluation.build_ground_truth(
-            images_dir, dataset.class_names
-        )
+        # Built by whichever reader the split's format calls for. A COCO split
+        # hands back its own annotations — boxes, areas and segmentation exactly
+        # as annotated — rather than a conversion of them, so the evaluator
+        # scores what the dataset says rather than a round trip through another
+        # format.
+        source = open_ground_truth(images_dir, dataset.class_names)
+        ground_truth = source.coco_ground_truth(images_dir)
         logger.info(
-            "Ground truth: %d image(s), %d annotation(s), %d class(es)",
+            "Ground truth (%s): %d image(s), %d annotation(s), %d class(es)",
+            source.format,
             len(ground_truth["images"]),
             len(ground_truth["annotations"]),
             len(ground_truth["categories"]),
@@ -198,7 +204,10 @@ def main(argv: list[str] | None = None) -> int:
                 sweep_confidence=evaluation.SWEEP_CONFIDENCE,
                 iou_thresholds=evaluation.IOU_THRESHOLDS,
                 max_detections=evaluation.MAX_DETECTIONS,
-                ground_truth=f"YOLO labels, split '{run.split}'",
+                ground_truth=(
+                    f"{source.format.upper()} annotations, "
+                    f"split '{run.split}'"
+                ),
                 gt_images=len(ground_truth["images"]),
                 gt_annotations=len(ground_truth["annotations"]),
                 prediction_count=result.prediction_count,

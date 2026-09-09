@@ -1,4 +1,4 @@
-"""RF-DETR segmentation behind Model Doctor's detector interface.
+"""RF-DETR behind Model Doctor's detector interface — detection and segmentation.
 
 Implements :class:`~model_doctor.app.inference.Detector` for RF-DETR.
 
@@ -13,9 +13,13 @@ YOLO path is not touched at all.
 Three things genuinely differ from Ultralytics and are handled here:
 
 * **Loading.** RF-DETR ships a Lightning checkpoint and its own
-  ``from_checkpoint`` constructor rather than a callable model class.
+  ``from_checkpoint`` constructor rather than a callable model class. Which
+  variant a checkpoint is — Nano or Medium, detection or segmentation — is
+  recorded inside the file, so it is read from there rather than assumed. The
+  library's own resolution order is mirrored in :func:`resolve_variant`.
 * **Result shape.** It returns a ``supervision.Detections`` with boolean raster
-  masks, where Ultralytics returns polygons. Model Doctor's annotation model is
+  masks for a segmentation variant and none at all for a detection one, where
+  Ultralytics returns polygons. Model Doctor's annotation model is
   polygon-based, so the raster is traced back to a contour here — see
   :func:`_mask_to_polygon` for why that is lossy in one specific way.
 * **Evaluation.** RF-DETR has no ``.val()``. :meth:`validate` therefore refuses
@@ -52,8 +56,139 @@ logger = get_logger(__name__)
 MIN_POLYGON_POINTS = 3
 
 # RF-DETR requires a square resolution divisible by `patch_size * num_windows`.
-# For the Nano segmentation variant that product is 12.
+# That product differs per variant — 12 for Seg Nano, 24 for the other
+# segmentation sizes, 32 for the detection sizes — so it is read from the
+# variant's own configuration in :func:`resolution_multiple`. This value is the
+# fallback used only when the checkpoint cannot be identified, and it is the
+# smallest of them so an unidentifiable file is not rejected for a rule that
+# might not apply to it.
 RESOLUTION_MULTIPLE = 12
+
+
+def _variant_classes() -> dict[str, Any]:
+    """Return every ``RFDETR*`` class the installed library exposes, by name.
+
+    Read from the module rather than listed here, so a library release that
+    adds a size needs no edit. Raises through to the caller when the library is
+    absent, which is the same failure loading would produce anyway.
+    """
+    import rfdetr
+
+    return {
+        name: getattr(rfdetr, name)
+        for name in dir(rfdetr)
+        if name.startswith("RFDETR") and isinstance(getattr(rfdetr, name), type)
+    }
+
+
+def resolve_variant(weights: Path) -> tuple[str | None, str]:
+    """Identify which RF-DETR class a checkpoint is, without executing it.
+
+    Mirrors the order ``RFDETR.from_checkpoint`` itself uses, because the point
+    is to agree with the library about what is being loaded — not to invent a
+    second opinion:
+
+    1. the ``model_name`` key the training stack writes,
+    2. the ``pretrain_weights`` file name recorded in the checkpoint's ``args``,
+    3. this file's own name.
+
+    Read with ``weights_only=True``, so identifying a checkpoint never runs the
+    code inside it — the same rule :mod:`model_doctor.app.validation` follows.
+
+    Returns:
+        ``(class name, explanation)``. The name is ``None`` when the file
+        cannot be identified, which is a state the caller handles rather than
+        an error: the library is still given the chance to resolve it.
+    """
+    try:
+        import torch
+
+        checkpoint = torch.load(weights, map_location="cpu", weights_only=True)
+    except Exception as error:  # noqa: BLE001 - unidentifiable is not fatal here
+        return None, (
+            f"The checkpoint could not be read as data ({type(error).__name__})."
+        )
+
+    try:
+        classes = _variant_classes()
+    except ImportError:
+        return None, "rfdetr is not installed, so its variants cannot be listed."
+
+    if isinstance(checkpoint, dict):
+        recorded = str(checkpoint.get("model_name", "")).strip()
+        if recorded in classes:
+            return recorded, f"The checkpoint records model_name={recorded!r}."
+
+        args = checkpoint.get("args")
+        weights_name = ""
+        if isinstance(args, dict):
+            weights_name = str(args.get("pretrain_weights", "")).strip()
+        elif args is not None:
+            weights_name = str(getattr(args, "pretrain_weights", "")).strip()
+        # "none"/"null"/"" are the library's own unset sentinels, not a file.
+        if weights_name.lower() not in ("", "none", "null"):
+            match = _class_for_weight_file(classes, Path(weights_name).name)
+            if match:
+                return match, f"Its args name the {weights_name!r} starter weights."
+
+    match = _class_for_weight_file(classes, weights.name)
+    if match:
+        return match, f"Inferred from the file name {weights.name!r}."
+    return None, (
+        "The checkpoint names no variant this library defines; the library will "
+        "be asked to resolve it."
+    )
+
+
+def _class_for_weight_file(classes: dict[str, Any], file_name: str) -> str | None:
+    """Match a starter-weights file name to the class that declares it."""
+    wanted = file_name.strip().lower()
+    for name, cls in classes.items():
+        config_class = getattr(cls, "_model_config_class", None)
+        if config_class is None:
+            continue
+        try:
+            declared = str(config_class().pretrain_weights or "").strip().lower()
+        except Exception:  # noqa: BLE001 - a config that will not build is no match
+            continue
+        if declared and Path(declared).name == wanted:
+            return name
+    return None
+
+
+def resolution_multiple(variant: str | None) -> int:
+    """Return the resolution stride a variant requires.
+
+    RF-DETR's backbone splits the image into ``patch_size`` tiles across
+    ``num_windows`` windows, so the input side must be divisible by their
+    product. Both are fields on the variant's own configuration; reading them
+    is what lets one adapter serve Nano at 12 and Medium at 24 without a table
+    here that would go stale.
+    """
+    if variant is None:
+        return RESOLUTION_MULTIPLE
+    try:
+        config_class = _variant_classes()[variant]._model_config_class
+        model_config = config_class()
+        product = int(model_config.patch_size) * int(model_config.num_windows)
+    except Exception:  # noqa: BLE001 - fall back rather than refuse to load
+        return RESOLUTION_MULTIPLE
+    return product if product > 0 else RESOLUTION_MULTIPLE
+
+
+def snap_resolution(requested: int, multiple: int) -> int:
+    """Round a requested resolution up to the nearest legal one.
+
+    Snapping rather than refusing, because the value that arrives here is
+    usually the size a trainer recorded before *it* snapped: Ramanujan's
+    segmentation trainer rounds to the same multiple at training time and keeps
+    the adjusted value only in memory. Refusing would reject the very models
+    this adapter exists to read, over a discrepancy neither the operator nor
+    the checkpoint created.
+    """
+    if multiple <= 0 or requested % multiple == 0:
+        return requested
+    return max(multiple, -(-requested // multiple) * multiple)
 
 
 def _mask_to_polygon(mask: np.ndarray) -> list[list[float]] | None:
@@ -115,21 +250,41 @@ class RFDetrDetector(Detector):
         if self._model is not None:
             return
 
-        # Resolution is validated first, before the filesystem is touched. It is
-        # a caller error that does not depend on the weights existing, and
-        # checking it here means a misconfigured resolution reports itself
-        # rather than hiding behind a missing-file message.
-        #
-        # RF-DETR requires a multiple of `patch_size * num_windows` — 12 for
-        # this variant. An illegal value otherwise fails deep inside the
-        # backbone with a tensor shape mismatch that never mentions resolution.
-        if self.image_size and self.image_size % RESOLUTION_MULTIPLE:
-            raise ModelLoadError(
-                f"RF-DETR resolution must be a multiple of "
-                f"{RESOLUTION_MULTIPLE}; got {self.image_size}."
-            )
-
         weights = Path(self._explicit_model_path) if self._explicit_model_path else None
+
+        # The variant decides the resolution rule, so it is resolved first —
+        # from the checkpoint when there is one to read, and not at all when
+        # there is not. An unidentifiable file keeps the documented fallback,
+        # which is what makes a bad resolution still report itself here rather
+        # than deep inside the backbone as a tensor shape mismatch that never
+        # mentions resolution.
+        variant: str | None = None
+        why = "No checkpoint to read a variant from."
+        if weights is not None and weights.is_file():
+            variant, why = resolve_variant(weights)
+        multiple = resolution_multiple(variant)
+        logger.info("RF-DETR variant: %s — %s", variant or "unidentified", why)
+
+        if self.image_size and self.image_size % multiple:
+            if variant is None:
+                # Nothing said which rule applies, so the size is refused rather
+                # than adjusted towards a stride that may not be this model's.
+                raise ModelLoadError(
+                    f"RF-DETR resolution must be a multiple of "
+                    f"{multiple}; got {self.image_size}."
+                )
+            snapped = snap_resolution(int(self.image_size), multiple)
+            logger.warning(
+                "%s requires a resolution divisible by %d; snapping %d to %d. "
+                "This mirrors what the trainer does, which records the size it "
+                "was asked for rather than the one it used.",
+                variant,
+                multiple,
+                self.image_size,
+                snapped,
+            )
+            self.image_size = snapped
+
         if weights is None or not weights.is_file():
             raise ResourceNotFoundError(
                 f"RF-DETR checkpoint not found: {weights}. Pass an explicit path."
@@ -137,8 +292,23 @@ class RFDetrDetector(Detector):
 
         # Imported lazily for the same reason the YOLO path does it: this
         # module must stay importable where the heavy stack is absent.
+        #
+        # The variant's own class is used when it was identified, and the base
+        # class otherwise — `RFDETR.from_checkpoint` runs the library's own
+        # resolution, which is the authority on its own file format and covers
+        # detection and segmentation alike.
         try:
-            from rfdetr import RFDETRSegNano
+            import rfdetr
+
+            loader = getattr(rfdetr, variant, None) if variant else None
+            if loader is None:
+                loader = getattr(rfdetr, "RFDETR", None)
+            if loader is None:
+                raise ModelLoadError(
+                    "The installed rfdetr exposes neither "
+                    f"{variant or 'a matching variant'} nor its base RFDETR "
+                    "class, so this checkpoint cannot be loaded."
+                )
         except ImportError as exc:
             raise ModelLoadError(
                 "rfdetr is not installed. Run: pip install rfdetr==1.8.3"
@@ -164,14 +334,15 @@ class RFDetrDetector(Detector):
             kwargs["device"] = str(self.device)
 
         logger.info(
-            "Loading RF-DETR checkpoint %s at resolution %s on device %s",
+            "Loading RF-DETR checkpoint %s as %s at resolution %s on device %s",
             weights.name,
+            variant or "the library's own choice of class",
             kwargs.get("resolution", "native"),
             kwargs.get("device", "the library's own choice"),
         )
         started = time.perf_counter()
         try:
-            self._model = RFDETRSegNano.from_checkpoint(str(weights), **kwargs)
+            self._model = loader.from_checkpoint(str(weights), **kwargs)
         except Exception as exc:
             raise ModelLoadError(
                 f"Could not load {weights} as an RF-DETR checkpoint: {exc}"
@@ -337,4 +508,9 @@ class RFDetrDetector(Detector):
         )
 
 
-__all__ = ["RFDetrDetector"]
+__all__ = [
+    "RFDetrDetector",
+    "resolution_multiple",
+    "resolve_variant",
+    "snap_resolution",
+]
