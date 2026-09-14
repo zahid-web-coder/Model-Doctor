@@ -32,8 +32,7 @@ Run it::
 from __future__ import annotations
 
 import sqlite3
-from collections import Counter
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Annotated, Any
 
@@ -43,24 +42,11 @@ from mcp.types import ToolAnnotations
 from pydantic import Field
 
 from model_doctor import config
-from model_doctor.app import capabilities, comparison, storage
-from model_doctor.app.clustering import DISCRIMINATING_METHOD, FACTOR_SIGNATURE_METHOD
+from model_doctor.app import capabilities, mcp_payloads, storage
+from model_doctor.app.mcp_payloads import PayloadError
 from model_doctor.utils.logging_utils import get_logger
 
 logger = get_logger(__name__)
-
-#: Optional tables, and the evidence kind each one carries.
-_EVIDENCE_TABLES: dict[str, str] = {
-    "run_evaluations": "evaluation",
-    "factor_rates": "factor_rates",
-    "clusters": "groups",
-    "recommendations": "recommendations",
-    "mask_findings": "mask_findings",
-    "run_benchmarks": "benchmarks",
-    "heatmaps": "heatmaps",
-    "image_diagnoses": "image_diagnoses",
-    "finding_relations": "relations",
-}
 
 #: Every tool here is safe to call repeatedly and changes nothing.
 _READ_ONLY = ToolAnnotations(
@@ -104,142 +90,6 @@ def _database() -> Iterator[sqlite3.Connection]:
         raise ToolError(f"Cannot open the database at {config.DB_PATH}.") from error
 
 
-def _resolve_run_ids(run_ids: Sequence[int]) -> list[int]:
-    """Validate a caller's run ids before anything is read.
-
-    Duplicates are dropped rather than rejected, because ``[4, 4, 5]`` is a
-    harmless slip; an empty list, a non-integer, or more than the configured
-    maximum is refused with the reason, because each would produce a response
-    that is either empty or unreadable.
-    """
-    if not run_ids:
-        raise ToolError("run_ids must name at least one run.")
-    cleaned: list[int] = []
-    for value in run_ids:
-        if isinstance(value, bool) or not isinstance(value, int):
-            raise ToolError(f"run_ids must be integers; got {value!r}.")
-        if value not in cleaned:
-            cleaned.append(value)
-    if len(cleaned) > config.MCP_MAX_RUNS:
-        raise ToolError(
-            f"get_analysis compares at most {config.MCP_MAX_RUNS} runs at once; "
-            f"{len(cleaned)} were given. Split them across calls."
-        )
-    return cleaned
-
-
-def _evidence_present(connection: sqlite3.Connection, run_id: int) -> dict[str, Any]:
-    """Say which optional evidence a run carries, checking tables first."""
-    present: dict[str, Any] = {}
-    for table, kind in _EVIDENCE_TABLES.items():
-        if not storage.has_table(connection, table):
-            present[kind] = False
-            continue
-        if kind == "evaluation":
-            rows = storage.load_evaluations(connection, run_id)
-            present[kind] = [r.task for r in rows] or False
-        elif kind == "factor_rates":
-            present[kind] = bool(storage.load_factor_rates(connection, run_id))
-        elif kind == "groups":
-            present[kind] = bool(
-                storage.load_clusters(connection, run_id, DISCRIMINATING_METHOD)
-            )
-        elif kind == "recommendations":
-            present[kind] = len(storage.load_recommendations(connection, run_id))
-        elif kind == "mask_findings":
-            present[kind] = bool(storage.load_mask_findings(connection, run_id))
-        elif kind == "benchmarks":
-            present[kind] = sorted(
-                {b.device for b in storage.load_benchmarks(connection, run_id)}
-            )
-        elif kind == "heatmaps":
-            present[kind] = len(storage.load_heatmaps(connection, run_id))
-        elif kind == "image_diagnoses":
-            present[kind] = bool(storage.load_image_diagnoses(connection, run_id))
-        elif kind == "relations":
-            present[kind] = bool(storage.load_finding_relations(connection, run_id))
-    return present
-
-
-def _run_row(
-    connection: sqlite3.Connection, run: storage.RunRecord, *, include_paths: bool
-) -> dict[str, Any]:
-    """One run as ``list_runs`` reports it."""
-    counts = storage.outcome_counts(connection, run.id)
-    findings = storage.load_findings(connection, run.id)
-    classes = sorted({f.class_name for f in findings if f.class_name})
-    job = storage.load_job_for_run(connection, run.id)
-    evaluations = (
-        storage.load_evaluations(connection, run.id)
-        if storage.has_table(connection, "run_evaluations")
-        else []
-    )
-    bbox = next((e for e in evaluations if e.task == "bbox"), None)
-
-    row = comparison.run_identity(run, include_paths=include_paths)
-    # Family comes from the job that produced the run, and from nowhere else:
-    # a CLI run has no job, and detecting the family means loading the
-    # checkpoint, which a read-only surface must never do.
-    row["model"]["family"] = job.detector if job else None
-    row["dataset"]["classes"] = classes
-    row["dataset"]["classes_source"] = "findings"
-    row["counts"] = {
-        "images": len(storage.load_images(connection, run.id)),
-        **{
-            k: v
-            for k, v in comparison.outcome_summary(counts).items()
-            if k != "derived"
-        },
-    }
-    def headline(key: str) -> float | None:
-        value = comparison.measured(bbox.metrics.get(key)) if bbox else None
-        return None if value is None else round(value, 4)
-
-    row["headline"] = {
-        "map50_box": headline("map50"),
-        "map50_95_box": headline("map50_95"),
-    }
-    row["evidence"] = _evidence_present(connection, run.id)
-    row["same_model_runs"] = storage.load_runs_for_model(connection, run.model_sha256)
-    return row
-
-
-def _groups_for(
-    connection: sqlite3.Connection, run_id: int, method: str
-) -> list[comparison.GroupRow]:
-    """Assemble each group with its members' outcome and class mix."""
-    if not storage.has_table(connection, "clusters"):
-        return []
-    rows: list[comparison.GroupRow] = []
-    for cluster in storage.load_clusters(connection, run_id, method):
-        members = storage.load_cluster_members(connection, cluster.id)
-        outcomes = Counter(m["outcome"] for m in members)
-        classes = Counter(m["class_name"] for m in members if m["class_name"])
-        rows.append(
-            comparison.GroupRow(
-                cluster_id=cluster.id,
-                label=cluster.label,
-                size=cluster.size,
-                outcomes=dict(outcomes),
-                classes=dict(classes),
-            )
-        )
-    return rows
-
-
-def _mask_summary(connection: sqlite3.Connection, run_id: int) -> dict[str, int] | None:
-    """Outline-level outcomes, with unmeasured pairs named as such."""
-    if not storage.has_table(connection, "mask_findings"):
-        return None
-    rows = storage.load_mask_findings(connection, run_id)
-    if not rows:
-        return None
-    tally: Counter[str] = Counter()
-    for row in rows:
-        tally[row.mask_outcome or "not_measured"] += 1
-    return dict(tally)
-
-
 def create_server() -> MCPServer:
     """Build the server.
 
@@ -280,14 +130,12 @@ def create_server() -> MCPServer:
         ] = False,
     ) -> dict[str, Any]:
         with _database() as connection:
-            runs = storage.list_runs(connection)
-            return {
-                "schema_version": storage.SCHEMA_VERSION,
-                "runs": [
-                    _run_row(connection, run, include_paths=include_paths)
-                    for run in runs
-                ],
-            }
+            try:
+                return mcp_payloads.list_runs_payload(
+                    connection, include_paths=include_paths
+                )
+            except PayloadError as error:
+                raise _as_tool_error(error) from error
 
     @server.tool(
         name="get_analysis",
@@ -340,129 +188,17 @@ def create_server() -> MCPServer:
             ),
         ] = False,
     ) -> dict[str, Any]:
-        ids = _resolve_run_ids(run_ids)
-        base = ids[0] if baseline is None else baseline
-        if base not in ids:
-            raise ToolError(f"baseline {base} is not among run_ids {ids}.")
-
         with _database() as connection:
-            runs: dict[int, storage.RunRecord] = {}
-            missing: list[int] = []
-            for rid in ids:
-                run = storage.load_run(connection, rid)
-                if run is None:
-                    missing.append(rid)
-                else:
-                    runs[rid] = run
-            if missing:
-                raise ToolError(
-                    f"No such run: {', '.join(str(m) for m in missing)}. "
-                    "Call list_runs to see what exists."
+            try:
+                return mcp_payloads.get_analysis_payload(
+                    connection,
+                    run_ids,
+                    baseline=baseline,
+                    include_paths=include_paths,
+                    include_descriptive_groups=include_descriptive_groups,
                 )
-
-            outcomes = {rid: storage.outcome_counts(connection, rid) for rid in ids}
-            evaluations = {
-                rid: (
-                    storage.load_evaluations(connection, rid)
-                    if storage.has_table(connection, "run_evaluations")
-                    else []
-                )
-                for rid in ids
-            }
-            benchmarks = {
-                rid: (
-                    storage.load_benchmarks(connection, rid)
-                    if storage.has_table(connection, "run_benchmarks")
-                    else []
-                )
-                for rid in ids
-            }
-            factors = {
-                rid: (
-                    storage.load_factor_rates(connection, rid)
-                    if storage.has_table(connection, "factor_rates")
-                    else []
-                )
-                for rid in ids
-            }
-            groups = {
-                rid: _groups_for(connection, rid, DISCRIMINATING_METHOD) for rid in ids
-            }
-            recommendations = {
-                rid: (
-                    storage.load_recommendations(connection, rid)
-                    if storage.has_table(connection, "recommendations")
-                    else []
-                )
-                for rid in ids
-            }
-
-            per_run: dict[int, dict[str, Any]] = {}
-            present: dict[int, dict[str, Any]] = {}
-            for rid in ids:
-                evidence = _evidence_present(connection, rid)
-                present[rid] = evidence
-                block: dict[str, Any] = {
-                    "outcomes": comparison.outcome_summary(outcomes[rid]),
-                    "evaluation": comparison.evaluation_summary(evaluations[rid]),
-                    "mask_summary": _mask_summary(connection, rid),
-                    "factors": comparison.factor_summary(factors[rid]),
-                    "groups": comparison.group_summary(groups[rid]),
-                    "recommendations": comparison.recommendation_summary(
-                        recommendations[rid]
-                    ),
-                    "benchmarks": comparison.benchmark_summary(benchmarks[rid]),
-                    # A second lens over the same findings: how many whole
-                    # photographs were handled correctly, and what shape the
-                    # mistakes took. None when the pass has not been run.
-                    "images": comparison.image_summary(
-                        storage.load_image_diagnoses(connection, rid)
-                        if storage.has_table(connection, "image_diagnoses")
-                        else []
-                    ),
-                    # A third lens: not which object failed, nor what shape the
-                    # image's mistake took, but how two findings relate — which
-                    # prediction covers which object. None when unmeasured.
-                    "relations": comparison.relation_summary(
-                        storage.load_finding_relations(connection, rid)
-                        if storage.has_table(connection, "finding_relations")
-                        else []
-                    ),
-                }
-                if include_descriptive_groups:
-                    block["descriptive_groups"] = comparison.group_summary(
-                        _groups_for(connection, rid, FACTOR_SIGNATURE_METHOD)
-                    )
-                per_run[rid] = block
-
-            return {
-                "schema_version": storage.SCHEMA_VERSION,
-                "runs": [
-                    _run_row(connection, runs[rid], include_paths=include_paths)
-                    for rid in ids
-                ],
-                "comparability": comparison.comparability(
-                    [runs[rid] for rid in ids], evaluations, benchmarks
-                ),
-                "per_run": per_run,
-                # Fingerprints are passed so replication is judged only between
-                # differently configured runs. Without them a group present in
-                # three re-executions of one command reads as replicated three
-                # times over.
-                "cross_run": comparison.cross_run(
-                    base,
-                    outcomes,
-                    evaluations,
-                    factors,
-                    groups,
-                    recommendations,
-                    fingerprints={
-                        rid: comparison.run_fingerprint(runs[rid]) for rid in ids
-                    },
-                ),
-                "evidence_gaps": comparison.evidence_gaps(ids, present),
-                "caveats": list(comparison.CAVEATS),
-            }
+            except PayloadError as error:
+                raise _as_tool_error(error) from error
 
     @server.tool(
         name="experiment_feasibility",
@@ -511,7 +247,10 @@ def create_server() -> MCPServer:
             ),
         ] = True,
     ) -> dict[str, Any]:
-        ids = _resolve_run_ids(run_ids)
+        try:
+            ids = mcp_payloads.resolve_run_ids(run_ids)
+        except PayloadError as error:
+            raise _as_tool_error(error) from error
         with _database() as connection:
             try:
                 return capabilities.experiment_feasibility(
@@ -521,6 +260,16 @@ def create_server() -> MCPServer:
                 raise ToolError(str(error)) from error
 
     return server
+
+
+def _as_tool_error(error: PayloadError) -> ToolError:
+    """Map a payload refusal into this transport's vocabulary.
+
+    The payload layer cannot raise `ToolError` — it must not import `mcp` at
+    all — so the translation happens here, once, and the message it wrote for
+    the reader passes through unaltered.
+    """
+    return ToolError(str(error))
 
 
 def main() -> None:
