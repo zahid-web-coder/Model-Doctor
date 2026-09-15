@@ -201,6 +201,97 @@ def create_server() -> MCPServer:
                 raise _as_tool_error(error) from error
 
     @server.tool(
+        name="list_findings",
+        title="List a run's findings",
+        description=(
+            "A page of one run's findings: every prediction and every "
+            "annotation the matcher accounted for, with its outcome, class, "
+            "confidence, IoU and boxes, named by image filename. Filter by "
+            "outcome or by image. The run's full outcome counts come back with "
+            "every page, so a page of 50 false positives is never mistaken for "
+            "the whole run. Use get_analysis first for rates and factors; this "
+            "is for looking at the individual cases behind them. Returns no "
+            "filesystem paths and starts no work."
+        ),
+        annotations=_READ_ONLY,
+    )
+    def list_findings(
+        run_id: Annotated[int, Field(description="Which run's findings to list.")],
+        outcome: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "Only findings with this outcome: correct, wrong_class, "
+                    "poor_localization, false_positive or false_negative."
+                )
+            ),
+        ] = None,
+        image_id: Annotated[
+            int | None,
+            Field(
+                description=(
+                    "Only findings on this image — every object and every "
+                    "prediction on one photograph."
+                )
+            ),
+        ] = None,
+        limit: Annotated[
+            int,
+            Field(description="How many findings to return."),
+        ] = mcp_payloads.DEFAULT_FINDING_LIMIT,
+        offset: Annotated[
+            int, Field(description="How many to skip, for paging.")
+        ] = 0,
+    ) -> dict[str, Any]:
+        try:
+            page, skip, kind = mcp_payloads.resolve_finding_page(
+                limit, offset, outcome
+            )
+        except PayloadError as error:
+            raise _as_tool_error(error) from error
+        with _database() as connection:
+            try:
+                return mcp_payloads.list_findings_payload(
+                    connection,
+                    run_id,
+                    outcome=kind,
+                    image_id=image_id,
+                    limit=page,
+                    offset=skip,
+                )
+            except PayloadError as error:
+                raise _as_tool_error(error) from error
+
+    @server.tool(
+        name="get_finding",
+        title="Get one finding with its evidence",
+        description=(
+            "One finding and everything the stored passes attributed to it: "
+            "the factors it carries, its outline result if masks were "
+            "measured, its measured relationships to other findings, the "
+            "failure groups it was placed in, and whether a heatmap exists. "
+            "Both ids are required — finding ids are unique across the whole "
+            "database, so a finding is always asked for within its run. Read "
+            "the caveats: one finding is an anecdote, and a factor is an "
+            "attributed condition rather than a cause."
+        ),
+        annotations=_READ_ONLY,
+    )
+    def get_finding(
+        run_id: Annotated[int, Field(description="The run the finding belongs to.")],
+        finding_id: Annotated[
+            int, Field(description="Which finding, from list_findings.")
+        ],
+    ) -> dict[str, Any]:
+        with _database() as connection:
+            try:
+                return mcp_payloads.get_finding_payload(
+                    connection, run_id, finding_id
+                )
+            except PayloadError as error:
+                raise _as_tool_error(error) from error
+
+    @server.tool(
         name="experiment_feasibility",
         title="Can varying this knob change anything?",
         description=(

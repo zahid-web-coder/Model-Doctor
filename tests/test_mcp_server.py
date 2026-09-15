@@ -166,8 +166,8 @@ class TestProtocol:
     """The tools exist, describe themselves honestly, and answer over MCP."""
 
     @pytest.mark.usefixtures("populated")
-    def test_exactly_three_read_only_tools_are_offered(self) -> None:
-        """Exactly two read only tools are offered."""
+    def test_every_offered_tool_is_read_only_and_expected(self) -> None:
+        """The offered tools are exactly this phase's, and all are read-only."""
 
         async def go() -> Any:
             async with (
@@ -179,7 +179,13 @@ class TestProtocol:
 
         listed = anyio.run(go)
         names = sorted(t.name for t in listed.tools)
-        assert names == ["experiment_feasibility", "get_analysis", "list_runs"]
+        assert names == [
+            "experiment_feasibility",
+            "get_analysis",
+            "get_finding",
+            "list_findings",
+            "list_runs",
+        ]
         for tool in listed.tools:
             assert tool.annotations is not None
             assert tool.annotations.read_only_hint is True

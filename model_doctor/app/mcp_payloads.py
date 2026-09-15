@@ -37,6 +37,7 @@ from typing import Any
 from model_doctor import config
 from model_doctor.app import comparison, storage
 from model_doctor.app.clustering import DISCRIMINATING_METHOD, FACTOR_SIGNATURE_METHOD
+from model_doctor.app.diagnosis import Outcome
 
 #: Which optional table carries which kind of evidence. Checked by name before
 #: reading, because a database written by an older schema simply lacks some.
@@ -385,3 +386,263 @@ def get_analysis_payload(
         "evidence_gaps": comparison.evidence_gaps(ids, present),
         "caveats": list(comparison.CAVEATS),
     }
+
+
+# ---------------------------------------------------------------------------
+# Findings
+# ---------------------------------------------------------------------------
+
+#: How many findings one page returns. A run holds tens of thousands, and a
+#: reader choosing which failures to look at does not need them all at once.
+DEFAULT_FINDING_LIMIT = 50
+MAX_FINDING_LIMIT = 200
+
+#: The outcomes a caller may filter on, as stored.
+OUTCOMES: tuple[str, ...] = tuple(o.value for o in Outcome)
+
+#: What a reader must not conclude from a single finding. The run-level caveats
+#: answer a different question, so these are additional rather than a subset.
+FINDING_CAVEATS: tuple[str, ...] = (
+    (
+        "An outcome is the matcher's verdict at this run's IoU and confidence "
+        "thresholds, not a statement about the model in general. The same "
+        "prediction can be correct in one run and a failure in another."
+    ),
+    (
+        "Factors are attributed conditions, not causes. A finding carrying "
+        "`small_object` was small; whether that is why it failed is answered "
+        "by the factor's rate against its control rate in get_analysis, never "
+        "by one finding."
+    ),
+    (
+        "One finding is an anecdote. Counts and rates come from get_analysis; "
+        "reading a handful of findings and generalising is the mistake this "
+        "surface is easiest to make."
+    ),
+)
+
+
+def resolve_finding_page(
+    limit: Any, offset: Any, outcome: Any
+) -> tuple[int, int, str | None]:
+    """Validate paging and filter arguments before anything is read.
+
+    Refused with the reason rather than silently corrected: a caller who asked
+    for outcome ``"fasle_positive"`` and received every finding would draw
+    conclusions from a population they did not ask for.
+    """
+    if limit is None:
+        limit = DEFAULT_FINDING_LIMIT
+    if isinstance(limit, bool) or not isinstance(limit, int):
+        raise PayloadError("`limit` must be an integer.")
+    if limit < 1:
+        raise PayloadError("`limit` must be at least 1.")
+    limit = min(limit, MAX_FINDING_LIMIT)
+
+    if offset is None:
+        offset = 0
+    if isinstance(offset, bool) or not isinstance(offset, int):
+        raise PayloadError("`offset` must be an integer.")
+    if offset < 0:
+        raise PayloadError("`offset` must not be negative.")
+
+    if outcome is not None and (
+        not isinstance(outcome, str) or outcome not in OUTCOMES
+    ):
+        raise PayloadError(f"`outcome` must be one of: {', '.join(OUTCOMES)}.")
+    return limit, offset, outcome
+
+
+def _finding_row(record: storage.FindingRecord, filename: str | None) -> dict[str, Any]:
+    """One finding as a listing reports it.
+
+    Geometry is included because a box is what the finding *is*; the image is
+    named by filename alone. :class:`~model_doctor.app.storage.ImageRow` also
+    carries an absolute path on the host that ran the analysis, which no reader
+    of this surface has any use for.
+    """
+    return {
+        "finding_id": record.id,
+        "run_id": record.run_id,
+        "image_id": record.image_id,
+        "image_filename": filename,
+        "outcome": record.outcome,
+        "class_id": record.class_id,
+        "class_name": record.class_name,
+        "confidence": record.confidence,
+        "iou": record.iou,
+        "pred_box": list(record.pred_box) if record.pred_box else None,
+        "truth_box": list(record.truth_box) if record.truth_box else None,
+    }
+
+
+def list_findings_payload(
+    connection: sqlite3.Connection,
+    run_id: int,
+    *,
+    outcome: str | None = None,
+    image_id: int | None = None,
+    limit: int = DEFAULT_FINDING_LIMIT,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """A page of one run's findings, with the totals needed to page it.
+
+    The caller has already decided this run may be read; this function does not
+    re-decide it, for the same reason the listing does not — see the module
+    docstring. ``run_id`` is taken as given.
+
+    ``outcome_counts`` is the whole run regardless of the filter, because a
+    reader looking at 50 false positives needs to know whether the run had 60
+    or 6000, and that number does not change with the page.
+    """
+    if not isinstance(run_id, int) or isinstance(run_id, bool):
+        raise PayloadError(f"run_id must be an integer; got {run_id!r}.")
+    if storage.load_run(connection, run_id) is None:
+        raise PayloadError(f"No such run: {run_id}.")
+
+    resolved = Outcome(outcome) if outcome else None
+    total = storage.count_findings(
+        connection, run_id, outcome=resolved, image_id=image_id
+    )
+    records = storage.load_findings_page(
+        connection, run_id, limit, offset, outcome=resolved, image_id=image_id
+    )
+    names = storage.load_image_names(
+        connection, run_id, [r.image_id for r in records]
+    )
+    return {
+        "schema_version": storage.SCHEMA_VERSION,
+        "run_id": run_id,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "filters": {"outcome": outcome, "image_id": image_id},
+        "outcome_counts": storage.outcome_counts(connection, run_id),
+        "findings": [_finding_row(r, names.get(r.image_id)) for r in records],
+        "caveats": list(FINDING_CAVEATS),
+    }
+
+
+def get_finding_payload(
+    connection: sqlite3.Connection,
+    run_id: int,
+    finding_id: int,
+    *,
+    listing_tool: str = "list_findings",
+) -> dict[str, Any]:
+    """One finding with the evidence attached to it, and nothing beyond it.
+
+    Both ids are required. See :func:`~model_doctor.app.storage.load_finding`
+    for why: a finding id alone is a key into every run at once.
+
+    The evidence here is what the stored passes attributed to *this* finding —
+    its factors, its outline result, its measured relationships, the group it
+    was placed in. Whether a heatmap exists is reported; where it lives is not.
+    """
+    for name, value in (("run_id", run_id), ("finding_id", finding_id)):
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise PayloadError(f"{name} must be an integer; got {value!r}.")
+
+    record = storage.load_finding(connection, run_id, finding_id)
+    if record is None:
+        # One message for "no such run", "no such finding" and "that finding is
+        # in another run". Distinguishing them would let a caller map the id
+        # space by reading the differences.
+        raise PayloadError(
+            f"No such finding: {finding_id} in run {run_id}. "
+            f"Call {listing_tool} to see what exists."
+        )
+
+    names = storage.load_image_names(connection, run_id, [record.image_id])
+    payload = _finding_row(record, names.get(record.image_id))
+    payload["truth_polygon"] = record.truth_polygon
+
+    factors = storage.load_factors_by_finding(connection, run_id)
+    payload["factors"] = factors.get(finding_id, [])
+
+    payload["mask"] = None
+    if storage.has_table(connection, "mask_findings"):
+        for row in storage.load_mask_findings(connection, run_id):
+            if row.finding_id == finding_id:
+                payload["mask"] = {
+                    "box_iou": row.box_iou,
+                    "mask_iou": row.mask_iou,
+                    "mask_outcome": row.mask_outcome,
+                    "pred_polygon": row.pred_polygon,
+                }
+                break
+
+    relations: list[dict[str, Any]] = []
+    if storage.has_table(connection, "finding_relations"):
+        for row in storage.load_finding_relations(connection, run_id):
+            if row.finding_id != finding_id:
+                continue
+            relations.append(
+                {
+                    "relation": row.relation,
+                    "direction": row.direction,
+                    "partner_finding_id": row.partner_finding_id,
+                    "value": row.value,
+                    "best_coverage": row.best_coverage,
+                    "span": row.span,
+                    "threshold": row.threshold,
+                    "coverage_floor": row.coverage_floor,
+                    "qualifies": row.qualifies,
+                    "method": row.method,
+                }
+            )
+    payload["relations"] = relations
+
+    payload["groups"] = _groups_containing(connection, run_id, finding_id)
+
+    # Presence only. `HeatmapRow.path` is a location on the host that ran the
+    # analysis, and this surface serves no images.
+    payload["heatmap"] = None
+    if storage.has_table(connection, "heatmaps"):
+        for row in storage.load_heatmaps(connection, run_id):
+            if row.finding_id == finding_id:
+                payload["heatmap"] = {
+                    "available": True,
+                    "method": row.method,
+                    "target_layers": row.target_layers,
+                }
+                break
+
+    return {
+        "schema_version": storage.SCHEMA_VERSION,
+        "finding": payload,
+        "caveats": list(FINDING_CAVEATS),
+    }
+
+
+def _groups_containing(
+    connection: sqlite3.Connection, run_id: int, finding_id: int
+) -> list[dict[str, Any]]:
+    """Which failure groups this finding was placed in.
+
+    Both partitions are reported, each named, because a finding can sit in one
+    and not the other and a reader comparing two findings needs to know which
+    grouping they are being compared under.
+    """
+    if not storage.has_table(connection, "clusters") or not storage.has_table(
+        connection, "cluster_members"
+    ):
+        return []
+    found: list[dict[str, Any]] = []
+    for method in (DISCRIMINATING_METHOD, FACTOR_SIGNATURE_METHOD):
+        for cluster in storage.load_clusters(connection, run_id, method):
+            members = connection.execute(
+                "SELECT 1 FROM cluster_members WHERE cluster_id = ? "
+                "AND finding_id = ? LIMIT 1",
+                (cluster.id, finding_id),
+            ).fetchone()
+            if members:
+                found.append(
+                    {
+                        "cluster_id": cluster.id,
+                        "method": method,
+                        "label": cluster.label,
+                        "size": cluster.size,
+                    }
+                )
+    return found

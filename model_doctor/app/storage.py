@@ -1210,6 +1210,106 @@ def _finding_record(row: sqlite3.Row) -> FindingRecord:
     )
 
 
+def load_finding(
+    connection: sqlite3.Connection, run_id: int, finding_id: int
+) -> FindingRecord | None:
+    """Return one finding, or ``None`` if that run does not have it.
+
+    Both ids are required, and that is deliberate rather than redundant.
+    Finding ids come from a single autoincrementing sequence shared by every
+    run, so a reader holding one integer could otherwise walk into a run they
+    were never shown. Asking for the finding *within a run* makes the run the
+    unit of access, which is the unit every caller already authorises.
+
+    A finding that exists under a different run is reported as absent, not as
+    a mismatch: telling a caller "that finding belongs to another run" would
+    confirm the id is real, which is exactly what the pairing prevents.
+
+    Args:
+        connection: An open connection.
+        run_id: The run the finding must belong to.
+        finding_id: Which finding to read.
+
+    Returns:
+        The finding, or ``None`` when this run has no such finding.
+    """
+    row = connection.execute(
+        "SELECT * FROM findings WHERE run_id = ? AND id = ?", (run_id, finding_id)
+    ).fetchone()
+    return _finding_record(row) if row else None
+
+
+def count_findings(
+    connection: sqlite3.Connection,
+    run_id: int,
+    outcome: Outcome | None = None,
+    image_id: int | None = None,
+) -> int:
+    """Count a run's findings under the same filters as :func:`load_findings_page`.
+
+    Paging needs the size of the population actually being paged. Counting the
+    unfiltered run while showing a filtered page would put a caller on page
+    four of results that ended at page two.
+
+    Args:
+        connection: An open connection.
+        run_id: Which run to count.
+        outcome: When given, count only findings of this outcome.
+        image_id: When given, count only findings on this image.
+
+    Returns:
+        How many findings match.
+    """
+    clauses = ["run_id = ?"]
+    params: list[Any] = [run_id]
+    if outcome is not None:
+        clauses.append("outcome = ?")
+        params.append(outcome.value if hasattr(outcome, "value") else str(outcome))
+    if image_id is not None:
+        clauses.append("image_id = ?")
+        params.append(image_id)
+    sql = "SELECT COUNT(*) AS n FROM findings WHERE " + " AND ".join(clauses)
+    return int(connection.execute(sql, tuple(params)).fetchone()["n"])
+
+
+def load_image_names(
+    connection: sqlite3.Connection, run_id: int, image_ids: Sequence[int]
+) -> dict[int, str]:
+    """Return ``{image_id: filename}`` for the run's images asked for.
+
+    Two deliberate choices here, both narrower than they need to be.
+
+    Only the filename is selected. :class:`ImageRow` also carries ``path``, an
+    absolute location on the host that produced the run, and a surface that
+    names a photograph for a reader has no use for it. Loading whole rows and
+    remembering to drop the path at each call site is the version of this that
+    eventually leaks one, so the query never fetches it.
+
+    And the read is scoped to one run, then filtered in memory, rather than
+    building an ``IN`` clause from the ids. A clause with one placeholder per id
+    means SQL assembled at runtime; the values would still be bound, but the
+    statement would not be fixed, and a fixed statement is the property worth
+    keeping in a module two applications vendor. Scoping by run also means an
+    image belonging to another run can never be named, which matches how every
+    other reader on this path is bounded.
+
+    Args:
+        connection: An open connection.
+        run_id: The run the images must belong to.
+        image_ids: Which of that run's images to name. Empty reads nothing.
+
+    Returns:
+        Mapping of image id to filename. Ids not in this run are simply absent.
+    """
+    wanted = {int(i) for i in image_ids}
+    if not wanted:
+        return {}
+    rows = connection.execute(
+        "SELECT id, filename FROM images WHERE run_id = ?", (run_id,)
+    ).fetchall()
+    return {row["id"]: row["filename"] for row in rows if row["id"] in wanted}
+
+
 def outcome_counts(connection: sqlite3.Connection, run_id: int) -> dict[str, int]:
     """Return finding counts by outcome for one run.
 
