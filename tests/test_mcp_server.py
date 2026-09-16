@@ -183,6 +183,8 @@ class TestProtocol:
             "experiment_feasibility",
             "get_analysis",
             "get_finding",
+            "get_heatmap_image",
+            "get_image",
             "list_findings",
             "list_runs",
         ]

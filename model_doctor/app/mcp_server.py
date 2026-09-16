@@ -31,6 +31,7 @@ Run it::
 
 from __future__ import annotations
 
+import base64
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -38,7 +39,7 @@ from typing import Annotated, Any
 
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
-from mcp.types import ToolAnnotations
+from mcp.types import ImageContent, ToolAnnotations
 from pydantic import Field
 
 from model_doctor import config
@@ -290,6 +291,81 @@ def create_server() -> MCPServer:
                 )
             except PayloadError as error:
                 raise _as_tool_error(error) from error
+
+    @server.tool(
+        name="get_image",
+        title="Get the photograph a finding was measured on",
+        description=(
+            "The source photograph for one image of a run, as image content "
+            "you can look at. Ask by run_id and image_id, both from "
+            "list_findings; there is no way to name a file. Use this to see "
+            "what the model actually saw — whether an object called a false "
+            "negative is visible at all, whether a scene is dark or cluttered. "
+            "Returns the picture and nothing about where it is stored."
+        ),
+        annotations=_READ_ONLY,
+    )
+    def get_image(
+        run_id: Annotated[int, Field(description="The run the image belongs to.")],
+        image_id: Annotated[
+            int, Field(description="Which image, from a finding in list_findings.")
+        ],
+    ) -> ImageContent:
+        with _database() as connection:
+            try:
+                found = mcp_payloads.image_for_run(connection, run_id, image_id)
+            except PayloadError as error:
+                raise _as_tool_error(error) from error
+        return ImageContent(
+            type="image",
+            data=base64.b64encode(found["data"]).decode("ascii"),
+            mimeType=found["media_type"],
+        )
+
+    @server.tool(
+        name="get_heatmap_image",
+        title="Get the overlay explaining one finding",
+        description=(
+            "The Grad-CAM overlay for one finding, as image content you can "
+            "look at: where the model was attending when it produced this "
+            "outcome. Ask by run_id and finding_id. Not every run has one — "
+            "explanation is implemented for some detector families and not "
+            "others — and a run without them says so rather than failing. "
+            "Read it as attention, not as a cause."
+        ),
+        annotations=_READ_ONLY,
+    )
+    def get_heatmap_image(
+        run_id: Annotated[int, Field(description="The run the finding belongs to.")],
+        finding_id: Annotated[
+            int, Field(description="Which finding, from list_findings.")
+        ],
+        full_resolution: Annotated[
+            bool,
+            Field(
+                description=(
+                    "Return the full-resolution overlay instead of the "
+                    "downscaled companion. Off by default: the original can be "
+                    "several megabytes."
+                )
+            ),
+        ] = False,
+    ) -> ImageContent:
+        with _database() as connection:
+            try:
+                found = mcp_payloads.heatmap_for_finding(
+                    connection,
+                    run_id,
+                    finding_id,
+                    prefer_preview=not full_resolution,
+                )
+            except PayloadError as error:
+                raise _as_tool_error(error) from error
+        return ImageContent(
+            type="image",
+            data=base64.b64encode(found["data"]).decode("ascii"),
+            mimeType=found["media_type"],
+        )
 
     @server.tool(
         name="experiment_feasibility",

@@ -32,12 +32,16 @@ from __future__ import annotations
 import sqlite3
 from collections import Counter
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Any
 
 from model_doctor import config
 from model_doctor.app import comparison, storage
 from model_doctor.app.clustering import DISCRIMINATING_METHOD, FACTOR_SIGNATURE_METHOD
 from model_doctor.app.diagnosis import Outcome
+from model_doctor.utils.logging_utils import get_logger
+
+logger = get_logger(__name__)
 
 #: Which optional table carries which kind of evidence. Checked by name before
 #: reading, because a database written by an older schema simply lacks some.
@@ -646,3 +650,210 @@ def _groups_containing(
                     }
                 )
     return found
+
+
+# ---------------------------------------------------------------------------
+# Visual evidence
+# ---------------------------------------------------------------------------
+#
+# Everything above returns numbers and text. These two return bytes, and that
+# difference is worth stating plainly rather than leaving to the reader.
+#
+# A caller asks by id. The id is looked up *within a run*, the stored path is
+# read from the row, and that path is handed to the engine's own
+# `verified_file`, which remaps it, resolves symlinks and refuses anything
+# outside the configured roots. No caller-supplied string ever reaches the
+# filesystem: there is no argument here that a path, a URL or a bucket key
+# could be smuggled through, because the only inputs are integers.
+#
+# The bytes are returned to the caller. What the caller then does with them is
+# the caller's boundary to document — see the surface's own notes — and is not
+# a decision this module can make on its behalf.
+
+#: Largest file this surface will hand back, chosen from the limit downstream
+#: rather than picked round.
+#:
+#: Base64 expands bytes by 4/3: ``len(b64encode(n)) == 4 * ceil(n / 3)``. The
+#: binding constraint is the receiving model's per-image limit of 5 MB on the
+#: *encoded* payload, so the largest raw file that can survive encoding is
+#: ``5_000_000 * 3 / 4 = 3_750_000`` bytes. 3.5 MiB sits just under that:
+#:
+#:     3.5 MiB = 3,670,016 raw  ->  4,893,356 base64  =  4.89 MB
+#:     3.75 MiB                 ->  5,242,880         =  5.24 MB   (over)
+#:     4 MiB                    ->  5,592,408         =  5.59 MB   (over)
+#:
+#: The ~107 KB of headroom under 5 MB carries the JSON envelope around the
+#: image block. For comparison, this application's own image path for LLM calls
+#: (``services.imageCompression.resize_and_compress_safe``) caps raw bytes at
+#: 4.5 MB, which is *above* the encoded limit once base64 is applied; this
+#: surface does not copy that number.
+#:
+#: Refused with the size rather than truncated, because half an image is not
+#: evidence.
+MAX_IMAGE_BYTES = 3584 * 1024  # 3.5 MiB
+
+#: Suffix to media type. A suffix not listed here is refused rather than
+#: guessed: the media type is what tells a client how to decode the bytes, and
+#: a wrong guess is worse than a refusal.
+IMAGE_MEDIA_TYPES: dict[str, str] = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".webp": "image/webp",
+    ".gif": "image/gif",
+    ".bmp": "image/bmp",
+}
+
+
+def _read_verified(stored_path: str, *, what: str) -> tuple[bytes, str]:
+    """Read a stored path through the engine's root check, or refuse safely.
+
+    Every refusal here is deliberately vague. ``verified_file`` distinguishes
+    "outside the permitted roots" from "no longer on disk", and its message for
+    the second names the resolved location — useful in a server log, and
+    exactly what must not travel to a reader. So the distinction is kept in the
+    log and flattened here.
+    """
+    # Imported at call time: the engine's service layer pulls in the job runner
+    # and the workspace helpers, and a caller that only ever asks for numbers
+    # should not carry them.
+    from model_doctor.app.service import ServiceError, verified_file
+
+    try:
+        resolved = verified_file(stored_path)
+    except ServiceError as error:
+        logger.warning(
+            "mcp_payloads: refused %s (status %s)", what, getattr(error, "status", "?")
+        )
+        raise PayloadError(
+            f"The {what} is not available. It may have been moved or removed "
+            "since the analysis ran."
+        ) from None
+
+    size = resolved.stat().st_size
+    if size > MAX_IMAGE_BYTES:
+        raise PayloadError(
+            f"That {what} is {size // 1024} KB, above the "
+            f"{MAX_IMAGE_BYTES // 1024} KB this surface returns. "
+            "It cannot be sent in one response."
+        )
+    media = IMAGE_MEDIA_TYPES.get(resolved.suffix.lower())
+    if media is None:
+        raise PayloadError(f"The {what} is in a format this surface cannot return.")
+    return resolved.read_bytes(), media
+
+
+def image_for_run(
+    connection: sqlite3.Connection, run_id: int, image_id: int
+) -> dict[str, Any]:
+    """The photograph one of a run's findings was measured on.
+
+    Scoped by run, so an image belonging to another run is absent rather than
+    refused differently — the same property the finding lookup has, for the
+    same reason.
+
+    Returns the bytes, their media type, and the identity a reader needs to
+    say which photograph this is. No path, in the result or in any refusal.
+    """
+    for name, value in (("run_id", run_id), ("image_id", image_id)):
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise PayloadError(f"{name} must be an integer; got {value!r}.")
+
+    row = connection.execute(
+        "SELECT id, path, filename, width, height FROM images "
+        "WHERE id = ? AND run_id = ?",
+        (image_id, run_id),
+    ).fetchone()
+    if row is None:
+        raise PayloadError(
+            f"No such image: {image_id} in run {run_id}. "
+            "Call list_findings to see which images a run's findings are on."
+        )
+
+    data, media = _read_verified(str(row["path"]), what="image")
+    return {
+        "image_id": row["id"],
+        "run_id": run_id,
+        "filename": row["filename"],
+        "width": row["width"],
+        "height": row["height"],
+        "media_type": media,
+        "bytes": len(data),
+        "data": data,
+    }
+
+
+def heatmap_for_finding(
+    connection: sqlite3.Connection,
+    run_id: int,
+    finding_id: int,
+    *,
+    method: str = "grad-cam",
+    prefer_preview: bool = True,
+) -> dict[str, Any]:
+    """The overlay explaining one of a run's findings, if one was generated.
+
+    Joined through ``findings`` so the run scopes the lookup, exactly as
+    :func:`image_for_run` is scoped.
+
+    A run can be complete and carry no heatmap at all — explanation is
+    implemented for some detector families and not others — so absence is
+    reported as an ordinary answer with a reason, never as a fault.
+
+    ``prefer_preview`` returns the downscaled companion when one exists. It is
+    on by default: the companion is a few hundred kilobytes where the original
+    can be several megabytes, and a response carrying the original may not
+    survive the journey to a reader at all.
+    """
+    for name, value in (("run_id", run_id), ("finding_id", finding_id)):
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise PayloadError(f"{name} must be an integer; got {value!r}.")
+    if not isinstance(method, str) or not method:
+        raise PayloadError("`method` must be a non-empty string.")
+
+    if not storage.has_table(connection, "heatmaps"):
+        raise PayloadError(
+            f"No {method} heatmap for finding {finding_id} in run {run_id}. "
+            "Call get_finding to see whether one exists."
+        )
+    row = connection.execute(
+        "SELECT h.path AS path, h.method AS method, h.target_layers AS target_layers "
+        "FROM heatmaps h JOIN findings f ON f.id = h.finding_id "
+        "WHERE h.finding_id = ? AND f.run_id = ? AND h.method = ?",
+        (finding_id, run_id, method),
+    ).fetchone()
+    if row is None:
+        # One message whether the finding is in another run, the run is
+        # unknown, or the finding simply was never explained.
+        raise PayloadError(
+            f"No {method} heatmap for finding {finding_id} in run {run_id}. "
+            "Call get_finding to see whether one exists."
+        )
+
+    stored = str(row["path"])
+    served = "original"
+    if prefer_preview:
+        from model_doctor.app.explainability import preview_path
+
+        companion = preview_path(Path(config.remap_path(stored)))
+        if companion.is_file():
+            stored, served = str(companion), "preview"
+        else:
+            # A run explained before previews existed has no companion. Falling
+            # back to the original is right, but the original is the thing the
+            # preview exists to avoid sending, so the caller is told what
+            # happened rather than receiving a refusal about a size it did not
+            # ask for.
+            served = "original (no downscaled companion exists)"
+
+    data, media = _read_verified(stored, what="heatmap")
+    return {
+        "finding_id": finding_id,
+        "run_id": run_id,
+        "method": row["method"],
+        "target_layers": row["target_layers"],
+        "resolution": served,
+        "media_type": media,
+        "bytes": len(data),
+        "data": data,
+    }
