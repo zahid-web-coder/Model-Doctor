@@ -24,12 +24,14 @@ content through mechanisms that do not expire.
 
 from __future__ import annotations
 
+import re
+from collections.abc import Iterable, Mapping
 from typing import Any
 
-#: Every tool a reader may be told to call. The drift guard in both
-#: repositories asserts that each of these exists in the live registry, so
-#: guidance naming a tool that has been renamed or withdrawn fails a test
-#: rather than sending somebody after something that is not there.
+#: Every tool a reader may be told to call, by the name Ramanujan's surface
+#: serves it under. The texts below are written with these names; a surface
+#: that serves a tool under another name renders them with
+#: :func:`for_surface` before sending them.
 TOOL_NAMES: tuple[str, ...] = (
     "list_analyses",
     "get_analysis",
@@ -40,8 +42,9 @@ TOOL_NAMES: tuple[str, ...] = (
 )
 
 #: The engine's own server exposes the same capabilities under older names.
-#: Recorded so the drift guard can check either surface against its own
-#: registry rather than against a list that only fits one of them.
+#: Used to render the texts the engine sends, so its readers are told the names
+#: its registry actually serves. The drift guard checks the rendered text, not
+#: this mapping: a mapping can be right while the text sent is wrong.
 ENGINE_TOOL_ALIASES: dict[str, str] = {
     "list_analyses": "list_runs",
     "get_analysis": "get_analysis",
@@ -86,8 +89,9 @@ runs that agreed were re-executions of the same configuration. The `relations`
 block is measured geometry — which prediction covers which object — not
 causality. One finding is an anecdote; rates come from `get_analysis`.
 
-Every response carries `caveats`, and `get_analysis` also carries
-`evidence_gaps`. Read them and pass on what they say. If the stored evidence
+`get_analysis`, `list_findings` and `get_finding` carry `caveats`, and
+`get_analysis` also carries `evidence_gaps`; `list_analyses` and the two image
+tools carry neither. Read them and pass on what they say. If the stored evidence
 does not answer the question, say so and name the pass that would answer it.
 Never fill a gap with a plausible guess.
 
@@ -109,6 +113,54 @@ credential and every retrieval is recorded. The photographs are of real sites �
 look at them for the analysis in hand, do not infer identity, location or
 ownership, and do not copy their contents into anything that outlives the
 question."""
+
+
+# ---------------------------------------------------------------------------
+# Rendering for a surface, and the drift check
+# ---------------------------------------------------------------------------
+
+#: What a tool name looks like in prose, backticked or not. Every analysis
+#: tool either surface serves starts ``list_`` or ``get_``, and no field or
+#: word in these texts does, so the pattern finds the references and only them.
+_TOOL_LIKE = re.compile(r"\b(?:list|get)_[a-z0-9_]+\b")
+
+
+def for_surface(text: str, tool_names: Mapping[str, str] | None = None) -> str:
+    """Render ``text`` with each shared tool name replaced by a surface's own.
+
+    ``tool_names`` maps a name in :data:`TOOL_NAMES` to the name that surface
+    serves; ``None`` leaves the text as written, which is Ramanujan's naming.
+    Whole words only, so a name is never rewritten inside a longer one.
+    """
+    renames = {old: new for old, new in (tool_names or {}).items() if old != new}
+    if not renames:
+        return text
+    names = sorted(renames, key=len, reverse=True)
+    pattern = re.compile(r"\b(" + "|".join(re.escape(n) for n in names) + r")\b")
+    return pattern.sub(lambda match: renames[match.group(1)], text)
+
+
+def tool_references(text: str) -> set[str]:
+    """Every tool name ``text`` points a reader at, backticked or not."""
+    return set(_TOOL_LIKE.findall(text))
+
+
+def unserved_tool_references(texts: Iterable[str], served: Iterable[str]) -> set[str]:
+    """The tool names these texts mention that ``served`` does not contain.
+
+    Checked against the registry a client actually sees, never against
+    :data:`TOOL_NAMES` or an alias table: a name can be "known" to this module
+    and still absent from the server that sent it.
+    """
+    registry = set(served)
+    mentioned: set[str] = set()
+    for text in texts:
+        mentioned |= tool_references(text)
+    return mentioned - registry
+
+
+#: The same instructions, naming the tools the engine's own server serves.
+ENGINE_INSTRUCTIONS = for_surface(INSTRUCTIONS, ENGINE_TOOL_ALIASES)
 
 
 # ---------------------------------------------------------------------------
@@ -271,18 +323,48 @@ class PromptError(Exception):
     """
 
 
-def prompt_definitions() -> list[dict[str, Any]]:
-    """Every prompt as ``prompts/list`` advertises it."""
-    return [entry["definition"] for entry in PROMPTS.values()]
+def _render(value: Any, tool_names: Mapping[str, str] | None) -> Any:
+    """Apply :func:`for_surface` to every string inside a definition."""
+    if isinstance(value, str):
+        return for_surface(value, tool_names)
+    if isinstance(value, list):
+        return [_render(item, tool_names) for item in value]
+    if isinstance(value, dict):
+        return {key: _render(item, tool_names) for key, item in value.items()}
+    return value
 
 
-def build_prompt(name: str, arguments: dict[str, Any] | None) -> dict[str, Any]:
+def prompt_definitions(
+    tool_names: Mapping[str, str] | None = None,
+) -> list[dict[str, Any]]:
+    """Every prompt as ``prompts/list`` advertises it, named for a surface."""
+    return [_render(entry["definition"], tool_names) for entry in PROMPTS.values()]
+
+
+def build_prompt(
+    name: str,
+    arguments: dict[str, Any] | None,
+    tool_names: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
     """Build one prompt, validating its arguments first.
 
     Arguments are checked the way tool arguments are — a missing required one
     is refused with its name rather than rendered as ``None`` into the text,
     which would produce a confident instruction to look at analysis ``None``.
+    ``tool_names`` renders the text and any refusal for a surface that serves
+    tools under other names; see :func:`for_surface`.
     """
+    try:
+        return _build_prompt(name, arguments, tool_names)
+    except PromptError as error:
+        raise PromptError(for_surface(str(error), tool_names)) from None
+
+
+def _build_prompt(
+    name: str,
+    arguments: dict[str, Any] | None,
+    tool_names: Mapping[str, str] | None,
+) -> dict[str, Any]:
     entry = PROMPTS.get(name)
     if entry is None:
         raise PromptError(
@@ -301,6 +383,6 @@ def build_prompt(name: str, arguments: dict[str, Any] | None) -> dict[str, Any]:
             "Call list_analyses first if you do not have the id."
         )
     return {
-        "description": entry["definition"]["description"],
-        "text": entry["build"](supplied),
+        "description": for_surface(entry["definition"]["description"], tool_names),
+        "text": for_surface(entry["build"](supplied), tool_names),
     }

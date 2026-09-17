@@ -59,8 +59,11 @@ _READ_ONLY = ToolAnnotations(
 
 #: The shared text, so this server and Ramanujan's cannot tell a reader
 #: two different things about the same numbers. Lives in
-#: :mod:`model_doctor.app.mcp_guidance`, which both vendor.
-INSTRUCTIONS = mcp_guidance.INSTRUCTIONS
+#: :mod:`model_doctor.app.mcp_guidance`, which both vendor, and is rendered
+#: with this server's tool names — it serves ``list_runs``, not
+#: ``list_analyses``.
+TOOL_NAMES = mcp_guidance.ENGINE_TOOL_ALIASES
+INSTRUCTIONS = mcp_guidance.ENGINE_INSTRUCTIONS
 
 
 @contextmanager
@@ -425,11 +428,13 @@ def _register_prompt(server: MCPServer, name: str, entry: dict[str, Any]) -> Non
     definition = entry["definition"]
 
     @server.prompt(
-        name=name, title=definition["title"], description=definition["description"]
+        name=name,
+        title=definition["title"],
+        description=mcp_guidance.for_surface(definition["description"], TOOL_NAMES),
     )
     def _prompt(**arguments: str) -> str:
         try:
-            return mcp_guidance.build_prompt(name, arguments)["text"]
+            return mcp_guidance.build_prompt(name, arguments, TOOL_NAMES)["text"]
         except mcp_guidance.PromptError as error:
             raise ToolError(str(error)) from error
 

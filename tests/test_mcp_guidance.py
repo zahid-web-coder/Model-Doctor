@@ -12,15 +12,21 @@ list written here.
 from __future__ import annotations
 
 import ast
-import re
+import json
+import sys
 from pathlib import Path
 
 import anyio
 import pytest
 
-from model_doctor.app import mcp_guidance
+from model_doctor.app import mcp_guidance, mcp_payloads, mcp_server
 from model_doctor.app.mcp_guidance import PromptError
 from model_doctor.app.mcp_server import create_server
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from test_mcp_findings import db  # noqa: E402
+
+__all__ = ["db"]
 
 
 def flat(text: str) -> str:
@@ -59,8 +65,43 @@ class TestTheInstructions:
 
     def test_the_server_sends_them(self):
         """Empty instructions are the same as none."""
-        assert create_server().instructions == mcp_guidance.INSTRUCTIONS
-        assert len(mcp_guidance.INSTRUCTIONS) > 500
+        assert create_server().instructions == mcp_guidance.ENGINE_INSTRUCTIONS
+        assert len(mcp_guidance.ENGINE_INSTRUCTIONS) > 500
+
+    def test_they_are_the_shared_text_named_for_this_server(self):
+        """One text, with only the tool names this server serves differently."""
+        rendered = mcp_guidance.for_surface(
+            mcp_guidance.INSTRUCTIONS, mcp_guidance.ENGINE_TOOL_ALIASES
+        )
+        assert rendered == mcp_guidance.ENGINE_INSTRUCTIONS
+        assert "list_analyses" not in mcp_guidance.ENGINE_INSTRUCTIONS
+        assert "`list_runs`" in mcp_guidance.ENGINE_INSTRUCTIONS
+
+    def test_they_do_not_claim_every_response_carries_caveats(self):
+        """The listing and the images carry none; saying otherwise was false."""
+        text = flat(mcp_guidance.INSTRUCTIONS)
+        assert "Every response carries" not in text
+        assert (
+            "`get_analysis`, `list_findings` and `get_finding` carry `caveats`"
+            in text
+        )
+        assert "`list_analyses` and the two image tools carry neither" in text
+
+    def test_the_caveats_claim_matches_the_payloads(self, db):
+        """Checked against what the payloads return, not against the prose."""
+        carries = {
+            "list_analyses": mcp_payloads.list_runs_payload(db.conn),
+            "get_analysis": mcp_payloads.get_analysis_payload(db.conn, [db.run_a]),
+            "list_findings": mcp_payloads.list_findings_payload(db.conn, db.run_a),
+            "get_finding": mcp_payloads.get_finding_payload(
+                db.conn, db.run_a, db.ids_a[0]
+            ),
+        }
+        assert {name for name, p in carries.items() if p.get("caveats")} == {
+            "get_analysis", "list_findings", "get_finding",
+        }
+        assert "caveats" not in carries["list_analyses"]
+        assert "evidence_gaps" not in carries["list_analyses"]
 
     @pytest.mark.parametrize("rule", [
         "not COCO mAP",
@@ -103,28 +144,105 @@ class TestTheInstructions:
             assert forbidden not in text
 
 
+def _served_texts(server) -> list[str]:
+    """Everything this server puts in front of a client that can name a tool.
+
+    The instructions, every tool's title, description and schema, every
+    prompt's advertised text, and each prompt rendered the way this server's
+    prompt handler renders it — refusals included, since a refusal tells a
+    reader what to call next. Prompts are rendered through
+    ``mcp_server.TOOL_NAMES`` because that is what the handler passes;
+    ``MCPServer.get_prompt`` cannot yet drive the handler (see the report).
+    """
+    texts = [server.instructions or ""]
+    for tool in anyio.run(server.list_tools):
+        texts += [tool.title or "", tool.description or ""]
+        texts.append(json.dumps(tool.input_schema))
+    for prompt in anyio.run(server.list_prompts):
+        texts += [prompt.title or "", prompt.description or ""]
+        texts += [a.description or "" for a in prompt.arguments or []]
+    args = {"run_id": 7, "run_ids": "6, 7", "outcome": "false_negative"}
+    for name in mcp_guidance.PROMPTS:
+        texts.append(
+            mcp_guidance.build_prompt(name, args, mcp_server.TOOL_NAMES)["text"]
+        )
+        with pytest.raises(PromptError) as refused:
+            mcp_guidance.build_prompt(name, {}, mcp_server.TOOL_NAMES)
+        texts.append(str(refused.value))
+    return texts
+
+
+def _served_tools(server) -> set[str]:
+    return {t.name for t in anyio.run(server.list_tools)}
+
+
 class TestTheDriftGuard:
-    """Guidance naming a tool that does not exist is worse than none."""
+    """Guidance naming a tool that does not exist is worse than none.
 
-    def test_every_tool_named_in_the_guidance_exists_on_this_server(self):
-        """Compared against the live registry, not a hand-kept list."""
-        live = {t.name for t in anyio.run(create_server().list_tools)}
-        for shared in mcp_guidance.TOOL_NAMES:
-            engine = mcp_guidance.ENGINE_TOOL_ALIASES[shared]
-            assert engine in live, f"{shared} -> {engine} is not served here"
+    The guard reads the text a client receives and compares every tool name in
+    it with the registry a client sees. The earlier guard compared an alias
+    table with the registry, and passed while this server told readers to call
+    `list_analyses`, which it does not serve.
+    """
 
-    def test_every_tool_name_in_the_prose_is_one_of_those(self):
-        """Catches a tool invented in the text but never built."""
-        args = {"run_id": 1, "run_ids": "1, 2", "outcome": "false_negative"}
-        text = mcp_guidance.INSTRUCTIONS + "".join(
-            entry["build"](args) for entry in mcp_guidance.PROMPTS.values()
+    def test_nothing_this_server_sends_names_a_tool_it_does_not_serve(self):
+        server = create_server()
+        texts = _served_texts(server)
+        assert mcp_guidance.tool_references(server.instructions), "names no tools"
+        assert mcp_guidance.unserved_tool_references(
+            texts, _served_tools(server)
+        ) == set()
+
+    def test_every_renamed_tool_is_one_this_server_serves(self):
+        """The mapping itself must point at real tools, or rendering hides a gap."""
+        live = _served_tools(create_server())
+        assert set(mcp_server.TOOL_NAMES.values()) <= live
+
+    def test_the_guard_fails_on_the_text_this_server_used_to_send(self):
+        """The regression: the unrendered shared text names `list_analyses`."""
+        live = _served_tools(create_server())
+        assert mcp_guidance.unserved_tool_references(
+            [mcp_guidance.INSTRUCTIONS], live
+        ) == {"list_analyses"}
+
+    def test_the_guard_fails_when_the_instructions_name_an_unserved_tool(
+        self, monkeypatch
+    ):
+        monkeypatch.setattr(
+            mcp_server,
+            "INSTRUCTIONS",
+            mcp_guidance.ENGINE_INSTRUCTIONS + " Then call `get_everything`.",
         )
-        mentioned = set(re.findall(r"`([a-z_]+)`", text))
-        known = set(mcp_guidance.TOOL_NAMES) | set(
-            mcp_guidance.ENGINE_TOOL_ALIASES.values()
+        server = create_server()
+        assert mcp_guidance.unserved_tool_references(
+            _served_texts(server), _served_tools(server)
+        ) == {"get_everything"}
+
+    def test_the_guard_fails_when_the_prompts_lose_the_rename(self, monkeypatch):
+        """A prompt refusal naming `list_analyses` here is caught too."""
+        monkeypatch.setattr(mcp_server, "TOOL_NAMES", {})
+        server = create_server()
+        assert mcp_guidance.unserved_tool_references(
+            _served_texts(server), _served_tools(server)
+        ) == {"list_analyses"}
+
+    def test_references_are_found_without_backticks(self):
+        """`Call list_analyses first` is as much an instruction as a backticked one."""
+        assert mcp_guidance.tool_references(
+            "Call list_analyses first, then `get_finding`."
+        ) == {"list_analyses", "get_finding"}
+
+    def test_rendering_replaces_whole_names_only(self):
+        rendered = mcp_guidance.for_surface(
+            "`list_analyses`, xlist_analyses, list_analyses_old",
+            mcp_guidance.ENGINE_TOOL_ALIASES,
         )
-        looks_like_a_tool = {m for m in mentioned if m.startswith(("list_", "get_"))}
-        assert looks_like_a_tool <= known, looks_like_a_tool - known
+        assert rendered == "`list_runs`, xlist_analyses, list_analyses_old"
+
+    def test_no_mapping_leaves_the_text_as_written(self):
+        assert mcp_guidance.for_surface(mcp_guidance.INSTRUCTIONS) == (
+            mcp_guidance.INSTRUCTIONS
+        )
 
 
 class TestThePrompts:
