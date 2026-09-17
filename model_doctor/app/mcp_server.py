@@ -43,7 +43,7 @@ from mcp.types import ImageContent, ToolAnnotations
 from pydantic import Field
 
 from model_doctor import config
-from model_doctor.app import capabilities, mcp_payloads, storage
+from model_doctor.app import capabilities, mcp_guidance, mcp_payloads, storage
 from model_doctor.app.mcp_payloads import PayloadError
 from model_doctor.utils.logging_utils import get_logger
 
@@ -57,26 +57,10 @@ _READ_ONLY = ToolAnnotations(
     open_world_hint=False,
 )
 
-INSTRUCTIONS = """Model Doctor diagnoses why an object-detection model fails.
-These tools expose its stored analysis, read-only. `list_runs` says which runs
-exist and what evidence each carries; `get_analysis` returns the evidence for a
-set of runs in one comparison-friendly structure.
-
-Treat every figure as evidence and keep your own reasoning separate from it.
-Outcome counts are not COCO mAP and will not agree with it. Factors are
-correlations against a control rate, not proven causes. A recommendation's
-`status` says how much weight it can bear: only `replicated`, `reproduced` and
-`provisional` are actionable, and `reproduced` means the only runs that agreed
-were re-executions of the same configuration. `null` means not measured, never
-zero.
-
-The `relations` block describes how two findings relate — which prediction
-covers which object — rather than which condition co-occurred with a failure.
-It is measured geometry, not a cause. `duplicate_prediction` inside it is a
-provisional reading of the continuous `prediction_on_matched_object`
-measurement; it does not establish suppression settings, decoding, assignment
-order, architecture or anything else as the mechanism, and none of those is
-measured."""
+#: The shared text, so this server and Ramanujan's cannot tell a reader
+#: two different things about the same numbers. Lives in
+#: :mod:`model_doctor.app.mcp_guidance`, which both vendor.
+INSTRUCTIONS = mcp_guidance.INSTRUCTIONS
 
 
 @contextmanager
@@ -426,7 +410,28 @@ def create_server() -> MCPServer:
             except capabilities.CapabilityError as error:
                 raise ToolError(str(error)) from error
 
+    # The same three workflows Ramanujan's surface offers, from the same
+    # definitions. Registered with a loop rather than three decorated
+    # functions: the bodies would be identical but for which entry they read,
+    # and a copy per prompt is how the two surfaces would drift.
+    for _name, _entry in mcp_guidance.PROMPTS.items():
+        _register_prompt(server, _name, _entry)
+
     return server
+
+
+def _register_prompt(server: MCPServer, name: str, entry: dict[str, Any]) -> None:
+    """Expose one shared prompt through this server's decorator."""
+    definition = entry["definition"]
+
+    @server.prompt(
+        name=name, title=definition["title"], description=definition["description"]
+    )
+    def _prompt(**arguments: str) -> str:
+        try:
+            return mcp_guidance.build_prompt(name, arguments)["text"]
+        except mcp_guidance.PromptError as error:
+            raise ToolError(str(error)) from error
 
 
 def _as_tool_error(error: PayloadError) -> ToolError:
