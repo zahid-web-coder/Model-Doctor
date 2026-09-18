@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 
 import {
   LayoutGrid, Activity, GitMerge, AlertCircle, Clock, Target,
-  FileText, Settings, PanelLeftClose, PanelLeftOpen, Scale, PlusCircle, Lightbulb, Images,
+  FileText, Settings, PanelLeftClose, PanelLeftOpen, Scale, PlusCircle, Lightbulb, Images, Lock,
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -54,9 +54,13 @@ export function Sidebar() {
   };
 
   // `/analyze` and `/settings` are the two screens that drive the control
-  // service. It is never deployed with the public read API — it has no
-  // authentication and executes uploaded checkpoints — so on a read-only build
-  // both would sit in the rail pointing at nothing. See `READ_ONLY`.
+  // service, which is never deployed with the public read API — it has no
+  // authentication and executes uploaded checkpoints.
+  //
+  // They stay in the rail on a read-only build rather than being dropped from
+  // it. Hiding half the product understates it, and the destination explains
+  // why it is unavailable better than a missing nav item does. The lock says
+  // so before the click. See `READ_ONLY`.
   const items = [
     { icon: PlusCircle,  label: "New Analysis", href: "/analyze" },
     { icon: LayoutGrid,  label: "Overview",    href: "/dashboard" },
@@ -70,7 +74,7 @@ export function Sidebar() {
     { icon: Lightbulb,   label: "Recommendations", href: `/runs/${runId}/recommendations` },
     { icon: FileText,    label: "Reports",     href: "/reports" },
     { icon: Settings,    label: "Settings",    href: "/settings" },
-  ].filter(({ href }) => !(READ_ONLY && CONTROL_ROUTES.has(href)));
+  ].map((item) => ({ ...item, locked: READ_ONLY && CONTROL_ROUTES.has(item.href) }));
 
   // "Runs" owns only the index and a bare /runs/:id, never the tab pages —
   // those belong to their own nav items.
@@ -117,8 +121,12 @@ export function Sidebar() {
         </div>
 
         <nav className="flex flex-col gap-1">
-          {items.map(({ icon: Icon, label, href }) => {
+          {items.map(({ icon: Icon, label, href, locked }) => {
             const active = isActive(href);
+            // Still a link: the destination is what explains itself. Locked
+            // only dims it and adds the mark, so the rail reads as "there, but
+            // not here" rather than as a dead row.
+            const hint = locked ? `${label} — not available in the public demo` : undefined;
             return (
               <Link
                 href={href}
@@ -127,15 +135,23 @@ export function Sidebar() {
                 // The label is the accessible name at full width; collapsed,
                 // the icon alone is not, so `title` carries it for pointers and
                 // the visually-hidden span carries it for screen readers.
-                title={collapsed ? label : undefined}
+                title={collapsed ? (hint ?? label) : hint}
                 className={`flex items-center gap-3 ${collapsed ? "justify-center px-0" : "px-4"} py-3 text-[14px] font-medium rounded-lg transition-colors ${
                   active
                     ? `bg-gradient-to-r from-[#EBE6D8] to-transparent text-ink ${collapsed ? "" : "border-l-[3px] border-brass"}`
-                    : "text-slate hover:bg-black/5"
+                    : `hover:bg-black/5 ${locked ? "text-slate/50" : "text-slate"}`
                 }`}
               >
-                <Icon size={18} className={active ? "text-ink" : "text-slate"} strokeWidth={2} />
+                <Icon
+                  size={18}
+                  className={active ? "text-ink" : locked ? "text-slate/50" : "text-slate"}
+                  strokeWidth={2}
+                />
                 <span className={collapsed ? "sr-only" : undefined}>{label}</span>
+                {locked && !collapsed && (
+                  <Lock size={12} className="ml-auto text-slate/40 shrink-0" strokeWidth={2.5} />
+                )}
+                {locked && <span className="sr-only">(not available in the public demo)</span>}
               </Link>
             );
           })}
