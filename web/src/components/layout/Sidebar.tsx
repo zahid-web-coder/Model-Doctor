@@ -9,11 +9,15 @@ import {
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useRun } from "@/lib/run-context";
+import { READ_ONLY } from "@/lib/deployment";
 import { modelName, datasetName, modelFingerprint } from "@/lib/derive";
 import { num } from "@/lib/format";
 import { Logo, Wordmark } from "@/components/shared/Logo";
 
 const STORAGE_KEY = "md.sidebar.collapsed";
+
+/** Nav destinations backed by the control service rather than the read API. */
+const CONTROL_ROUTES = new Set(["/analyze", "/settings"]);
 
 /**
  * Primary navigation, plus the current-run card.
@@ -49,6 +53,10 @@ export function Sidebar() {
     });
   };
 
+  // `/analyze` and `/settings` are the two screens that drive the control
+  // service. It is never deployed with the public read API — it has no
+  // authentication and executes uploaded checkpoints — so on a read-only build
+  // both would sit in the rail pointing at nothing. See `READ_ONLY`.
   const items = [
     { icon: PlusCircle,  label: "New Analysis", href: "/analyze" },
     { icon: LayoutGrid,  label: "Overview",    href: "/dashboard" },
@@ -62,7 +70,7 @@ export function Sidebar() {
     { icon: Lightbulb,   label: "Recommendations", href: `/runs/${runId}/recommendations` },
     { icon: FileText,    label: "Reports",     href: "/reports" },
     { icon: Settings,    label: "Settings",    href: "/settings" },
-  ];
+  ].filter(({ href }) => !(READ_ONLY && CONTROL_ROUTES.has(href)));
 
   // "Runs" owns only the index and a bare /runs/:id, never the tab pages —
   // those belong to their own nav items.
