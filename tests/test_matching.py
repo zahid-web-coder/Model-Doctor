@@ -15,9 +15,9 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from utils.annotations import ObjectAnnotation
-from utils.geometry import box_iou
-from utils.matching import match_annotations
+from model_doctor.utils.annotations import ObjectAnnotation
+from model_doctor.utils.geometry import box_iou
+from model_doctor.utils.matching import match_annotations
 
 
 def _box(x1: float, y1: float, x2: float, y2: float, cls: int = 0) -> ObjectAnnotation:

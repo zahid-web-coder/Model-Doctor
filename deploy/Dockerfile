@@ -20,10 +20,15 @@ WORKDIR /srv
 COPY requirements-api.txt ./
 RUN pip install --no-cache-dir -r requirements-api.txt
 
-# Only what the API imports. No tests, no docs, no notebooks.
-COPY config.py ./
-COPY app/ ./app/
-COPY utils/ ./utils/
+# The engine package. No tests, no docs, no notebooks — see .dockerignore.
+#
+# One directory rather than three: `config.py`, `app/` and `utils/` moved under
+# `model_doctor/` when the package became installable, so the older per-directory
+# copies named paths that no longer exist and the build failed here. Modules the
+# read API never imports (the control service, the dashboard, the MCP server)
+# come along, and cannot run in this image anyway: their dependencies are not
+# installed, and the command below serves the read API only.
+COPY model_doctor/ ./model_doctor/
 
 # Mount points. Nothing is copied into them at build time.
 #   /data/db      the SQLite database
@@ -53,4 +58,4 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=5s \
   CMD python -c "import urllib.request,sys; \
 sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health').status==200 else 1)"
 
-CMD ["uvicorn", "app.api:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "model_doctor.app.api:app", "--host", "0.0.0.0", "--port", "8000"]

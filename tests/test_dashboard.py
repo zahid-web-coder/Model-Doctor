@@ -10,7 +10,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app.dashboard import (
+from model_doctor.app.dashboard import (
     DashboardDataError,
     available_tables,
     check_failure_groups_integrity,

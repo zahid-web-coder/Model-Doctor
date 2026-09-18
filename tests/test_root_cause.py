@@ -19,10 +19,10 @@ from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import config
-from app import storage
-from app.diagnosis import DatasetDiagnosis, diagnose_image
-from app.root_cause import (
+from model_doctor import config
+from model_doctor.app import storage
+from model_doctor.app.diagnosis import DatasetDiagnosis, diagnose_image
+from model_doctor.app.root_cause import (
     BLUR,
     CLASS_IMBALANCE,
     CROWDING,
@@ -46,7 +46,7 @@ from app.root_cause import (
     calibrate_finding_factors,
     measure_factor_rates,
 )
-from utils.annotations import ObjectAnnotation
+from model_doctor.utils.annotations import ObjectAnnotation
 
 
 def _context(**overrides) -> FindingContext:

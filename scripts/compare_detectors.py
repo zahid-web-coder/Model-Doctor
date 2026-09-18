@@ -42,7 +42,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from utils.logging_utils import get_logger
+from model_doctor.utils.logging_utils import get_logger
 
 logger = get_logger(__name__)
 
@@ -183,7 +183,7 @@ def load_ground_truth(
 def build_detector(spec: ModelSpec, confidence: float) -> Any:
     """Return a loaded detector for the spec, by family."""
     if spec.family == "rfdetr":
-        from app.rfdetr_adapter import RFDetrDetector
+        from model_doctor.app.rfdetr_adapter import RFDetrDetector
 
         detector = RFDetrDetector(
             model_path=str(spec.weights),
@@ -191,7 +191,7 @@ def build_detector(spec: ModelSpec, confidence: float) -> Any:
             image_size=spec.native_imgsz,
         )
     else:
-        from app.inference import Detector
+        from model_doctor.app.inference import Detector
 
         detector = Detector(
             model_path=str(spec.weights),
@@ -387,7 +387,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # Read class names from data.yaml so categories are built dynamically.
     try:
-        from utils.dataset import load_dataset_config
+        from model_doctor.utils.dataset import load_dataset_config
         dataset = load_dataset_config(root / "data.yaml")
         class_names = dataset.class_names
     except Exception:

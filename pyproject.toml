@@ -1,9 +1,56 @@
-# Tooling configuration for Model Doctor.
+# Packaging and tooling configuration for Model Doctor.
 #
-# This file configures development tools only. It deliberately declares no
-# build system: the project is an application run from its source tree, not a
-# library to be packaged and installed, and adding packaging metadata we do not
-# use would be overengineering.
+# This file used to declare no build system, on the grounds that the project is
+# an application run from its source tree. That stopped being the whole story
+# when Ramanujan needed to run the analysis inside its own process: two projects
+# cannot both own a top-level `utils` package, so this code moved under
+# `model_doctor/` and became installable.
+#
+# What installs is the engine. The dashboard, the HTTP services and the MCP
+# server are extras, because a host embedding the analysis should not be made
+# to carry Streamlit in order to get it.
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "model-doctor"
+# Tracks storage.SCHEMA_VERSION. The database is the contract between this
+# package, its own dashboard, and any host embedding it; the version a host
+# pins should say which schema it is going to meet.
+version = "0.15.0"
+description = "Why a vision model's predictions fail, measured from a run."
+readme = "README.md"
+requires-python = ">=3.11"
+
+# The engine's runtime needs, and only those. requirements.txt stays the way a
+# developer sets up a full checkout, extras included.
+dependencies = [
+    "ultralytics>=8.4.0",
+    "torch>=2.2.0",
+    "torchvision>=0.17.0",
+    "pycocotools>=2.0.7",
+    "opencv-python>=4.9.0",
+    "numpy>=1.26.0",
+    "pandas>=2.2.0",
+    "pillow>=10.0.0",
+    "matplotlib>=3.8.0",
+    "scikit-learn>=1.4.0",
+    "open_clip_torch>=2.24.0",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dashboard = ["streamlit>=1.30.0", "plotly>=5.18.0"]
+service = ["fastapi>=0.110.0", "uvicorn>=0.27.0"]
+mcp = ["mcp>=1.2.0"]
+dev = ["pytest>=8.0.0", "httpx>=0.26.0", "ruff>=0.6.0"]
+
+[tool.setuptools.packages.find]
+# The package only. `tests`, `scripts`, `deploy` and `web` are part of the
+# checkout, not of the distribution.
+include = ["model_doctor*"]
 
 [tool.ruff]
 # 88 rather than PEP 8's original 79. PEP 8 explicitly permits teams to raise
@@ -12,7 +59,7 @@
 # share one line without contortions.
 line-length = 88
 target-version = "py311"
-exclude = [".venv", "results"]
+exclude = [".venv", "results", "build", "dist"]
 
 [tool.ruff.lint]
 select = [

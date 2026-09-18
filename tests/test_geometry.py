@@ -15,9 +15,9 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app.inference import Detection
-from utils.annotations import ObjectAnnotation
-from utils.geometry import BoxGeometryMixin
+from model_doctor.app.inference import Detection
+from model_doctor.utils.annotations import ObjectAnnotation
+from model_doctor.utils.geometry import BoxGeometryMixin
 
 
 def _prediction(x1: float, y1: float, x2: float, y2: float) -> Detection:

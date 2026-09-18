@@ -12,16 +12,16 @@ from pathlib import Path
 
 import pytest
 
-import config
-from app import storage
-from app.mask_diagnosis import (
+from model_doctor import config
+from model_doctor.app import storage
+from model_doctor.app.mask_diagnosis import (
     MASK_CORRECT,
     MASK_NO_OVERLAP,
     MASK_POOR,
     classify_mask,
 )
-from app.storage import RunContext
-from utils.masks import annotation_mask_iou, mask_iou, polygon_bounds
+from model_doctor.app.storage import RunContext
+from model_doctor.utils.masks import annotation_mask_iou, mask_iou, polygon_bounds
 
 SQUARE = [[0, 0], [10, 0], [10, 10], [0, 10]]
 SHIFTED = [[5, 0], [15, 0], [15, 10], [5, 10]]
@@ -68,7 +68,7 @@ def test_a_thin_annulus_scores_far_below_its_bounding_box() -> None:
     ring = [[0, 0], [100, 0], [100, 4], [0, 4]]  # a thin horizontal bar
     shifted_ring = [[0, 6], [100, 6], [100, 10], [0, 10]]
 
-    from utils.geometry import BoxGeometryMixin, box_iou
+    from model_doctor.utils.geometry import BoxGeometryMixin, box_iou
 
     class Box(BoxGeometryMixin):
         def __init__(self, x1, y1, x2, y2):
@@ -282,3 +282,100 @@ def test_a_stored_polygon_is_valid_json(tmp_path: Path) -> None:
         ).fetchone()["pred_polygon"]
 
     assert json.loads(raw) == SQUARE
+
+
+# ---------------------------------------------------------------------------
+# A detection model has no outlines — that is an answer, not a failure
+# ---------------------------------------------------------------------------
+class TestMaskDiagnosisOnADetectionModel:
+    """The stage must skip, not fail.
+
+    The job runner treats any non-zero exit as a failed job. Raising here ended
+    the whole analysis at stage three with a message saying nothing was wrong,
+    which is how a perfectly good detection model came back as a failure.
+    """
+
+    def _run_with(self, monkeypatch, tmp_path, *, polygon):
+        """One saved run, one finding, and a detector that predicts as given."""
+        import sqlite3
+        from types import SimpleNamespace
+
+        from model_doctor.app import mask_diagnosis
+
+        image = tmp_path / "a.jpg"
+        image.write_bytes(b"\xff\xd8")
+
+        from model_doctor.app.inference import Detection
+
+        class _Prediction:
+            error = None
+            detections = [
+                Detection(
+                    class_id=0,
+                    class_name="column",
+                    x1=0.0,
+                    y1=0.0,
+                    x2=10.0,
+                    y2=10.0,
+                    polygon=polygon,
+                    confidence=0.9,
+                )
+            ]
+
+        class _Engine:
+            image_size = 448
+
+            def load(self):
+                return None
+
+            def predict_image(self, path, save_annotated=False):  # noqa: ARG002
+                return _Prediction()
+
+        row = {
+            "finding_id": 1,
+            "path": str(image),
+            "truth_polygon": None,
+            "outcome": "correct",
+            "pred_x1": 0.0,
+            "pred_y1": 0.0,
+            "pred_x2": 10.0,
+            "pred_y2": 10.0,
+        }
+        monkeypatch.setattr(
+            mask_diagnosis.storage,
+            "load_run",
+            lambda _c, _r: SimpleNamespace(
+                id=1, model_path=str(tmp_path / "m.pt"), image_size=448
+            ),
+        )
+        monkeypatch.setattr(
+            mask_diagnosis.storage,
+            "load_findings_for_embedding",
+            lambda _c, _r, failures_only=False: [row],
+        )
+        monkeypatch.setattr(
+            mask_diagnosis.storage,
+            "save_mask_findings",
+            lambda _c, _r, entries: len(list(entries)),
+        )
+        connection = sqlite3.connect(":memory:")
+        connection.row_factory = sqlite3.Row
+        connection.execute(
+            "CREATE TABLE mask_findings (finding_id INT, run_id INT, mask_iou REAL)"
+        )
+        connection.execute("CREATE TABLE findings (id INT, iou REAL)")
+        return mask_diagnosis.diagnose_masks(connection, 1, detector=_Engine())
+
+    def test_a_detection_model_reports_not_applicable(self, monkeypatch, tmp_path):
+        report = self._run_with(monkeypatch, tmp_path, polygon=None)
+        assert report.applicable is False
+        assert report.measured == 0
+        assert "Not applicable" in report.describe()
+        assert "detection model" in report.describe()
+
+    def test_a_segmentation_model_still_measures(self, monkeypatch, tmp_path):
+        """The working path is unchanged: outlines present means outlines measured."""
+        report = self._run_with(
+            monkeypatch, tmp_path, polygon=[[0, 0], [10, 0], [10, 10]]
+        )
+        assert report.applicable is True

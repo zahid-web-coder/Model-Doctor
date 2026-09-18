@@ -20,16 +20,16 @@ from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app import storage
-from app.diagnosis import DatasetDiagnosis, diagnose_image
-from app.features import (
+from model_doctor.app import storage
+from model_doctor.app.diagnosis import DatasetDiagnosis, diagnose_image
+from model_doctor.app.features import (
     MIN_REGION_PIXELS,
     ExtractionReport,
     FeatureExtractionError,
     extract_run_embeddings,
     region_from_box,
 )
-from utils.annotations import ObjectAnnotation
+from model_doctor.utils.annotations import ObjectAnnotation
 
 
 class FakeBackend:

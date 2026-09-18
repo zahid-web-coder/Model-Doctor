@@ -1,6 +1,7 @@
 """Contract tests for the read-only API.
 
-Built against a **real** database — created through ``app.storage`` so it has
+Built against a **real** database — created through ``model_doctor.app.storage`` so it
+has
 the actual schema, indexes and foreign keys — rather than against mocked
 readers. A mocked storage layer would pass while the published contract was
 broken, which is the failure these tests exist to prevent.
@@ -20,11 +21,11 @@ import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
 
-import config
-from app import storage
-from app.api import create_app
-from app.clustering import DISCRIMINATING_METHOD
-from app.storage import RunContext
+from model_doctor import config
+from model_doctor.app import storage
+from model_doctor.app.api import create_app
+from model_doctor.app.clustering import DISCRIMINATING_METHOD
+from model_doctor.app.storage import RunContext
 
 RUN_ID = 1
 
@@ -469,7 +470,7 @@ def test_a_missing_database_is_service_unavailable(
     response = client.get("/runs")
 
     assert response.status_code == 503
-    assert "app.diagnosis" in response.json()["detail"]
+    assert "model_doctor.app.diagnosis" in response.json()["detail"]
 
 
 def test_health_reports_a_missing_database_without_failing(
@@ -497,7 +498,7 @@ def test_health_reports_the_schema_version(client: TestClient) -> None:
 # ---------------------------------------------------------------------------
 def test_the_api_never_writes(populated: Path) -> None:
     """Read-only by construction: a write must fail at the connection."""
-    from app.api import read_only
+    from model_doctor.app.api import read_only
 
     with read_only(populated) as connection, pytest.raises(sqlite3.OperationalError):
         connection.execute("DELETE FROM findings")
@@ -591,7 +592,8 @@ def test_importing_the_api_does_not_load_torch() -> None:
     """The API never touches a model, and must not pay for one to be deployed.
 
     `config.DEVICE` was resolved at import, and `resolve_device()` imports
-    torch. Every module imports `config`, so `import app.api` pulled in roughly
+    torch. Every module imports `config`, so `import model_doctor.app.api` pulled in
+    roughly
     500 MB of ML stack before serving a request — the difference between a
     100 MB container and a 2.5 GB one (D-038).
 
@@ -606,7 +608,7 @@ def test_importing_the_api_does_not_load_torch() -> None:
         [
             sys.executable,
             "-c",
-            "import sys; import app.api; "
+            "import sys; import model_doctor.app.api; "
             "print('torch' in sys.modules or 'ultralytics' in sys.modules)",
         ],
         capture_output=True,
@@ -616,13 +618,14 @@ def test_importing_the_api_does_not_load_torch() -> None:
     )
 
     assert result.stdout.strip() == "False", (
-        "importing app.api loaded the ML stack; a deployed API would need it"
+        "importing model_doctor.app.api loaded the ML stack; "
+        "a deployed API would need it"
     )
 
 
 def test_device_is_still_readable_and_cached() -> None:
     """Deferring the computation must not change what callers see."""
-    import config as config_module
+    from model_doctor import config as config_module
 
     first = config_module.DEVICE
     second = config_module.DEVICE
@@ -634,7 +637,7 @@ def test_device_is_still_readable_and_cached() -> None:
 
 def test_an_unknown_config_attribute_still_raises() -> None:
     """The lazy hook must not swallow genuine typos."""
-    import config as config_module
+    from model_doctor import config as config_module
 
     with pytest.raises(AttributeError, match="no attribute"):
         _ = config_module.NOT_A_REAL_SETTING

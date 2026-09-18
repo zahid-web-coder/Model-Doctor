@@ -12,9 +12,9 @@ from pathlib import Path
 
 import pytest
 
-import config
-from app import storage
-from app.clustering import (
+from model_doctor import config
+from model_doctor.app import storage
+from model_doctor.app.clustering import (
     DISCRIMINATING_METHOD,
     FACTOR_SIGNATURE_METHOD,
     UNEXPLAINED_LABEL,
@@ -23,13 +23,13 @@ from app.clustering import (
     group_run,
     signature_for,
 )
-from app.similarity import (
+from model_doctor.app.similarity import (
     Neighbour,
     SimilarityError,
     cosine_similarity,
     nearest_neighbours,
 )
-from app.storage import RunContext
+from model_doctor.app.storage import RunContext
 
 
 # ---------------------------------------------------------------------------
@@ -429,7 +429,7 @@ def test_querying_a_run_without_embeddings_gives_the_command_to_fix_it(
 
     with (
         storage.connect(database) as connection,
-        pytest.raises(SimilarityError, match="app.features"),
+        pytest.raises(SimilarityError, match="model_doctor.app.features"),
     ):
         nearest_neighbours(connection, run_id, finding_id=1)
 
