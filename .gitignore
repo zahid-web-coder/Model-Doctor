@@ -70,6 +70,18 @@ db/*
 *.sqlite
 *.sqlite3
 
+# One exception, deliberately narrow: the sanitized public demo database.
+#
+# The rule above exists to keep site, component and date identifiers out of the
+# repository. That metadata is precisely what was removed from this copy —
+# neutral filenames, no absolute paths, no customer identifiers, no real model
+# digest (see demo/reports/sanitization.md). It is tracked because the
+# deployment image copies it in at build time, so it has to be in the tree.
+#
+# Scoped to the single file, not to demo/db/ or *.db under demo/, so a
+# populated database landing there by accident is still ignored.
+!demo/db/model_doctor.db
+
 # ---------------------------------------------------------------------------
 # Generated output
 # ---------------------------------------------------------------------------

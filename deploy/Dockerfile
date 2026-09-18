@@ -1,11 +1,13 @@
-# Model Doctor — read-only API.
+# Model Doctor — read-only API, serving the public demo dataset.
 #
-# Deliberately does NOT contain the model, the dataset, or the database. Those
-# are mounted at runtime, because where the data lives is a storage decision
-# that has not been made yet and baking it in would pre-empt it.
+# Carries the API dependencies (see requirements-api.txt) and one prepared
+# demo run. No model weights: the API never loads the ML stack, which is what
+# keeps this image small enough to be worth deploying.
 #
-# The image carries only the API dependencies (see requirements-api.txt), which
-# is possible because the API never loads the ML stack.
+# The demo data under demo/ is a sanitised copy — neutral filenames, no
+# absolute paths, no customer identifiers, no real model digest. See
+# demo/reports/sanitization.md, and demo/manifest.json for its publication
+# status.
 
 FROM python:3.11-slim
 
@@ -30,11 +32,23 @@ RUN pip install --no-cache-dir -r requirements-api.txt
 # installed, and the command below serves the read API only.
 COPY model_doctor/ ./model_doctor/
 
-# Mount points. Nothing is copied into them at build time.
+# The demo dataset, baked in rather than mounted.
 #   /data/db      the SQLite database
-#   /data/images  the dataset images referenced by images.path
-#   /data/results heatmap PNGs referenced by heatmaps.path
-VOLUME ["/data"]
+#   /data/images  the images referenced by images.path
+#   /data/results heatmap PNGs and previews referenced by heatmaps.path
+#
+# Baked in because the free hosting tier this image targets has no persistent
+# disk, so there is nothing to mount from. An image layer is also strictly
+# better here: the data cannot go missing across a restart, a spin-down or a
+# redeploy, and there is no mounting step to get wrong.
+#
+# There is deliberately no VOLUME. A volume at /data would shadow these
+# directories at run time and the API would start against an empty tree.
+#
+# The database records these exact paths, so nothing below has to be remapped.
+COPY demo/db/      /data/db/
+COPY demo/images/  /data/images/
+COPY demo/results/ /data/results/
 
 ENV MD_DB_PATH=/data/db/model_doctor.db \
     MD_DATASETS_DIR=/data/images \
