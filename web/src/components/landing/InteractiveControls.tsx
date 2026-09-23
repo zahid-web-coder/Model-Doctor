@@ -6,6 +6,7 @@ import { nudgeArm, resetArm } from "@/lib/hero/armControl";
 import { ScanCard } from "./ScanCard";
 import { MonitorCard } from "./MonitorCard";
 import { requestScan } from "@/lib/hero/scan";
+import { toggleHallLights, useHallLights } from "@/lib/hero/lights";
 import { SCAN_FINDINGS } from "@/lib/hero/scanFindings";
 
 /**
@@ -150,6 +151,10 @@ export function InteractiveControls() {
             <span className="text-white/85">Hover the monitor</span>
             {" "}to read it
           </li>
+          <li>
+            <span className="text-white/85">Pull the lever</span>
+            {" "}by the door for the lights
+          </li>
         </ul>
 
         <div className="flex items-center gap-2 mb-2">
@@ -191,6 +196,8 @@ export function InteractiveControls() {
           ))}
         </div>
 
+        <LightsButton />
+
         <p className="text-[10px] leading-relaxed text-white/35 mt-3">
           Scroll to zoom · Esc to exit
         </p>
@@ -205,6 +212,24 @@ export function InteractiveControls() {
       </button>
     </div>
     </>
+  );
+}
+
+/**
+ * The hall lights, for keyboards — the same switch as the rocker on the wall
+ * beside the service door.
+ */
+function LightsButton() {
+  const on = useHallLights((s) => s.on);
+  return (
+    <button
+      type="button"
+      onClick={toggleHallLights}
+      aria-pressed={!on}
+      className="mt-3 w-full rounded border border-white/15 bg-white/5 px-2 py-1.5 text-[11px] text-white/80 hover:bg-white/15 hover:text-white transition-colors"
+    >
+      {on ? "Turn the hall lights off" : "Turn the hall lights on"}
+    </button>
   );
 }
 

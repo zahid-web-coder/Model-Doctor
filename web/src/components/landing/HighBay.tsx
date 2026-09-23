@@ -1,8 +1,10 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useRef } from "react";
 import * as THREE from "three";
+import { useFrame } from "@react-three/fiber";
 import { SpotLight, Sparkles } from "@react-three/drei";
+import { hallLevel } from "@/lib/hero/lights";
 
 /**
  * Overhead high-bay lighting: where the key light comes from, made visible.
@@ -46,8 +48,20 @@ const BACK = { position: [-5.2, 6.2, -5.4] as const, target: [-5.2, 0, -5.4] as 
 /** The ceiling the fixtures hang from — the walls in `Hall` are 10 m tall. */
 const CEILING_Y = 10;
 
+function setShaftOpacity(light: THREE.SpotLight | null, opacity: number) {
+  const volume = light?.children.find((c) => (c as THREE.Mesh).isMesh) as THREE.Mesh | undefined;
+  const material = volume?.material as THREE.ShaderMaterial | undefined;
+  if (material?.uniforms?.opacity) material.uniforms.opacity.value = opacity;
+  if (volume) volume.visible = opacity > 0.004;
+}
+
 function Fixture({ position }: { position: readonly [number, number, number] }) {
   const [x, y, z] = position;
+  const lamp = useRef<THREE.MeshStandardMaterial>(null);
+  // The lamp face follows the hall's light switch, flicker and all.
+  useFrame(() => {
+    if (lamp.current) lamp.current.emissiveIntensity = 0.04 + 5.96 * hallLevel.value;
+  });
   const drop = CEILING_Y - y;
   return (
     <group position={[x, y, z]}>
@@ -73,7 +87,7 @@ function Fixture({ position }: { position: readonly [number, number, number] }) 
       <mesh position={[0, 0.03, 0]} rotation={[-Math.PI / 2, 0, 0]}>
         <circleGeometry args={[0.31, 32]} />
         <meshStandardMaterial
-          color="#fff2df" emissive="#fff2df" emissiveIntensity={6}
+          ref={lamp} color="#fff2df" emissive="#fff2df" emissiveIntensity={6}
           toneMapped={false}
         />
       </mesh>
@@ -86,11 +100,26 @@ export function HighBay({ animate = true }: { animate?: boolean }) {
   // its target's world matrix, and a target that is not in the graph never has
   // one computed — it silently aims at the origin instead.
   const backTarget = useMemo(() => new THREE.Object3D(), []);
+  const keyShaft = useRef<THREE.SpotLight>(null);
+  const backShaft = useRef<THREE.SpotLight>(null);
+  const backLamp = useRef<THREE.SpotLight>(null);
+  const dust = useRef<THREE.Points>(null);
+
+  // Everything here dims with the hall's light switch. The shafts' opacity
+  // lives in their volume material's uniform; drei only sets it on render.
+  useFrame(() => {
+    const L = hallLevel.value;
+    setShaftOpacity(keyShaft.current, 0.34 * L);
+    setShaftOpacity(backShaft.current, 0.22 * L);
+    if (backLamp.current) backLamp.current.intensity = 22 * L;
+    if (dust.current) dust.current.visible = L > 0.05;
+  });
 
   return (
     <group>
       <Fixture position={KEY.position} />
       <SpotLight
+        ref={keyShaft}
         position={[...KEY.position]}
         target-position={[...KEY.target]}
         intensity={0}
@@ -106,6 +135,7 @@ export function HighBay({ animate = true }: { animate?: boolean }) {
         opacity={0.34}
       />
       <Sparkles
+        ref={dust}
         position={[1.05, 3.3, 1.3]}
         scale={[1.5, 2.6, 1.5]}
         count={45}
@@ -126,6 +156,7 @@ export function HighBay({ animate = true }: { animate?: boolean }) {
           the floor it exists to light. */}
       <primitive object={backTarget} position={[...BACK.target]} />
       <spotLight
+        ref={backLamp}
         position={[...BACK.position]}
         target={backTarget}
         intensity={22}
@@ -136,6 +167,7 @@ export function HighBay({ animate = true }: { animate?: boolean }) {
         color="#ffeede"
       />
       <SpotLight
+        ref={backShaft}
         position={[...BACK.position]}
         target-position={[...BACK.target]}
         intensity={0}
