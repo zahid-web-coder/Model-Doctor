@@ -22,10 +22,24 @@ const LandingScene = dynamic(() => import("./LandingScene"), {
 });
 
 /**
- * The still the page falls back to: no WebGL, mobile, or while the chunk
- * loads. A warm concrete gradient rather than a blank screen, because the
- * canvas is the full height of the viewport and an empty one reads as a
- * failure to load.
+ * The still the page falls back to: no WebGL, a phone, or while the chunk
+ * loads.
+ *
+ * **A frame of the real scene, not a stand-in.** Phones are deliberately kept
+ * off the live scene (see `useWideViewport`: pixel count and thermal budget),
+ * and until now they got a warm gradient in its place — the whole landing
+ * page without its subject. `landing-poster.webp` is the opening shot
+ * captured from the live canvas itself, so a phone sees the actual line for
+ * the cost of one 80 KB image, and on desktop the frame shown while the scene
+ * loads is the frame the scene opens on: no visible swap.
+ *
+ * Cropped towards the robot: on a portrait screen `cover` keeps the middle of
+ * a landscape frame, and the subject sits right of centre, beside the copy.
+ * The gradient stays underneath in case the image fails.
+ *
+ * **Re-capture it when the scene changes**, or the still and the live opening
+ * drift apart. It is the canvas at `scroll.t = 0`, 1440 × 900 CSS pixels,
+ * saved as WebP at quality 0.82.
  */
 export function LandingFallback({ label }: { label?: string }) {
   return (
@@ -34,6 +48,16 @@ export function LandingFallback({ label }: { label?: string }) {
       role="img"
       aria-label="Model Doctor inspection line"
     >
+      {/* Decorative: the container carries the accessible name. */}
+      {/* eslint-disable-next-line @next/next/no-img-element -- a fixed, pre-sized still; next/image would add a loader for nothing */}
+      <img
+        src="/landing-poster.webp"
+        alt=""
+        aria-hidden
+        className="absolute inset-0 h-full w-full object-cover"
+        style={{ objectPosition: "62% 55%" }}
+        decoding="async"
+      />
       {label && <span className="sr-only">{label}</span>}
     </div>
   );

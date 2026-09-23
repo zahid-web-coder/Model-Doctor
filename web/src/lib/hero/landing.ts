@@ -13,6 +13,16 @@
  */
 export const scroll = { t: 0 };
 
+/**
+ * The landing page's own copy of the machine: the same asset with a realism
+ * pass on its materials (tiling normal and roughness maps — see
+ * `model-doctor-hero3d/blender/md_realism.py`). Same node names, hierarchy and
+ * pivots as the dashboard's `hero.glb`, verified by round trip, so every
+ * runtime reference resolves identically. Kept separate so the dashboard's
+ * hero is untouched by anything done for the landing page.
+ */
+export const LANDING_MODEL_URL = "/models/hero-landing.glb";
+
 export type BeatName = "hero" | "inspection" | "diagnosis" | "verification" | "transition";
 
 /** Where each beat starts and ends in `t`. Five equal beats, one screen each. */
@@ -63,8 +73,15 @@ export const CAMERA_PATH: CameraKey[] = [
   // had finished fading the camera was already deep in a close-up and the two
   // screens read as unrelated shots rather than one move. Establishing means
   // staying put long enough for the frame to be read.
-  { at: 0.0, position: [7.0, 3.8, 7.9], target: [-0.2, 1.05, 0.0] },
-  { at: 0.2, position: [6.5, 3.5, 7.3], target: [-0.2, 1.08, 0.0] },
+  //
+  // Trucked left and eased back from the original [7.0, 3.8, 7.9] → [-0.2,
+  // 1.05, 0.0], with the viewing direction unchanged. The old framing put the
+  // infeed machine directly under the headline, so the copy and the line
+  // fought for the left third of the screen. Moving camera and target together
+  // by ~1.6 m along the screen's left, then 12% further out, slides the whole
+  // line into the right ~55% of the frame beside the copy, not under it.
+  { at: 0.0, position: [6.68, 4.13, 9.92], target: [-1.38, 1.05, 1.07] },
+  { at: 0.2, position: [6.12, 3.79, 9.25], target: [-1.38, 1.08, 1.07] },
   // INSPECTION — one continuous push down the line to the scanner. Pulled back
   // from the old 2.55 so the pod is the subject without being cropped by it.
   { at: 0.4, position: [3.0, 2.1, 3.35], target: [-0.15, 1.15, 0.05] },

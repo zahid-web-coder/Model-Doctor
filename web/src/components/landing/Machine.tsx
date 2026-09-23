@@ -53,8 +53,16 @@ function useInstanced(nodes: Nodes, pattern: RegExp, parentName: string): Instan
   }, [nodes, pattern, parentName]);
 }
 
-export function Machine({ animate = true }: { animate?: boolean }) {
-  const { scene, nodes } = useGLTF(MODEL_URL, DRACO_PATH) as unknown as {
+export function Machine({
+  animate = true,
+  url = MODEL_URL,
+}: {
+  animate?: boolean;
+  /** Which copy of the asset to load. Defaults to the dashboard's; the
+   *  landing page passes its realism-pass copy, which has identical nodes. */
+  url?: string;
+}) {
+  const { scene, nodes } = useGLTF(url, DRACO_PATH) as unknown as {
     scene: THREE.Group;
     nodes: Nodes;
   };
@@ -325,4 +333,7 @@ export function Machine({ animate = true }: { animate?: boolean }) {
   return <primitive object={scene} visible={ready} />;
 }
 
-useGLTF.preload(MODEL_URL, DRACO_PATH);
+// No module-level preload here. This component is shared, and a preload at
+// import would fetch the dashboard's hero.glb on the landing page too, which
+// never uses it. Each scene preloads its own copy: `HeroModel` (dashboard) and
+// `LandingScene` (landing).

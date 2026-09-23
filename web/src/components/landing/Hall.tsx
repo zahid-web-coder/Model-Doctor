@@ -132,11 +132,16 @@ export function Hall() {
 
       {/* Polished concrete, pulled well back from a mirror. A sealed floor
           returns a soft, broken suggestion of what is above it; a crisp
-          reflection reads as wet glass. */}
+          reflection reads as wet glass.
+
+          512, up from 256. At 256 the reflection under the arm broke into
+          visible stair-stepped blocks — the one artifact on the page that
+          read as cheap. 1024 would be four times 512's cost for a reflection
+          this heavily blurred, where the difference does not survive. */}
       <mesh rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
         <planeGeometry args={[70, 70]} />
         <MeshReflectorMaterial
-          resolution={256}
+          resolution={512}
           mixBlur={2.6}
           mixStrength={0.9}
           blur={[900, 320]}

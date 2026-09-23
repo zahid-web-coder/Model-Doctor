@@ -3,6 +3,10 @@
 import { useCallback, useEffect, useRef } from "react";
 import { useHero } from "@/lib/hero/store";
 import { nudgeArm, resetArm } from "@/lib/hero/armControl";
+import { ScanCard } from "./ScanCard";
+import { MonitorCard } from "./MonitorCard";
+import { requestScan } from "@/lib/hero/scan";
+import { SCAN_FINDINGS } from "@/lib/hero/scanFindings";
 
 /**
  * The controls that turn the story into something you can operate.
@@ -117,6 +121,9 @@ export function InteractiveControls() {
   }
 
   return (
+    <>
+    <ScanCard />
+    <MonitorCard />
     <div className="fixed bottom-6 right-6 z-30 flex flex-col items-end gap-3">
       <div className="rounded-lg border border-white/15 bg-black/45 backdrop-blur-sm p-3 w-[212px]">
         <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-white/45 mb-2">
@@ -134,6 +141,14 @@ export function InteractiveControls() {
           <li>
             <span className="text-white/85">Drag anywhere else</span>
             {" "}to rotate 360°
+          </li>
+          <li>
+            <span className="text-white/85">Click a plate</span>
+            {" "}to scan it
+          </li>
+          <li>
+            <span className="text-white/85">Hover the monitor</span>
+            {" "}to read it
           </li>
         </ul>
 
@@ -157,6 +172,25 @@ export function InteractiveControls() {
           Reset
         </HoldButton>
 
+        {/* One button per real finding, so a visitor can see each kind of
+            result without hunting for the plate that happens to carry it. */}
+        <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-white/45 mt-4 mb-2">
+          Scan an example
+        </p>
+        <div className="grid grid-cols-2 gap-1.5">
+          {SCAN_FINDINGS.map((finding) => (
+            <button
+              key={finding.id}
+              type="button"
+              onClick={() => requestScan(finding)}
+              aria-label={`Scan an example: ${finding.outcome}`}
+              className="rounded border border-white/15 bg-white/5 px-2 py-1.5 text-[11px] leading-tight text-white/80 hover:bg-white/15 hover:text-white transition-colors"
+            >
+              {finding.outcome}
+            </button>
+          ))}
+        </div>
+
         <p className="text-[10px] leading-relaxed text-white/35 mt-3">
           Scroll to zoom · Esc to exit
         </p>
@@ -170,6 +204,7 @@ export function InteractiveControls() {
         Exit 360° view
       </button>
     </div>
+    </>
   );
 }
 
