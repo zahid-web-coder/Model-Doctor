@@ -4,6 +4,7 @@ import { useEffect } from "react";
 import { useFrame } from "@react-three/fiber";
 import { useHero, HERO_DEFAULTS } from "@/lib/hero/store";
 import { scroll, clamp01, lerp, ease } from "@/lib/hero/landing";
+import { useScan, cancelScan } from "@/lib/hero/scan";
 
 /**
  * Interpolate a value across keyframes given as `[t, value]` pairs.
@@ -30,7 +31,7 @@ function at(keys: readonly (readonly [number, number])[], t: number) {
  * plate is under the aperture at (−0.04 + 3) / 6 ~ 0.49 and inside the station
  * at (2.0 + 3) / 6 ~ 0.83.
  */
-const UNDER_BEAM = 0.493;
+export const UNDER_BEAM = 0.493;
 const AT_STATION = 0.833;
 
 const PROGRESS = [
@@ -103,19 +104,94 @@ const HEAD_TILT = [
  * through to `/dashboard` is a client-side navigation that does not reload it.
  * So everything written here is put back on unmount.
  */
-export function InspectionSequence() {
+/**
+ * How long a scan's phases last, in seconds. The carry scales with how far the
+ * belt has to run, within bounds, so a plate one slot away does not take as
+ * long as one that has to go round.
+ */
+const CARRY_MIN = 0.9;
+const CARRY_MAX = 3.2;
+const CARRY_PER_LOOP = 4.2;
+const SCAN_RISE = 1.1;
+
+/**
+ * One frame of a plate scan (see `lib/hero/scan.ts`).
+ *
+ * Still this component writing, and still only these values — the scan store
+ * decides which script is followed, never who writes. Durations collapse to
+ * zero under reduced motion, so the scan jumps straight to its result instead
+ * of animating to it.
+ */
+function driveScan(now: number, animate: boolean) {
+  const scan = useScan.getState();
+  if (scan.since < 0) {
+    useScan.setState({ since: now });
+    return;
+  }
+  const elapsed = now - scan.since;
+
+  if (scan.phase === "carry") {
+    const duration = animate
+      ? Math.min(CARRY_MAX, Math.max(CARRY_MIN, scan.travel * CARRY_PER_LOOP))
+      : 0;
+    const k = duration > 0 ? clamp01(elapsed / duration) : 1;
+    const e = ease(k);
+    const next = scan.from + scan.travel * e;
+    useHero.setState({
+      objectProgress: next - Math.floor(next),
+      // The rollers spin with the carry and wind down as the plate arrives.
+      conveyorSpeed: lerp(0.95, 0.05, e),
+      beamIntensity: 0.12,
+      // The arm settles back to its modelled aim, so the beam lands on the
+      // belt wherever the visitor had swung it.
+      armYaw: lerp(scan.armFrom.armYaw, 0, e),
+      headTilt: lerp(scan.armFrom.headTilt, 0, e),
+      headRotation: lerp(scan.armFrom.headRotation, 0, e),
+    });
+    if (k >= 1) useScan.setState({ phase: "scan", since: now });
+    return;
+  }
+
+  if (scan.phase === "scan") {
+    const k = animate ? clamp01(elapsed / SCAN_RISE) : 1;
+    // The heatmap's opacity is derived from the beam in `Machine`, so raising
+    // the beam is what makes the attention map appear on the plate.
+    useHero.setState({ conveyorSpeed: 0, beamIntensity: lerp(0.12, 1, ease(k)) });
+    if (k >= 1) useScan.setState({ phase: "result", since: now });
+    return;
+  }
+
+  // result: held until the card is closed or another plate is clicked.
+  useHero.setState({ conveyorSpeed: 0, beamIntensity: 1 });
+}
+
+export function InspectionSequence({ animate = true }: { animate?: boolean }) {
   useEffect(() => {
     useHero.setState({ driveObject: false });
-    return () => { useHero.setState({ ...HERO_DEFAULTS }); };
+    return () => {
+      cancelScan();
+      useHero.setState({ ...HERO_DEFAULTS });
+    };
   }, []);
 
-  useFrame(() => {
+  useFrame(({ clock }) => {
     const state = useHero.getState();
+
+    // Leaving the 360° view ends any scan: the timeline takes the machine back.
+    if (!state.freeOrbit && useScan.getState().phase !== "idle") cancelScan();
 
     // In orbit mode the visitor owns the arm and the timeline does not.
     // Writing `armYaw` here as well would snap it back sixty times a second
     // and the controls would look broken. The plate and the beam keep running
     // so the machine is still alive to look at.
+    //
+    // The exception is a scan the visitor asked for by clicking a plate: then
+    // this drives the plate, beam and arm until the scan ends. Any direct arm
+    // input cancels the scan first, so the two never write at once.
+    if (state.freeOrbit && useScan.getState().phase !== "idle") {
+      driveScan(clock.elapsedTime, animate);
+      return;
+    }
     if (state.freeOrbit) {
       useHero.setState({
         objectProgress: (state.objectProgress + 0.0016) % 1,

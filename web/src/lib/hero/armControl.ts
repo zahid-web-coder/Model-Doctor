@@ -1,4 +1,5 @@
 import { useHero } from "./store";
+import { cancelScan } from "./scan";
 
 /**
  * How a pointer or a button maps onto the arm.
@@ -53,6 +54,9 @@ export const clampTo = (v: number, limit: number) =>
 
 /** Nudge the arm by one step, in screen terms: `+1` is right / down. */
 export function nudgeArm(axis: "yaw" | "tilt", screenDirection: number) {
+  // Direct arm input ends a plate scan: the scan eases the arm to rest, and
+  // two writers on one hinge is the jitter the ownership rule exists to stop.
+  cancelScan();
   useHero.setState((s) =>
     axis === "yaw"
       ? { armYaw: clampTo(s.armYaw + screenDirection * screen.yawSign * YAW_STEP, YAW_LIMIT) }
@@ -73,5 +77,6 @@ export function poseFromDrag(
 }
 
 export function resetArm() {
+  cancelScan();
   useHero.setState({ armYaw: 0, headTilt: 0, headRotation: 0 });
 }

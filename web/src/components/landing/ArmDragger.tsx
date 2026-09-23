@@ -5,6 +5,7 @@ import { useFrame, useThree, type ThreeEvent } from "@react-three/fiber";
 import * as THREE from "three";
 import { useHero } from "@/lib/hero/store";
 import { poseFromDrag, screen } from "@/lib/hero/armControl";
+import { cancelScan } from "@/lib/hero/scan";
 
 /**
  * Keeps the screen-to-arm mapping in step with wherever the camera has been
@@ -129,6 +130,9 @@ export function ArmDragger({ enabled }: { enabled: boolean }) {
     const onMove = (e: PointerEvent) => {
       const start = drag.current;
       if (!start) return;
+      // Taking the arm by hand ends a plate scan, which would otherwise keep
+      // easing it back to rest underneath the drag.
+      cancelScan();
       useHero.setState(poseFromDrag(start, e.clientX - start.x, e.clientY - start.y));
     };
     const onUp = () => {

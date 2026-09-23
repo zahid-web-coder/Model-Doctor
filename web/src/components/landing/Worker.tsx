@@ -44,20 +44,40 @@ export function Worker({
   const m = useMemo(() => {
     const make = (color: string, roughness: number, extra: object = {}) =>
       new THREE.MeshStandardMaterial({ color, roughness, envMapIntensity: 0.35, ...extra });
+    // Cloth has sheen: a soft brightening towards grazing angles as the light
+    // catches the fibres. A plain matte material has none, and uniform matte
+    // colour is most of why a clothed figure reads as moulded plastic.
+    const cloth = (color: string, roughness: number, envMapIntensity: number) =>
+      new THREE.MeshPhysicalMaterial({
+        color, roughness, envMapIntensity,
+        sheen: 0.7, sheenRoughness: 0.75,
+        sheenColor: new THREE.Color(color).lerp(new THREE.Color("#ffffff"), 0.35),
+      });
     return {
-      skin: make(SKIN, 0.78),
-      navy: make(NAVY, 0.82, { envMapIntensity: 0.3 }),
-      trouser: make(TROUSER, 0.86, { envMapIntensity: 0.25 }),
+      // Skin carries a faint warm sheen for the same reason: flat skin reads
+      // as a mannequin's.
+      skin: new THREE.MeshPhysicalMaterial({
+        color: SKIN, roughness: 0.6, envMapIntensity: 0.4,
+        sheen: 0.3, sheenRoughness: 0.5, sheenColor: new THREE.Color("#ffd9c4"),
+      }),
+      navy: cloth(NAVY, 0.82, 0.3),
+      trouser: cloth(TROUSER, 0.86, 0.25),
       // A muted duty vest, not hi-vis. Neon green here is the brightest thing
       // in frame after the beam and pulls the eye straight off the scanner —
       // the guard is meant to be secondary.
-      vest: make(VEST, 0.66, { envMapIntensity: 0.45 }),
+      vest: cloth(VEST, 0.66, 0.45),
       reflect: make(REFLECT, 0.34, { metalness: 0.12, envMapIntensity: 0.6 }),
       boot: make(BOOT, 0.65),
       tablet: make(TABLET, 0.42, { metalness: 0.2, envMapIntensity: 0.6 }),
       badge: make(BADGE, 0.4, { metalness: 0.1, envMapIntensity: 0.6 }),
       patch: make("#8c9ab4", 0.6),
       watch: make("#1a1d24", 0.35, { metalness: 0.5, envMapIntensity: 0.8 }),
+      // The tablet's screen, lit: a person holding a dark slab reads as a
+      // prop; a person looking at a lit screen reads as working.
+      screen: new THREE.MeshStandardMaterial({
+        color: "#0c1624", emissive: "#7fb2e6", emissiveIntensity: 0.9,
+        roughness: 0.2, toneMapped: false,
+      }),
     };
   }, []);
 
@@ -70,12 +90,12 @@ export function Worker({
       return g;
     };
     const capsule = (r: number, len: number, at: [number, number, number]) => {
-      const g = new THREE.CapsuleGeometry(r, len, 3, 8);
+      const g = new THREE.CapsuleGeometry(r, len, 6, 16);
       g.translate(at[0], at[1], at[2]);
       return g;
     };
     const cyl = (r: number, h: number, at: [number, number, number]) => {
-      const g = new THREE.CylinderGeometry(r, r, h, 14);
+      const g = new THREE.CylinderGeometry(r, r, h, 24);
       g.translate(at[0], at[1], at[2]);
       return g;
     };
@@ -124,19 +144,19 @@ export function Worker({
             roughly twice as wide as it is deep, and that ratio is most of what
             makes a silhouette read as a person. */}
         <mesh position={[0, 0.3, 0]} scale={[1.18, 1, 0.6]} material={m.navy} castShadow>
-          <capsuleGeometry args={[0.152, 0.34, 4, 12]} />
+          <capsuleGeometry args={[0.152, 0.34, 8, 24]} />
         </mesh>
         {/* Shoulder yoke — the widest point, and what gives the figure a neck
             rather than a bottle-top. */}
         <mesh position={[0, 0.46, 0]} scale={[1, 0.42, 0.58]} material={m.navy} castShadow>
-          <capsuleGeometry args={[0.185, 0.1, 4, 12]} />
+          <capsuleGeometry args={[0.185, 0.1, 8, 24]} />
         </mesh>
 
         <mesh position={[0, 0.29, 0.008]} scale={[1.18, 1, 0.64]} material={m.vest} castShadow>
-          <capsuleGeometry args={[0.158, 0.24, 4, 12]} />
+          <capsuleGeometry args={[0.158, 0.24, 8, 24]} />
         </mesh>
         <mesh position={[0, 0.26, 0.008]} scale={[1.18, 1, 0.64]} material={m.reflect}>
-          <cylinderGeometry args={[0.162, 0.162, 0.036, 16]} />
+          <cylinderGeometry args={[0.162, 0.162, 0.036, 32]} />
         </mesh>
         <mesh position={[-0.078, 0.43, 0.055]} material={m.reflect}>
           <boxGeometry args={[0.034, 0.15, 0.018]} />
@@ -147,10 +167,10 @@ export function Worker({
         {/* Collar — a small step at the neckline, but it is what stops the
             torso reading as a single extruded capsule. */}
         <mesh position={[0, 0.53, 0.01]} scale={[1.1, 1, 0.7]} material={m.navy}>
-          <cylinderGeometry args={[0.082, 0.094, 0.05, 12]} />
+          <cylinderGeometry args={[0.082, 0.094, 0.05, 24]} />
         </mesh>
         <mesh position={[-0.232, 0.31, 0.05]} rotation={[0, -0.35, 0]} material={m.patch}>
-          <circleGeometry args={[0.032, 12]} />
+          <circleGeometry args={[0.032, 20]} />
         </mesh>
         <mesh position={[0, 0.29, 0.108]} material={m.navy}>
           <boxGeometry args={[0.012, 0.24, 0.012]} />
@@ -170,23 +190,23 @@ export function Worker({
               rotation={[0.26, 0, side * -0.13]}
               material={m.navy} castShadow
             >
-              <capsuleGeometry args={[0.054, 0.25, 3, 8]} />
+              <capsuleGeometry args={[0.054, 0.25, 6, 16]} />
             </mesh>
             <mesh
               position={[side * 0.198, 0.03, 0.155]}
               rotation={[1.15, 0, side * -0.05]}
               material={m.navy} castShadow
             >
-              <capsuleGeometry args={[0.047, 0.22, 3, 8]} />
+              <capsuleGeometry args={[0.047, 0.22, 6, 16]} />
             </mesh>
             <mesh position={[side * 0.152, -0.015, 0.248]} material={m.skin}>
-              <sphereGeometry args={[0.046, 8, 6]} />
+              <sphereGeometry args={[0.046, 16, 12]} />
             </mesh>
             {/* Watch on one wrist only — an asymmetric detail is worth more at
                 this size than two symmetric ones. */}
             {side === -1 && (
               <mesh position={[-0.176, 0.015, 0.218]} rotation={[1.15, 0, 0]} material={m.watch}>
-                <cylinderGeometry args={[0.021, 0.021, 0.012, 10]} />
+                <cylinderGeometry args={[0.021, 0.021, 0.012, 16]} />
               </mesh>
             )}
           </group>
@@ -195,23 +215,27 @@ export function Worker({
         <mesh position={[0, -0.015, 0.255]} rotation={[-1.05, 0, 0]} material={m.tablet} castShadow>
           <boxGeometry args={[0.21, 0.008, 0.27]} />
         </mesh>
+        {/* The screen, on the face turned up towards him. */}
+        <mesh position={[0, -0.0128, 0.2511]} rotation={[-1.05 - Math.PI / 2, 0, 0]} material={m.screen}>
+          <planeGeometry args={[0.18, 0.235]} />
+        </mesh>
       </group>
 
       {/* Neck, head, and the cap */}
       <mesh position={[0, 1.3, 0]} material={m.skin}>
-        <capsuleGeometry args={[0.045, 0.055, 2, 8]} />
+        <capsuleGeometry args={[0.045, 0.055, 4, 16]} />
       </mesh>
       <group ref={head} position={[0, 1.42, 0]}>
         <mesh material={m.skin} castShadow>
-          <sphereGeometry args={[0.097, 12, 10]} />
+          <sphereGeometry args={[0.097, 28, 20]} />
         </mesh>
         <mesh position={[0, -0.03, 0.03]} material={m.trouser}>
-          <sphereGeometry args={[0.088, 10, 8, 0, Math.PI * 2, 1.5, 0.9]} />
+          <sphereGeometry args={[0.088, 24, 14, 0, Math.PI * 2, 1.5, 0.9]} />
         </mesh>
         {/* Cap crown and peak. The peak is what makes the silhouette read as a
             uniform cap rather than hair. */}
         <mesh position={[0, 0.03, -0.006]} material={m.navy} castShadow>
-          <sphereGeometry args={[0.103, 12, 10, 0, Math.PI * 2, 0, 1.25]} />
+          <sphereGeometry args={[0.103, 28, 16, 0, Math.PI * 2, 0, 1.25]} />
         </mesh>
         <mesh position={[0, 0.028, 0.098]} rotation={[0.2, 0, 0]} material={m.navy} castShadow>
           <boxGeometry args={[0.16, 0.014, 0.1]} />

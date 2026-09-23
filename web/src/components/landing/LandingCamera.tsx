@@ -4,7 +4,7 @@ import { useRef } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
 import { OrbitControls } from "@react-three/drei";
 import * as THREE from "three";
-import { CAMERA_PATH, scroll, ease, lerp } from "@/lib/hero/landing";
+import { CAMERA_PATH, scroll, ease, lerp, clamp01 } from "@/lib/hero/landing";
 import { useHero } from "@/lib/hero/store";
 
 /**
@@ -23,6 +23,8 @@ export function LandingCamera({ parallax = true }: { parallax?: boolean }) {
   const freeOrbit = useHero((s) => s.freeOrbit);
   const position = useRef(new THREE.Vector3(...CAMERA_PATH[0].position));
   const target = useRef(new THREE.Vector3(...CAMERA_PATH[0].target));
+  // Scratch vector for the narrow-screen dolly; allocated once, not per frame.
+  const offset = useRef(new THREE.Vector3());
   const drift = useRef(new THREE.Vector2());
 
   useFrame((_, delta) => {
@@ -52,6 +54,28 @@ export function LandingCamera({ parallax = true }: { parallax?: boolean }) {
       lerp(a.target[1], b.target[1], k),
       lerp(a.target[2], b.target[2], k),
     );
+
+    // Narrow screens, opening shot only. The hero keys are framed for 16:10:
+    // the line sits in the right ~55% beside the copy. On a narrower screen
+    // the same shot puts the copy on top of the infeed again, so the camera
+    // trucks further left and eases back, in proportion to how much narrower
+    // the screen is, and hands back to the authored path by the inspection
+    // beat — the close-ups are framed on the machine, not beside the copy.
+    const aspect = (camera as THREE.PerspectiveCamera).aspect || 1.6;
+    const narrow = clamp01((1.6 - aspect) / (1.6 - 1.25));
+    const hero = 1 - ease(clamp01((t - 0.2) / 0.2));
+    const shift = narrow * hero;
+    if (shift > 0) {
+      // Screen-left for the hero's viewing direction, on the ground plane.
+      position.current.x -= 1.0 * shift;
+      position.current.z += 0.9 * shift;
+      target.current.x -= 1.0 * shift;
+      target.current.z += 0.9 * shift;
+      // And back along the view, so the far end of the line — the storage
+      // cabinet — still fits inside the right edge.
+      offset.current.subVectors(position.current, target.current);
+      position.current.addScaledVector(offset.current, 0.28 * shift);
+    }
 
     if (parallax) {
       // Chase the pointer rather than tracking it, so a flick of the mouse

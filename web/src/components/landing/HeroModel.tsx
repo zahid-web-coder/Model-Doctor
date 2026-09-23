@@ -2,9 +2,15 @@
 
 import { Suspense } from "react";
 import { Canvas } from "@react-three/fiber";
-import { ContactShadows, Environment, Lightformer } from "@react-three/drei";
+import { ContactShadows, Environment, Lightformer, useGLTF } from "@react-three/drei";
+import { MODEL_URL, DRACO_PATH } from "@/lib/hero/asset";
 import { Machine } from "./Machine";
 import { CameraRig } from "./CameraRig";
+
+// The dashboard's copy of the asset, preloaded as this chunk loads — the same
+// moment `Machine`'s module-level preload used to fire, since this chunk is
+// what imports it. Moved here so the landing page stops downloading it.
+useGLTF.preload(MODEL_URL, DRACO_PATH);
 
 /**
  * A warm industrial environment, generated in-engine.

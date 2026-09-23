@@ -2,6 +2,7 @@
 
 import { Suspense } from "react";
 import { Canvas } from "@react-three/fiber";
+import { useGLTF } from "@react-three/drei";
 import { ContactShadows, Environment, Lightformer } from "@react-three/drei";
 import { Machine } from "./Machine";
 import { Hall } from "./Hall";
@@ -11,6 +12,12 @@ import { VerificationStation } from "./VerificationStation";
 import { InfeedDevice, StorageDevice } from "./LineDevices";
 import { Worker } from "./Worker";
 import { ArmDragger } from "./ArmDragger";
+import { LandingEffects } from "./LandingEffects";
+import { HighBay } from "./HighBay";
+import { PlateScanner } from "./PlateScanner";
+import { SurfaceDetail } from "./SurfaceDetail";
+import { LANDING_MODEL_URL } from "@/lib/hero/landing";
+import { DRACO_PATH } from "@/lib/hero/asset";
 
 /**
  * The same in-engine probe the dashboard hero uses. Rendered to a cubemap
@@ -88,16 +95,22 @@ export default function LandingScene({
       <ambientLight intensity={0.075} color="#f6ecdd" />
 
       <Hall />
+      <HighBay animate={animate} />
 
       <Suspense fallback={null}>
-        <Machine animate={animate} />
+        <Machine animate={animate} url={LANDING_MODEL_URL} />
+        {/* After Machine, so its material tunings are in place to multiply. */}
+        <SurfaceDetail url={LANDING_MODEL_URL} />
+        {/* Click a plate to scan it — 360° view only, like the arm grab. */}
+        <PlateScanner enabled={interactive} />
       </Suspense>
 
       <InfeedDevice />
       <VerificationStation />
       <StorageDevice />
 
-      {/* Remove this line and the environment is unchanged. */}
+      {/* The guard by the service door: life and scale in the room. Remove
+          this line and the environment is unchanged. */}
       <Worker />
 
       <ContactShadows
@@ -111,7 +124,12 @@ export default function LandingScene({
       <ArmDragger enabled={interactive} />
 
       <LandingCamera parallax={animate} />
-      <InspectionSequence />
+      <InspectionSequence animate={animate} />
+
+      {/* Last, so it composites everything above. */}
+      <LandingEffects animate={animate} />
     </Canvas>
   );
 }
+
+useGLTF.preload(LANDING_MODEL_URL, DRACO_PATH);
