@@ -3,17 +3,21 @@
 import { Suspense } from "react";
 import { Canvas } from "@react-three/fiber";
 import { useGLTF } from "@react-three/drei";
-import { ContactShadows, Environment, Lightformer } from "@react-three/drei";
+import { Environment, Lightformer } from "@react-three/drei";
 import { Machine } from "./Machine";
 import { Hall } from "./Hall";
 import { LandingCamera } from "./LandingCamera";
 import { InspectionSequence } from "./InspectionSequence";
 import { VerificationStation } from "./VerificationStation";
 import { InfeedDevice, StorageDevice } from "./LineDevices";
-import { Worker } from "./Worker";
+import { Worker, GUARD_URL } from "./Worker";
+import { GuardPatrol, WALKER_URL, DOG_URL } from "./GuardPatrol";
 import { ArmDragger } from "./ArmDragger";
 import { LandingEffects } from "./LandingEffects";
 import { HighBay } from "./HighBay";
+import { SecurityCameras } from "./SecurityCameras";
+import { HallLighting, ClearedContactShadows } from "./HallLighting";
+import { LightSwitch } from "./LightSwitch";
 import { PlateScanner } from "./PlateScanner";
 import { SurfaceDetail } from "./SurfaceDetail";
 import { LANDING_MODEL_URL } from "@/lib/hero/landing";
@@ -79,23 +83,14 @@ export default function LandingScene({
 
       <IndustrialEnvironment />
 
-      {/* The key. Decay and a finite distance are what create falloff — a
-          directional light has neither, so on its own it lights the far wall
-          exactly as brightly as the pod and the room reads flat. */}
-      <spotLight
-        position={[1.6, 5.2, 2.0]} angle={0.62} penumbra={0.85}
-        intensity={58} distance={22} decay={1.25} color="#fff2df"
-        castShadow shadow-mapSize={[2048, 2048]} shadow-bias={-0.0004}
-        shadow-normalBias={0.02}
-      />
-      <directionalLight position={[3.6, 4.4, 3.2]} intensity={0.62} color="#fff4e6" />
-      {/* Rim from behind. On a rounded white pod this is what describes the
-          silhouette — more than any amount of extra geometry would. */}
-      <directionalLight position={[-2.6, 3.1, -3.4]} intensity={0.62} color="#fff8f0" />
-      <ambientLight intensity={0.075} color="#f6ecdd" />
+      {/* Key, fill, rim and ambient — and the light switch's level, which
+          everything that dims reads. */}
+      <HallLighting />
 
       <Hall />
       <HighBay animate={animate} />
+      <SecurityCameras animate={animate} />
+      <LightSwitch enabled={interactive} />
 
       <Suspense fallback={null}>
         <Machine animate={animate} url={LANDING_MODEL_URL} />
@@ -110,10 +105,18 @@ export default function LandingScene({
       <StorageDevice />
 
       {/* The guard by the service door: life and scale in the room. Remove
-          this line and the environment is unchanged. */}
-      <Worker />
+          this line and the environment is unchanged. Its own boundary, so
+          the machine never waits on his download. */}
+      <Suspense fallback={null}>
+        <Worker />
+      </Suspense>
+      {/* A second guard on patrol behind the line, with his dog. Removable
+          the same way. */}
+      <Suspense fallback={null}>
+        <GuardPatrol animate={animate} />
+      </Suspense>
 
-      <ContactShadows
+      <ClearedContactShadows
         position={[0, 0.004, 0]} scale={11} far={2.2} resolution={1024}
         opacity={0.78} blur={1.3} color="#332c22"
       />
@@ -133,3 +136,6 @@ export default function LandingScene({
 }
 
 useGLTF.preload(LANDING_MODEL_URL, DRACO_PATH);
+useGLTF.preload(GUARD_URL, DRACO_PATH);
+useGLTF.preload(WALKER_URL, DRACO_PATH);
+useGLTF.preload(DOG_URL, DRACO_PATH);
