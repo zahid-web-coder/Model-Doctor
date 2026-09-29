@@ -51,7 +51,8 @@ function CheckList({ report }: { report: ValidationReport }) {
   );
 }
 
-function Panel({
+/** One numbered step of the set-up. Shared with the public demo's preview. */
+export function Panel({
   step, title, hint, children,
 }: {
   step: number;
