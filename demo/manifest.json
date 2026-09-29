@@ -3,23 +3,23 @@
   "PUBLICATION_REVIEW": "PENDING",
   "publication_note": "Technically prepared only. These photographs have NOT been reviewed or cleared for publication. They are known to contain workers, third-party signage with phone numbers and addresses, QR codes, and neighbouring properties. Nothing here is approved for public release.",
   "run_id": 2,
-  "run_name": "Structural columns \u00b7 YOLO segmentation @672",
+  "run_name": "Structural columns · YOLO segmentation @672",
   "distinct_photographs": 151,
   "counts": {
-    "runs": 1,
-    "images": 151,
-    "findings": 265,
-    "mask_findings": 265,
-    "image_diagnoses": 151,
-    "root_causes": 126,
-    "finding_relations": 45,
-    "clusters": 22,
-    "recommendations": 4,
-    "factor_rates": 6,
-    "embeddings": 85,
-    "run_evaluations": 2,
-    "cluster_members": 170,
-    "image_coverage": 206,
+    "runs": 2,
+    "images": 302,
+    "findings": 541,
+    "mask_findings": 541,
+    "image_diagnoses": 302,
+    "root_causes": 250,
+    "finding_relations": 98,
+    "clusters": 46,
+    "recommendations": 8,
+    "factor_rates": 12,
+    "embeddings": 166,
+    "run_evaluations": 4,
+    "cluster_members": 332,
+    "image_coverage": 423,
     "heatmaps": 265
   },
   "images": [
@@ -778,5 +778,21 @@
       "content_sha256": "faf14c238dd9aa7057666f2e3e346c41b9b588f4cd3f053b64f85a02f7e16ca9",
       "publication_review": "PENDING"
     }
-  ]
+  ],
+  "runs": [
+    {
+      "run_id": 1,
+      "run_name": "Structural columns · RF-DETR segmentation @480",
+      "split": "test",
+      "image_size": 480
+    },
+    {
+      "run_id": 2,
+      "run_name": "Structural columns · YOLO segmentation @672",
+      "split": "test",
+      "image_size": 672
+    }
+  ],
+  "second_run_added_utc": "2026-09-29T07:55:00.250242+00:00",
+  "second_run_note": "Run 1 (RF-DETR @480) added so the comparison screen has two runs. It covers the same 151 photographs as run 2: no new images, and no heatmaps (Grad-CAM is not produced for RF-DETR). Sanitised by the same rules as reports/sanitization.md; jobs and run_benchmarks not copied."
 }

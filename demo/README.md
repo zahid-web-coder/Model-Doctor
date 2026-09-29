@@ -1,23 +1,29 @@
 # Model Doctor — public demo bundle
 
-One complete Model Doctor run, prepared for public deployment.
+Two complete Model Doctor runs over the same test split, prepared for public deployment.
 
 ## What this is
 
-A **physically separate copy** of a single run. The private source database was
-opened read-only (`immutable=1`) and never modified.
+A **physically separate copy** of two runs. The private source database was
+opened read-only and never modified.
 
-| | |
-|---|---|
-| Run | id 2 — "Structural columns · YOLO segmentation @672", test split |
-| Images | 151 (all distinct by content SHA-256) |
-| Findings | 265, with 265 mask findings |
-| Heatmaps | 265 — every finding has one; full-resolution **and** preview shipped |
-| Root causes | 126 across 6 factors |
-| Clusters | 22, with 170 members |
-| Recommendations | 4 |
-| Relations | 45 |
-| Embeddings | 85 (back the "similar failures" route) |
+| | Run 2 — YOLO segmentation @672 | Run 1 — RF-DETR segmentation @480 |
+|---|---|---|
+| Split | test | test (the same 151 photographs) |
+| Findings | 265, with 265 mask findings | 276, with 276 mask findings |
+| Heatmaps | 265 — full-resolution **and** preview shipped | none — Grad-CAM is not produced for RF-DETR |
+| Root causes | 126 across 6 factors | 124 across 6 factors |
+| Clusters | 22, with 170 members | 24, with 162 members |
+| Recommendations | 4 | 4 |
+| Relations | 45 | 53 |
+| Embeddings | 85 | 81 |
+
+Run 1 was added so the comparison screen has two runs over the same data. It
+introduces **no new photographs**: every one of its image rows points at a
+`demo-NNNN.jpg` already in this bundle. It was sanitised by the same rules as
+run 2 (`reports/sanitization.md`), and the finished file was scanned — every
+text value and the raw bytes — for the private paths, filenames, filename
+fragments and model digests: 0 occurrences.
 
 ## Layout
 
